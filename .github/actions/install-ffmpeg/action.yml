@@ -17,7 +17,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg
-        key: vcpkg-2026.07.29-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: vcpkg-2026.07.29-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml', '.github/vcpkg-overlays/x264/**') }}
 
     - name: Build vcpkg (Windows)
       if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
@@ -33,6 +33,12 @@ runs:
         git clone https://github.com/microsoft/vcpkg --depth 1 --branch 2026.07.29
         ./vcpkg/bootstrap-vcpkg.bat
 
+    - name: Expose vcpkg overlay ports (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "VCPKG_OVERLAY_PORTS=$(cygpath -w '${{ github.workspace }}/.github/vcpkg-overlays')" >> "$GITHUB_ENV"
+
     - name: Install FFmpeg via vcpkg (Windows)
       if: runner.os == 'Windows'
       shell: bash
@@ -46,6 +52,10 @@ runs:
         # unresolved-symbol link errors (opus_strerror, opus_multistream_*,
         # ...). With a dynamic build the codecs are baked into the av*.dll, so
         # the av* import libs are sufficient and no per-codec linking is needed.
+        #
+        # x264's upstream GitLab tarball currently no longer matches the SHA
+        # recorded in vcpkg 2026.07.29, so we overlay a git-based port to avoid
+        # the archive hash mismatch.
         ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows"
 
     - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
@@ -83,19 +93,90 @@ runs:
           || { echo "ERROR: ffmpeg.exe not available on PATH after install"; exit 1; }
 
     # ── macOS ─────────────────────────────────────────────────────────────
-    - name: Install FFmpeg (macOS)
+    - name: Resolve macOS FFmpeg cache fingerprint
       if: runner.os == 'macOS'
+      id: macos-ffmpeg-fingerprint
+      shell: bash
+      run: |
+        brew untap aws/tap 2>/dev/null || true
+        echo "digest=$(brew info --json=v2 --formula pkg-config nasm yasm libvpx x264 x265 svt-av1 opus | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+    # Homebrew's ffmpeg formula moved to 9.x, which privatized AVCodec's
+    # public fields (supported_framerates, pix_fmts, ...), so bindgen emits
+    # accessor methods and rsmpeg 0.18.0 no longer compiles (E0615 "method,
+    # not a field") — the same break the Windows vcpkg and Linux jobs pin
+    # against.  Homebrew offers no ffmpeg@8 formula, so build upstream
+    # FFmpeg 8.1.2 from source and cache the prefix. (8.1.2 over Linux's
+    # n8.0 pin: homebrew's svt-av1 is too new for 8.0's libsvtav1 wrapper —
+    # EbSvtAv1EncConfiguration lost enable_adaptive_quantization. 8.1.2 is
+    # the version homebrew bottled, known-good with that svt-av1.)
+    - name: Cache FFmpeg build (macOS)
+      if: runner.os == 'macOS'
+      id: cache-ffmpeg-macos
+      uses: actions/cache@v5
+      with:
+        path: ${{ github.workspace }}/ffmpeg-install
+        key: ffmpeg-n8.1.2-macos-${{ runner.arch }}-${{ steps.macos-ffmpeg-fingerprint.outputs.digest }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+
+    - name: Install build dependencies (macOS)
+      if: runner.os == 'macOS' && steps.cache-ffmpeg-macos.outputs.cache-hit != 'true'
       shell: bash
       run: |
         # GitHub-hosted macOS runners may ship with third-party taps that are
         # not trusted by newer Homebrew versions, causing `brew install` to exit
-        # with a tap-trust error. Remove any such taps before installing; ffmpeg
-        # and pkg-config are provided by homebrew/core so external taps are not
-        # required here.
+        # with a tap-trust error. Remove any such taps before installing; all
+        # packages below come from homebrew/core so external taps are not
+        # required here.  The libav* brew packages are intentionally NOT
+        # installed: the source build below provides them.
         brew untap aws/tap 2>/dev/null || true
-        brew install ffmpeg pkg-config
-        echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-        echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
+        brew install pkg-config nasm yasm libvpx x264 x265 svt-av1 opus
+
+    - name: Build FFmpeg 8.1.2 from source (macOS)
+      if: runner.os == 'macOS' && steps.cache-ffmpeg-macos.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -e
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg ffmpeg-src
+        cd ffmpeg-src
+        ./configure \
+          --prefix="$PREFIX" \
+          --enable-gpl \
+          --enable-shared \
+          --disable-static \
+          --enable-libvpx \
+          --enable-libx264 \
+          --enable-libx265 \
+          --enable-libsvtav1 \
+          --enable-libopus \
+          --disable-doc
+        make -j"$(sysctl -n hw.ncpu)"
+        make install
+
+    # The source-built FFmpeg links against the homebrew codec libraries
+    # (libvpx, x264, x265, svt-av1, opus). Cache restores only our install
+    # prefix, not the runner's homebrew packages, so make sure they are
+    # present even on cache hits.
+    - name: Install codec runtime libraries (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew untap aws/tap 2>/dev/null || true
+        brew install pkg-config libvpx x264 x265 svt-av1 opus
+
+    - name: Expose source-built FFmpeg to rsmpeg (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        PREFIX="${{ github.workspace }}/ffmpeg-install"
+        echo "$PREFIX/bin" >> "$GITHUB_PATH"
+        # rusty_ffmpeg (used by rsmpeg with link_system_ffmpeg) locates FFmpeg
+        # via FFMPEG_PKG_CONFIG_PATH, not PKG_CONFIG_PATH — see rsmpeg's
+        # doc/source-build.md. Set both so the diagnostics step and pkg-config
+        # invocations also resolve the source-built libs.
+        echo "FFMPEG_PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "DYLD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
     # ── Linux ─────────────────────────────────────────────────────────────
     # Ubuntu/Debian patch FFmpeg to privatize AVFormatContext fields (pb,
