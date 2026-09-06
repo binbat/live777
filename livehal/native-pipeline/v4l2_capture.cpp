@@ -1,5 +1,6 @@
 #include "include/capture_backend.h"
 #include "include/latency_stats.h"
+#include "include/v4l2_capture_integrity.h"
 
 #include <algorithm>
 #include <array>
@@ -21,32 +22,21 @@
 #include <utility>
 #include <vector>
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 namespace {
 
 constexpr uint32_t kBufferCount = 16;
 
-// If every frame is malformed for this long, the sensor/driver link is
-// dead — stop the capture thread so the pipeline/watchdog can recover.
-constexpr uint64_t kConsecutiveBadFatalUs = 2000000;  // 2 s
-// A longer quiet gap between malformed frames starts a fresh window: sparse
-// glitches (e.g. one bad frame after a seconds-long outage) must not trip
-// the sustained-failure escalation.
-constexpr uint64_t kConsecutiveBadGapUs = 1000000;    // 1 s
-
-// Malformed-frame test for the capture integrity gate.  A plane is
-// malformed when bytesused is out of the expected range for the negotiated
-// sizeimage: zero (driver error flag), larger than the buffer, or far
-// shorter than sizeimage (truncated write — the MIPI CRC pattern observed
-// on RV1126B).  Small shortfalls are tolerated because some drivers report
-// bytesused excluding padding rows; want == 0 means the driver did not
-// populate sizeimage, so nothing can be validated.
-inline bool plane_malformed(uint32_t got, uint32_t want) {
-    if (want == 0) return false;
-    if (got == 0 || got > want) return true;
-    return static_cast<uint64_t>(got)
-        < static_cast<uint64_t>(want) * 9 / 10;
+#if defined(__linux__)
+void set_thread_name(const char* name) {
+    pthread_setname_np(pthread_self(), name);
 }
-
+#else
+void set_thread_name(const char*) {}
+#endif
 const char* fourcc_to_string(uint32_t fourcc, char (&text)[5]) {
     text[0] = static_cast<char>(fourcc & 0xff);
     text[1] = static_cast<char>((fourcc >> 8) & 0xff);
@@ -79,76 +69,6 @@ bool is_mplane_type(v4l2_buf_type type) {
 } // namespace
 
 struct V4L2CaptureImpl : public CaptureBackend {
-    struct IntegrityTracker {
-        uint64_t bad_frames = 0;
-        uint64_t seq_gaps = 0;
-        uint64_t seq_gap_frames = 0;
-        uint32_t last_bad_plane = 0;
-        uint32_t last_bad_got = 0;
-        uint32_t last_bad_want = 0;
-        uint32_t expected_seq = 0;
-        bool seq_valid = false;
-        uint64_t window_start_us = 0;
-
-        void reset() {
-            bad_frames = 0;
-            seq_gaps = 0;
-            seq_gap_frames = 0;
-            last_bad_plane = 0;
-            last_bad_got = 0;
-            last_bad_want = 0;
-            expected_seq = 0;
-            seq_valid = false;
-            window_start_us = 0;
-        }
-
-        void record_bad_frame(uint32_t plane, uint32_t got, uint32_t want) {
-            ++bad_frames;
-            last_bad_plane = plane;
-            last_bad_got = got;
-            last_bad_want = want;
-        }
-
-        void record_sequence(uint32_t sequence) {
-            if (seq_valid && sequence != expected_seq) {
-                if (sequence > expected_seq) {
-                    // Forward jump: the driver dropped frames.
-                    ++seq_gaps;
-                    seq_gap_frames += sequence - expected_seq;
-                }
-                // sequence < expected_seq: the driver re-armed/reset its
-                // counter or returned buffers out of order.  Re-sync
-                // instead of accumulating a wrapped ~2^32 frame "gap".
-            }
-            expected_seq = sequence + 1;
-            seq_valid = true;
-        }
-
-        void flush(uint64_t now_us, bool force = false) {
-            if (!bad_frames && !seq_gaps) return;
-            if (window_start_us == 0) {
-                window_start_us = now_us;
-            }
-            if (!force && now_us - window_start_us < 1000000ULL) return;
-
-            fprintf(stderr,
-                    "[V4L2Capture] BAD-FRAME: count=%llu (last: plane%u "
-                    "bytesused=%u want=%u), driver seq gaps=%llu "
-                    "(~%llu frames lost)\n",
-                    static_cast<unsigned long long>(bad_frames),
-                    last_bad_plane, last_bad_got, last_bad_want,
-                    static_cast<unsigned long long>(seq_gaps),
-                    static_cast<unsigned long long>(seq_gap_frames));
-            bad_frames = 0;
-            seq_gaps = 0;
-            seq_gap_frames = 0;
-            last_bad_plane = 0;
-            last_bad_got = 0;
-            last_bad_want = 0;
-            window_start_us = now_us;
-        }
-    };
-
     struct MappedPlane {
         void* start = nullptr;
         size_t length = 0;
@@ -181,8 +101,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     IntegrityTracker integrity_;
     // Sustained all-malformed escalation (capture thread only; see the
     // integrity gate in capture_loop()).
-    uint64_t consecutive_bad_frames_ = 0;
-    uint64_t consecutive_bad_start_us_ = 0;
+    ConsecutiveBadWindow bad_window_;
     std::vector<Buffer> buffers;
     std::vector<uint8_t> yuv420_buf;
     std::thread capture_thread;
@@ -505,6 +424,7 @@ void V4L2CaptureImpl::release_buffer(uint32_t index) {
 }
 
 void V4L2CaptureImpl::capture_loop() {
+    set_thread_name("v4l2-capture");
     fprintf(stderr, "[V4L2Capture] capture thread started\n");
     thread_alive.store(true);
 
@@ -579,15 +499,7 @@ void V4L2CaptureImpl::capture_loop() {
             bad_want = plane_sizeimages[0];
         }
         if (bad) {
-            ++consecutive_bad_frames_;
-            // A gap longer than kConsecutiveBadGapUs since the last
-            // malformed frame starts a fresh window (the fault is not
-            // sustained).  A good frame also clears the window below.
-            if (consecutive_bad_start_us_ == 0
-                || dqbuf_now_us - consecutive_bad_start_us_
-                       > kConsecutiveBadGapUs) {
-                consecutive_bad_start_us_ = dqbuf_now_us;
-            }
+            const bool fatal = bad_window_.on_bad_frame(dqbuf_now_us);
             integrity_.record_bad_frame(bad_plane, bad_got, bad_want);
             std::string queue_error;
             if (!queue_buffer(buf.index, &queue_error)) {
@@ -599,20 +511,18 @@ void V4L2CaptureImpl::capture_loop() {
             // sustained window: nothing reaches the encoder and silently
             // dropping frames forever hides the fault.  Stop the capture
             // thread so the pipeline/watchdog can recover.
-            if (dqbuf_now_us - consecutive_bad_start_us_
-                >= kConsecutiveBadFatalUs) {
+            if (fatal) {
                 fprintf(stderr,
                         "[V4L2Capture] FATAL: %llu malformed frames over "
                         "%llu ms — stopping capture\n",
-                        static_cast<unsigned long long>(consecutive_bad_frames_),
+                        static_cast<unsigned long long>(bad_window_.frames),
                         static_cast<unsigned long long>(
-                            (dqbuf_now_us - consecutive_bad_start_us_) / 1000));
+                            (dqbuf_now_us - bad_window_.window_start_us) / 1000));
                 break;
             }
             continue;
         }
-        consecutive_bad_frames_ = 0;
-        consecutive_bad_start_us_ = 0;
+        bad_window_.on_good_frame();
 
         // Driver-side frame loss shows up as sequence gaps. Count only.
         integrity_.record_sequence(buf.sequence);
@@ -861,8 +771,7 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     }
     capture_cb_ = std::move(cb);
     integrity_.reset();
-    consecutive_bad_frames_ = 0;
-    consecutive_bad_start_us_ = 0;
+    bad_window_.reset();
 
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
