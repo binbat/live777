@@ -47,6 +47,18 @@
 
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
+static inline void set_thread_name(const char* name) {
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), name);
+#else
+    (void)name;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Inline Annex-B NAL scanner
 // ---------------------------------------------------------------------------
@@ -159,6 +171,7 @@ public:
         // stall-recovery rebuild — so a rebuild always re-applies the
         // latest values instead of a stale init snapshot.
         cfg_ = config;
+        finalized_ = false;
 
         if (!open_encoder_(err)) return false;
 
@@ -387,6 +400,16 @@ public:
             return false;
         }
 
+        // Stall window scaled to the configured framerate: at low fps a
+        // fixed window would false-positive on a healthy encoder whose
+        // frame period approaches it (a 1 fps source completes once per
+        // second — well inside a 3 s window, but a 0.1 fps source would
+        // look "stalled").  Floor at kMinEncoderStallUs.
+        stall_us_.store(
+            std::max<uint64_t>(kMinEncoderStallUs,
+                               20ull * 1000000ull / (cfg_.fps ? cfg_.fps : 30u)),
+            std::memory_order_relaxed);
+
         reset_runtime_state_();
 
         // Publish the new context before returning: consumers watching
@@ -419,6 +442,7 @@ public:
         mon_last_progress_us_.store(monotonic_now_us(), std::memory_order_relaxed);
         mon_last_completed_.store(0, std::memory_order_relaxed);
         last_reset_us_.store(0, std::memory_order_relaxed);
+        last_cooldown_log_us_.store(0, std::memory_order_relaxed);
     }
 
     bool rebuild_after_stall_(std::string* err) {
@@ -731,6 +755,11 @@ public:
     }
 
     void stop() override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (finalized_) return;  // stop() runs from the pipeline and
+            finalized_ = true;       // again from the destructor
+        }
         // Lock order matters: drain_loop() parks inside the blocking
         // encode_get_packet *while holding mutex_* when the encoder stalls,
         // so stop() must not take mutex_ before waking it — doing so would
@@ -759,13 +788,17 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         close_encoder_();
 
+        const uint64_t gen = generation_.load(std::memory_order_relaxed);
+        const unsigned long long rebuilds =
+            gen > 0 ? static_cast<unsigned long long>(gen - 1) : 0;
         std::fprintf(stderr,
-            "[RkMppEncoder] Final: subm=%llu enc=%llu put_fail=%llu "
-            "get_fail=%llu\n",
-            static_cast<unsigned long long>(submitted_frames_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(encoded_frames_),
-            static_cast<unsigned long long>(put_frame_failures_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(get_packet_failures_));
+            "[RkMppEncoder] Final (lifetime): subm=%llu enc=%llu "
+            "put_fail=%llu get_fail=%llu rebuilds=%llu\n",
+            static_cast<unsigned long long>(lifetime_submitted_),
+            static_cast<unsigned long long>(lifetime_encoded_),
+            static_cast<unsigned long long>(lifetime_put_fail_),
+            static_cast<unsigned long long>(lifetime_get_fail_),
+            rebuilds);
 
         initialized_ = false;
     }
@@ -775,6 +808,18 @@ public:
     // stall-recovery path (followed by open_encoder_()).
     void close_encoder_() {
         std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+        // Fold the current epoch's counters into the lifetime totals — both
+        // the stall-recovery rebuild and the final stop funnel through here.
+        lifetime_submitted_ += submitted_frames_.load(std::memory_order_relaxed);
+        lifetime_encoded_ += encoded_frames_;
+        lifetime_put_fail_ += put_frame_failures_.load(std::memory_order_relaxed);
+        lifetime_get_fail_ += get_packet_failures_;
+        // Reset the epoch counters so a later close (e.g. failed rebuild
+        // followed by stop) cannot fold the same epoch twice.
+        submitted_frames_.store(0, std::memory_order_relaxed);
+        encoded_frames_ = 0;
+        put_frame_failures_.store(0, std::memory_order_relaxed);
+        get_packet_failures_ = 0;
         if (ctx_ && mpi_) {
             // Drain in-flight frames so their capture buffers come back
             // through the normal completion path.  Bounded: a stalled
@@ -871,6 +916,7 @@ private:
     // Serialized with submit()/stop() via mutex_; cheap when idle because
     // it skips straight past an empty in_flight_ queue.
     void drain_loop() {
+        set_thread_name("rkmpp-drain");
         while (drain_running_.load()) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -910,6 +956,7 @@ private:
     // that control wedges this kmpp-era mpp's output path — encode_put_frame
     // then jams in _mpp_port_poll.  Verified on RV1126B.)
     void monitor_loop() {
+        set_thread_name("rkmpp-monitor");
         while (monitor_running_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             if (!monitor_running_.load()) break;
@@ -927,7 +974,7 @@ private:
                 - static_cast<int64_t>(completed);
             if (depth <= 0
                 || mon_last_progress_us_.load(std::memory_order_relaxed) == 0) continue;
-            if (now - mon_last_progress_us_.load(std::memory_order_relaxed) < kEncoderStallUs) continue;
+            if (now - mon_last_progress_us_.load(std::memory_order_relaxed) < stall_us_.load(std::memory_order_relaxed)) continue;
             {
                 std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
                 if (!monitor_running_.load() || !running_ || !ctx_ || !mpi_) {
@@ -943,7 +990,21 @@ private:
                     mon_last_progress_us_.store(now, std::memory_order_relaxed);
                     continue;
                 }
-                if (now - last_reset_us_.load(std::memory_order_relaxed) < kEncoderResetCooldownUs) continue;
+                if (now - last_reset_us_.load(std::memory_order_relaxed)
+                    < kEncoderResetCooldownUs) {
+                    // Still stalled, but the reset is in cooldown — say so
+                    // (rate-limited) instead of silently deferring while
+                    // the stream stays dead.
+                    const uint64_t last_log =
+                        last_cooldown_log_us_.load(std::memory_order_relaxed);
+                    if (now - last_log >= kCooldownLogIntervalUs) {
+                        last_cooldown_log_us_.store(now, std::memory_order_relaxed);
+                        std::fprintf(stderr,
+                            "[RkMppEncoder] encoder still stalled; reset "
+                            "deferred (cooldown)\n");
+                    }
+                    continue;
+                }
                 last_reset_us_.store(now, std::memory_order_relaxed);
 
                 std::fprintf(stderr,
@@ -1211,6 +1272,13 @@ private:
     uint64_t encoded_frames_ = 0;
     std::atomic<uint64_t> put_frame_failures_{0};
     uint64_t get_packet_failures_ = 0;
+    // Lifetime totals across context rebuilds, folded in close_encoder_()
+    // so the Final line in stop() covers the whole session instead of only
+    // the last epoch.  Written/read under mutex_ (close_encoder_ / stop()).
+    uint64_t lifetime_submitted_ = 0;
+    uint64_t lifetime_encoded_ = 0;
+    uint64_t lifetime_put_fail_ = 0;
+    uint64_t lifetime_get_fail_ = 0;
     // Frames whose EOI was observed in drain_and_dispatch(); each submitted
     // frame completes exactly once, so in-flight depth can be derived.
     std::atomic<uint64_t> completed_frames_{0};
@@ -1234,6 +1302,7 @@ private:
 
     std::atomic<bool> running_{false};
     bool initialized_ = false;
+    bool finalized_ = false;  // stop() runs once (init/stop under mutex_)
 
     EncodedPacketCallback encoded_cb_;
     mutable std::mutex mutex_;
@@ -1256,6 +1325,13 @@ private:
     std::atomic<uint32_t> mpp_callers_{0};
     std::atomic<uint64_t> mon_last_completed_{0};
     std::atomic<uint64_t> mon_last_progress_us_{0};
+    // Stall window (µs), derived from the configured fps in
+    // open_encoder_() — a fixed window would false-positive on low-fps
+    // sources.  Written under lifecycle_mutex_ (open_encoder_), read by
+    // monitor_loop().
+    std::atomic<uint64_t> stall_us_{kMinEncoderStallUs};
+    // Rate-limiter for the "reset deferred (cooldown)" log line.
+    std::atomic<uint64_t> last_cooldown_log_us_{0};
 
     // Runtime encoder parameters — the single source of truth for every
     // open_encoder_() (initial init and stall-recovery rebuild alike).
@@ -1273,8 +1349,11 @@ private:
     std::atomic<uint64_t> last_reset_us_{0};
     // Upper bound for the mpp_callers_ drain in request_context_reload_().
     static constexpr uint64_t kReloadWaitUs = 200000;       // 200 ms
-    static constexpr uint64_t kEncoderStallUs = 3000000;        // 3 s
+    // Floor for the fps-scaled stall window (see stall_us_).
+    static constexpr uint64_t kMinEncoderStallUs = 3000000; // 3 s
     static constexpr uint64_t kEncoderResetCooldownUs = 5000000; // 5 s
+    // Rate-limit for the "reset deferred (cooldown)" log line.
+    static constexpr uint64_t kCooldownLogIntervalUs = 5000000; // 5 s
 };
 
 // ---------------------------------------------------------------------------
