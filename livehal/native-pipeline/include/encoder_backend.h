@@ -8,11 +8,12 @@
 //!   1. init(cfg, &err)
 //!   2. setCallback(cb)
 //!   3. submit(frame, &err)   — one call per captured frame
-//!   4. requestKeyframe()     — force an IDR on the next frame
+//!   4. requestKeyframe()     — force a keyframe (an IDR for H.264/H.265)
 //!   5. stop()
 
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include "media_types.h"
 #include <functional>
 #include <memory>
@@ -22,8 +23,8 @@
 // Flags for EncodedPacket
 // ---------------------------------------------------------------------------
 enum EncodedFlags : uint32_t {
-    EncodedKeyframe = 1u << 0, // IDR frame
-    EncodedConfig = 1u << 1,   // SPS / PPS / VPS
+    EncodedKeyframe = 1u << 0, // keyframe (IDR for H.264/H.265)
+    EncodedConfig = 1u << 1,   // codec parameter sets (SPS/PPS/VPS for H.264/H.265)
 };
 
 // ---------------------------------------------------------------------------
@@ -84,8 +85,17 @@ public:
     /// it.  stop() must release all still-held frames.
     virtual bool submit(const RawFrame& frame, std::string* err) = 0;
 
-    /// Request an IDR keyframe at the next opportunity.
+    /// Request a keyframe at the next opportunity (an IDR for H.264/H.265).
     virtual void requestKeyframe() = 0;
+
+    /// Monotonic generation of the encoder's codec context.  Any in-place
+    /// context rebuild — stall recovery today, dynamic resolution/framerate
+    /// changes later — increments it.  Bitstream consumers (e.g. the RTP
+    /// packager) compare it against a previously seen value: on a change the
+    /// codec state was reset, so request a keyframe / resend parameter sets
+    /// instead of relying on pre-rebuild stream state.  Backends that never
+    /// rebuild in place may leave the default.
+    virtual uint64_t contextGeneration() const { return 0; }
 
     /// Change the target bitrate of a running encoder (adaptive bitrate
     /// control).  Returns false when the backend cannot retune a running
