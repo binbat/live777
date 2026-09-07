@@ -271,11 +271,15 @@ public:
         set_optional("rc:fps_in_denorm", 1);
         set_optional("rc:fps_out_flex", 0);
         set_optional("rc:fps_out_denorm", 1);
-        set_optional("rc:bps_max", static_cast<RK_S32>(cfg_.bitrate * 2));
+        // CBR band kept tight around the target: a 2x ceiling lets detailed
+        // scenes overshoot the target and inflates receiver-side latency
+        // (measured on RV1126B FPV).  qp_max raised to 48 so rate control
+        // can actually compress hard enough to hold the tighter band.
+        set_optional("rc:bps_max", static_cast<RK_S32>(cfg_.bitrate * 5 / 4));
         set_optional("rc:bps_min", static_cast<RK_S32>(cfg_.bitrate / 2));
         set_optional("rc:qp_init", 26);
         set_optional("rc:qp_min", 18);
-        set_optional("rc:qp_max", 40);
+        set_optional("rc:qp_max", 48);
 
         // Codec-specific
         if (cfg_.codec == VideoCodec::H264) {
