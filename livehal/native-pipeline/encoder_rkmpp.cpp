@@ -438,7 +438,13 @@ public:
         next_input_idx_ = 0;
         next_pkt_idx_ = 0;
         reset_requested_ = false;
-        detector_.reset();
+        // Prime the stall baseline at (re)open: a context that never
+        // completes even its first frame is stalled too — without this the
+        // detector waited for a first completion that may never come, and a
+        // dead-after-rebuild encoder wedged the pipeline silently (submit
+        // blocks at admission control with depth pinned at kInputPoolSize).
+        // The reset cooldown survives the rebuild (see StallDetector::prime).
+        detector_.prime(monotonic_now_us());
         last_cooldown_log_us_ = 0;
     }
 

@@ -4,9 +4,12 @@
 //! Semantics (mirrors the original inline logic in encoder_rkmpp.cpp):
 //! an encoder is considered stalled when frames are in flight but no
 //! completion has been observed for `stall_us`, and no reset happened
-//! within the last `cooldown_us`.  All state is owned by one monitor
-//! thread (plus the stall_us/cooldown_us setup performed under the same
-//! mutex the monitor runs under), so no atomics are needed.
+//! within the last `cooldown_us`.  The observation baseline is primed at
+//! every encoder (re)open (prime()), so a freshly rebuilt context that
+//! never completes a single frame is detected exactly like one that
+//! stopped mid-stream.  All state is owned by one monitor thread (plus
+//! the stall_us/cooldown_us setup performed under the same mutex the
+//! monitor runs under), so no atomics are needed.
 
 #pragma once
 
@@ -24,10 +27,14 @@ struct StallDetector {
     uint64_t last_progress_us = 0;    // when the last completion was seen
     uint64_t last_reset_us = 0;       // when the last reset was issued
 
-    void reset() {
+    /// Prime the observation baseline at encoder (re)open: the completion
+    /// counter restarts at zero for the new context and the stall window
+    /// starts now.  last_reset_us is deliberately preserved so the reset
+    /// cooldown survives a rebuild — clearing it would let a repeatedly
+    /// failing hardware path reset-loop with no throttle.
+    void prime(uint64_t now_us) {
         last_completed = 0;
-        last_progress_us = 0;
-        last_reset_us = 0;
+        last_progress_us = now_us;
     }
 
     /// Feed one monitor tick.  Returns true when the completion counter
@@ -42,7 +49,8 @@ struct StallDetector {
     }
 
     /// True when a reset is warranted: no progress for >= stall_us and the
-    /// reset cooldown has elapsed.  No side effects.
+    /// reset cooldown has elapsed.  No side effects.  last_progress_us == 0
+    /// means "never primed" (defensive; open_encoder_() always primes).
     bool due(uint64_t now_us, int64_t in_flight_depth) const {
         if (last_progress_us == 0 || in_flight_depth <= 0) return false;
         if (now_us - last_progress_us < stall_us) return false;

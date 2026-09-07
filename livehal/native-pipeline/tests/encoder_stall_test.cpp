@@ -62,14 +62,28 @@ int main() {
         CHECK(d.stall_duration_us(kB + 5200000) == 200000);
     }
 
-    // --- reset() clears everything ----------------------------------------
+    // --- prime(): a never-completing context is stalled too -----------------
     {
         StallDetector d;
-        d.observe(kB, 9);
-        d.mark_reset(kB + 1);
-        d.reset();
-        CHECK(d.last_completed == 0 && d.last_progress_us == 0);
-        CHECK(!d.due(kB + 99999999, 5));        // no progress baseline
+        d.prime(kB);                            // (re)open: no completion yet
+        CHECK(!d.due(kB + 2999999, 2));
+        CHECK(d.due(kB + 3000000, 2));          // silence since open == stall
+        CHECK(!d.due(kB + 3000000, 0));         // still needs in-flight depth
+        CHECK(d.stall_duration_us(kB + 4200000) == 4200000);
+        CHECK(d.observe(kB + 4000000, 1));      // first completion re-baselines
+        CHECK(d.last_progress_us == kB + 4000000);
+        CHECK(!d.due(kB + 5000000, 2));
+    }
+
+    // --- prime() preserves the reset cooldown across a rebuild --------------
+    {
+        StallDetector d;
+        d.observe(kB, 5);
+        CHECK(d.due(kB + 3000000, 2));
+        d.mark_reset(kB + 3000000);             // stall → reset → rebuild
+        d.prime(kB + 4000000);                  // rebuilt context opens 1 s on
+        CHECK(!d.due(kB + 7000000, 2));         // 3 s silent, but cooling down
+        CHECK(d.due(kB + 8000000, 2));          // 5 s after the reset: due
     }
 
     std::fprintf(stderr, "encoder-stall-test: all checks passed\n");
