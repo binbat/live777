@@ -263,6 +263,18 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   opt out with `strategy.override_publisher = false` (global or per-stream),
   restoring the 409; cascade-pull publishers are never displaced and always
   conflict (409), since their supervisor would reconnect and fight.
+  Source encoder bitrate control (issue #409): with
+  `encoder.adaptive_bitrate = true` an AIMD controller
+  (`stream/source/adaptive_bitrate.rs`) retunes the running encoder from
+  WHEP subscriber RTCP feedback (sampled by
+  `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
+  support (`EncoderBackend::setBitrate` in livehal — rkmpp and v4l2-m2m
+  today). Named quality tiers (`[[stream.<name>.sources.tiers]]`,
+  bitrate-only presets at source level) plus
+  `GET`/`POST`/`DELETE /api/sources/{stream}/bitrate` give manual tier
+  switching; a per-stream `BitrateControl` (created for every native
+  source in `create_bridge`) coordinates manual overrides with the
+  controller — manual sets suspend the AIMD, `DELETE` clears them.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

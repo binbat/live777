@@ -110,6 +110,33 @@ pub struct OutputSpec {
     pub clock_rate: u32,
 }
 
+/// A named quality tier — a bitrate preset the stream can be switched to
+/// through the admin API (`POST /api/sources/{stream}/bitrate`).
+///
+/// Tiers sit at *source* level (sibling of `capture`/`encoder`) because a
+/// tier spans both blocks: `bitrate` retunes the encoder at runtime, while
+/// the reserved `width`/`height`/`fps` fields would also reconfigure the
+/// capture (livehal has no scaler stage — capture size is encoder input
+/// size, and framerate is a capture-side property).  Validation rejects
+/// the reserved fields until the encoder-rebuild path lands; today tiers
+/// are bitrate-only presets.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierSpec {
+    /// Unique tier name within the source, referenced by the admin API.
+    pub name: String,
+    /// Tier bitrate in bits per second; must not exceed `encoder.bitrate`.
+    pub bitrate: u32,
+    /// Reserved: tier capture width (needs the encoder rebuild path).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Reserved: tier capture height (needs the encoder rebuild path).
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Reserved: tier capture framerate (needs the encoder rebuild path).
+    #[serde(default)]
+    pub fps: Option<u32>,
+}
+
 fn default_payload_type() -> u8 {
     96
 }
@@ -133,6 +160,11 @@ pub struct SourceSpec {
     /// RTP output parameters.
     #[serde(default)]
     pub output: OutputSpec,
+    /// Optional named quality tiers (bitrate presets; resolution/framerate
+    /// tiers reserved).  See [`TierSpec`] for why this lives at source
+    /// level rather than inside the encoder block.
+    #[serde(default)]
+    pub tiers: Vec<TierSpec>,
 }
 
 impl Default for OutputSpec {
@@ -247,6 +279,34 @@ impl SourceSpec {
             && min > self.encoder.bitrate
         {
             anyhow::bail!("encoder.min_bitrate must not exceed encoder.bitrate");
+        }
+
+        let mut tier_names = std::collections::HashSet::new();
+        for tier in &self.tiers {
+            if tier.name.trim().is_empty() {
+                anyhow::bail!("tiers.name cannot be empty");
+            }
+            if !tier_names.insert(tier.name.as_str()) {
+                anyhow::bail!("duplicate tier name '{}'", tier.name);
+            }
+            if tier.bitrate == 0 {
+                anyhow::bail!("tier '{}': bitrate must be non-zero", tier.name);
+            }
+            if tier.bitrate > self.encoder.bitrate {
+                anyhow::bail!(
+                    "tier '{}': bitrate {} exceeds encoder.bitrate {} (the ceiling)",
+                    tier.name,
+                    tier.bitrate,
+                    self.encoder.bitrate
+                );
+            }
+            if tier.width.is_some() || tier.height.is_some() || tier.fps.is_some() {
+                anyhow::bail!(
+                    "tier '{}': width/height/fps tiers need the encoder rebuild path, \
+                     which is not supported yet; use bitrate-only tiers",
+                    tier.name
+                );
+            }
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
@@ -604,6 +664,7 @@ mod tests {
                 min_bitrate: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -632,6 +693,7 @@ mod tests {
                 min_bitrate: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -660,6 +722,7 @@ mod tests {
                 min_bitrate: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -688,6 +751,7 @@ mod tests {
                 min_bitrate: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -736,6 +800,63 @@ mod tests {
     fn test_source_spec_rejects_mjpeg() {
         let mut spec = v4l2_spec();
         spec.capture.pixel_format = "mjpeg".into();
+        assert!(spec.validate().is_err());
+    }
+
+    // --- tier validation tests ---
+
+    fn tier(name: &str, bitrate: u32) -> TierSpec {
+        TierSpec {
+            name: name.into(),
+            bitrate,
+            width: None,
+            height: None,
+            fps: None,
+        }
+    }
+
+    #[test]
+    fn test_tiers_valid() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("mid", 2_000_000)];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_empty_name_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("  ", 600_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_duplicate_name_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("low", 800_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_zero_bitrate_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 0)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_above_ceiling_rejected() {
+        let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
+        spec.tiers = vec![tier("ultra", 5_000_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_resolution_fields_rejected_for_now() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.width = Some(1280);
+        t.height = Some(720);
+        spec.tiers = vec![t];
         assert!(spec.validate().is_err());
     }
 

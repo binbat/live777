@@ -172,9 +172,47 @@ Semantics: loss above 5 % for two consecutive windows cuts the bitrate by
 several subscribers the worst link wins — the shared encoder is lowered for
 everyone, so a single weak subscriber penalizes the whole stream (simulcast
 would be the real fix).  Subscribers younger than 5 s are ignored while
-their decoder primes.  Runtime retuning currently works on the `rkmpp`
-backend only; other backends log a warning and the controller disables
-itself.
+their decoder primes.  Runtime retuning currently works on the `rkmpp` and
+`v4l2-m2m` backends; other backends log a warning and the controller
+disables itself.
+
+### Manual bitrate override & quality tiers
+
+`POST /api/sources/:streamId/bitrate` retunes the encoder by hand at any
+time (see the [HTTP API guide](./live777-api.md#get-source-bitrate-state)).
+On an adaptive stream the controller suspends in favour of the manual
+value until `DELETE /api/sources/:streamId/bitrate` clears the override;
+on a fixed-bitrate source the manual value holds until the next `POST` or
+a source restart.  `GET` on the same path reports the drive mode
+(`adaptive` / `manual` / `fixed`), the current bitrate, and the
+configured tiers.
+
+Named quality tiers can be declared at *source* level:
+
+```toml
+[stream.pi-cam.sources.encoder]
+bitrate = 4_000_000        # ceiling
+adaptive_bitrate = true
+# min_bitrate defaults to the lowest tier when tiers are declared
+
+[[stream.pi-cam.sources.tiers]]
+name = "low"
+bitrate = 600_000
+
+[[stream.pi-cam.sources.tiers]]
+name = "mid"
+bitrate = 2_000_000
+```
+
+A tier is then one request away: `POST {"tier": "mid"}`.  Tiers sit next
+to `capture`/`encoder` (not inside the encoder block) because a quality
+tier spans both blocks: `bitrate` retunes the encoder at runtime, while a
+resolution tier would also reconfigure the capture (livehal has no scaler
+stage — capture size is encoder input size — and framerate is a
+capture-side property).  Reserved per-tier `width`/`height`/`fps` fields
+exist in the schema for that future but are rejected by validation until
+the encoder-rebuild path lands; today tiers are bitrate-only presets, and
+must not exceed `encoder.bitrate`.
 
 ### Backend naming
 

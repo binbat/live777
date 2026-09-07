@@ -81,6 +81,7 @@ pub struct NativeEncodedSource {
     stream_id: String,
     params: livehal::NativeSourceParams,
     adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
+    tiers: Vec<super::adaptive_bitrate::BitrateTier>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -104,6 +105,7 @@ impl NativeEncodedSource {
         stream_id: String,
         params: livehal::NativeSourceParams,
         adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
+        tiers: Vec<super::adaptive_bitrate::BitrateTier>,
     ) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
@@ -112,6 +114,7 @@ impl NativeEncodedSource {
             stream_id,
             params,
             adaptive,
+            tiers,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
@@ -428,6 +431,16 @@ impl NativeEncodedSource {
         &self,
     ) -> Option<super::adaptive_bitrate::AdaptiveBitrateConfig> {
         self.adaptive
+    }
+
+    /// The configured (ceiling) bitrate of the encoder.
+    pub fn configured_bitrate(&self) -> u32 {
+        self.params.bitrate
+    }
+
+    /// Named bitrate presets (quality tiers) from the source config.
+    pub fn bitrate_tiers(&self) -> Vec<super::adaptive_bitrate::BitrateTier> {
+        self.tiers.clone()
     }
 
     /// Retune the running encoder (adaptive bitrate control, issue #409).

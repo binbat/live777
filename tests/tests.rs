@@ -168,6 +168,57 @@ async fn test_liveion_stream_create() {
     assert_eq!(1, body.len());
 }
 
+#[cfg(feature = "source")]
+#[tokio::test]
+async fn test_liveion_source_bitrate_api() {
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/sources/webcam/bitrate");
+
+    // Malformed requests are rejected before any source lookup: bitrate =
+    // 0, both fields set, neither field set.
+    for body in [
+        serde_json::json!({ "bitrate": 0 }),
+        serde_json::json!({ "bitrate": 1_000_000, "tier": "low" }),
+        serde_json::json!({}),
+    ] {
+        let res = client.post(&url).json(&body).send().await.unwrap();
+        assert_eq!(http::StatusCode::BAD_REQUEST, res.status(), "body: {body}");
+    }
+
+    // No source registered for the stream: state query, manual set (raw
+    // and by tier), and override clear all report 404.
+    let res = client.get(&url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({ "bitrate": 1_000_000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({ "tier": "low" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client.delete(&url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+}
+
 #[cfg(feature = "rsmpeg")]
 #[tokio::test]
 async fn test_livetwo_whipinto_synth_input() {

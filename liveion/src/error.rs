@@ -14,6 +14,16 @@ pub enum AppError {
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     StreamSourceActive(String),
     SessionNotFound(String),
+    /// No media source is registered for the requested stream.
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    SourceNotFound(String),
+    /// The stream's encoder rejected a runtime bitrate change (fixed-bitrate
+    /// backend or pipeline not running).
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    SourceBitrateUnsupported(String),
+    /// The request itself is malformed (semantically); maps to 400.
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    BadRequest(String),
     Throw(String),
     InternalServerError(anyhow::Error),
 }
@@ -48,6 +58,30 @@ impl AppError {
         AppError::StreamSourceActive(t.to_string())
     }
 
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    pub fn source_not_found<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::SourceNotFound(t.to_string())
+    }
+
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    pub fn source_bitrate_unsupported<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::SourceBitrateUnsupported(t.to_string())
+    }
+
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    pub fn bad_request<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::BadRequest(t.to_string())
+    }
+
     pub fn throw<T>(t: T) -> Self
     where
         T: ToString,
@@ -64,6 +98,9 @@ impl IntoResponse for AppError {
             AppError::StreamProvisioned(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::StreamSourceActive(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
+            AppError::SourceNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
+            AppError::SourceBitrateUnsupported(err) => (StatusCode::CONFLICT, err).into_response(),
+            AppError::BadRequest(err) => (StatusCode::BAD_REQUEST, err).into_response(),
             AppError::InternalServerError(err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
             }

@@ -67,6 +67,7 @@ public:
     bool init(const EncoderConfig& cfg, std::string* err) override;
     bool submit(const RawFrame& frame, std::string* err) override;
     void requestKeyframe() override;
+    bool setBitrate(uint32_t bps) override;
     void stop() override;
     bool isRunning() const override;
     void setCallback(EncodedPacketCallback cb) override;
@@ -536,6 +537,25 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
 
 void V4l2M2mEncoder::requestKeyframe() {
     force_idr.store(true);
+}
+
+// Runtime bitrate retune (adaptive bitrate control, issue #409): the
+// MPEG_VIDEO_BITRATE control may be set at any point after streaming
+// starts; the driver applies it to subsequently encoded frames.
+bool V4l2M2mEncoder::setBitrate(uint32_t bps) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (fd < 0 || !running_.load()) return false;
+
+    struct v4l2_control ctrl = {};
+    ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE;
+    ctrl.value = static_cast<int>(bps);
+    if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+        fprintf(stderr, "[V4l2M2mEncoder] setBitrate(%u) failed: %s\n", bps, strerror(errno));
+        return false;
+    }
+    bitrate = bps;
+    fprintf(stderr, "[V4l2M2mEncoder] bitrate -> %u bps\n", bps);
+    return true;
 }
 
 void V4l2M2mEncoder::stop() {

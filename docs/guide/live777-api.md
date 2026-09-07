@@ -216,6 +216,85 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Source
+
+### Get Source Bitrate State
+
+`GET` `/api/sources/:streamId/bitrate`
+
+Reports how the bitrate of the stream's configured media source (native
+capture/encoder sources only — see the [livehal guide](./livehal.md)) is
+currently driven.
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "mode": "adaptive",
+  "bitrate": 2000000,
+  "manual_bitrate": null,
+  "active_tier": null,
+  "adaptive": true,
+  "tiers": [ { "name": "low", "bitrate": 600000 }, { "name": "mid", "bitrate": 2000000 } ]
+}
+```
+
+- `mode`: `adaptive` (AIMD controller), `manual` (override holds), or
+  `fixed` (configured value).
+- `bitrate`: current encoder bitrate (`null` for non-native sources).
+- `manual_bitrate`: the active manual override, if any.
+- `active_tier`: the tier whose bitrate equals the manual override, if any.
+- `tiers`: the quality tiers configured on the source.
+
+Returns [404] when the stream has no source.
+
+### Set Source Encoder Bitrate
+
+`POST` `/api/sources/:streamId/bitrate`
+
+Manually retunes the stream source's encoder bitrate. Takes effect
+immediately. Exactly one of `bitrate` / `tier` must be set:
+
+```json
+{ "bitrate": 1500000 }
+{ "tier": "mid" }
+```
+
+Response: [200]
+
+```json
+{ "stream_id": "pi-cam", "bitrate": 1500000, "tier": "mid", "adaptive_suspended": true }
+```
+
+- [400] `bitrate` is zero, both fields are set, neither is set, or the
+  named tier is not defined for the stream.
+- [404] the stream has no source.
+- [409] the source's encoder backend cannot retune at runtime (or the
+  source is not running).
+
+On a stream with `adaptive_bitrate = true` the AIMD controller suspends in
+favour of the manual value (`adaptive_suspended: true`); a `DELETE` on the
+same path clears the override. On a fixed-bitrate source the manual value
+simply holds until the next `POST` or a source restart.
+
+### Clear Manual Bitrate Override
+
+`DELETE` `/api/sources/:streamId/bitrate`
+
+Clears a manual override. The adaptive (AIMD) controller, when enabled,
+resumes from the held value; a fixed-bitrate source simply drops the
+override marker.
+
+Response: [200]
+
+```json
+{ "message": "Manual override cleared, adaptive bitrate control resumed", "stream_id": "pi-cam", "bitrate": 1500000, "mode": "adaptive" }
+```
+
+`bitrate` is the value the controller resumes from. Returns [404] when the
+stream has no bitrate state (no source, or a non-native source).
+
 ## Recorder
 
 ### Start Recording a Stream

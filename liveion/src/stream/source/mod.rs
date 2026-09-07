@@ -277,6 +277,20 @@ pub trait StreamSource: Send + Sync {
     async fn set_bitrate(&self, _bps: u32) -> bool {
         false
     }
+
+    /// The bitrate the encoder was configured with (native sources only).
+    /// Used to seed the per-stream bitrate state for the admin API.
+    #[cfg(feature = "source")]
+    fn configured_bitrate(&self) -> Option<u32> {
+        None
+    }
+
+    /// Named bitrate presets (quality tiers) configured on the source
+    /// (native sources only).  Empty when the source defines no tiers.
+    #[cfg(feature = "source")]
+    fn bitrate_tiers(&self) -> Vec<adaptive_bitrate::BitrateTier> {
+        Vec::new()
+    }
 }
 
 /// Server-wide WebRTC network settings handed to sources that dial out to

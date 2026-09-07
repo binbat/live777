@@ -21,12 +21,83 @@ pub const DEFAULT_BRIDGE_CODEC_WAIT: Duration = Duration::from_secs(6);
 #[cfg(feature = "source")]
 pub const DEFAULT_BRIDGE_RTCP_WAIT: Duration = Duration::from_secs(2);
 
+/// Outcome of a manual bitrate request (admin API).
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetBitrateOutcome {
+    /// The encoder accepted the new bitrate.  `adaptive_suspended` is true
+    /// when the stream's adaptive controller went into manual mode.
+    Applied { adaptive_suspended: bool },
+    /// No source is registered for the stream.
+    SourceNotFound,
+    /// The source's encoder backend cannot retune at runtime (or the
+    /// pipeline is not running).
+    Unsupported,
+}
+
+/// Outcome of resolving a configured tier name (admin API).
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TierResolution {
+    Resolved(u32),
+    SourceNotFound,
+    TierNotFound,
+}
+
+/// How the stream source's encoder bitrate is currently driven.
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitrateMode {
+    /// The AIMD controller drives the encoder from subscriber feedback.
+    Adaptive,
+    /// A manual override (admin API) holds the encoder at a fixed value;
+    /// the adaptive controller, when present, is suspended.
+    Manual,
+    /// No adaptive controller and no manual override — the encoder runs at
+    /// its configured bitrate.
+    Fixed,
+}
+
+impl BitrateMode {
+    #[cfg(feature = "source")]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BitrateMode::Adaptive => "adaptive",
+            BitrateMode::Manual => "manual",
+            BitrateMode::Fixed => "fixed",
+        }
+    }
+}
+
+/// Snapshot of a stream source's bitrate state (admin API).
+#[cfg(feature = "source")]
+#[derive(Debug, Clone)]
+pub struct SourceBitrateInfo {
+    pub mode: BitrateMode,
+    /// Current encoder bitrate (configured value until something retunes
+    /// it).  `None` when the stream has no bitrate state.
+    pub current: Option<u32>,
+    /// Active manual override bitrate.
+    pub manual: Option<u32>,
+    /// The tier whose bitrate equals the manual override, if any.
+    pub active_tier: Option<String>,
+    /// Whether the source opted into adaptive bitrate.
+    pub adaptive: bool,
+    /// Configured quality tiers (empty when the source defines none).
+    pub tiers: Vec<super::adaptive_bitrate::BitrateTier>,
+}
+
 #[derive(Clone)]
 pub struct SourceManager {
     pub(crate) sources: SourceMap,
 
     #[cfg(feature = "source")]
     bridges: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SourceBridge>>>>>,
+
+    /// Per-stream manual/auto bitrate coordination, one entry per adaptive
+    /// controller (created in `create_bridge`, dropped with the bridge).
+    #[cfg(feature = "source")]
+    bitrate_controls: Arc<RwLock<HashMap<String, Arc<super::adaptive_bitrate::BitrateControl>>>>,
 }
 
 impl SourceManager {
@@ -35,6 +106,8 @@ impl SourceManager {
             sources: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "source")]
             bridges: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "source")]
+            bitrate_controls: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -65,6 +138,7 @@ impl SourceManager {
                     warn!("Failed to stop bridge for {}: {}", stream_id, e);
                 }
             }
+            self.bitrate_controls.write().await.remove(stream_id);
         }
 
         let mut sources = self.sources.write().await;
@@ -292,20 +366,37 @@ impl SourceManager {
         bridges.insert(stream_id.to_string(), bridge_arc.clone());
         drop(bridges);
 
-        // Adaptive bitrate controller (issue #409): only when the source
-        // opted in via `encoder.adaptive_bitrate` and its backend supports
-        // runtime retuning.  The task exits when the bridge is dropped.
+        // Per-stream bitrate state (issue #409): created for every source
+        // with a known encoder bitrate so the admin API can report and
+        // override it.  The adaptive controller additionally spawns when
+        // the source opted in via `encoder.adaptive_bitrate` and its
+        // backend supports runtime retuning; it exits when the bridge is
+        // dropped.
         {
             let source_guard = source.lock().await;
             let adaptive_cfg = source_guard.adaptive_bitrate_config();
+            let configured = source_guard.configured_bitrate();
             drop(source_guard);
-            if let Some(cfg) = adaptive_cfg {
+
+            let control = if let Some(target) = configured {
+                let control = Arc::new(super::adaptive_bitrate::BitrateControl::new(target));
+                self.bitrate_controls
+                    .write()
+                    .await
+                    .insert(stream_id.to_string(), control.clone());
+                Some(control)
+            } else {
+                None
+            };
+
+            if let (Some(cfg), Some(control)) = (adaptive_cfg, control) {
                 super::adaptive_bitrate::spawn(
                     stream_id.to_string(),
                     forward,
                     source.clone(),
                     Arc::downgrade(&bridge_arc),
                     cfg,
+                    control,
                 );
             }
         }
@@ -327,6 +418,112 @@ impl SourceManager {
         false
     }
 
+    /// Apply a manual bitrate override to a stream's source encoder (admin
+    /// API, issue #409).  A stream with an adaptive controller goes into
+    /// manual mode — the controller suspends until
+    /// [`SourceManager::resume_adaptive_bitrate`].
+    #[cfg(feature = "source")]
+    pub async fn set_source_bitrate(&self, stream_id: &str, bps: u32) -> SetBitrateOutcome {
+        let source = {
+            let sources = self.sources.read().await;
+            sources.get(stream_id).cloned()
+        };
+        let Some(source) = source else {
+            return SetBitrateOutcome::SourceNotFound;
+        };
+
+        if !source.lock().await.set_bitrate(bps).await {
+            return SetBitrateOutcome::Unsupported;
+        }
+
+        let adaptive_suspended =
+            if let Some(control) = self.bitrate_controls.read().await.get(stream_id) {
+                control.set_manual(bps);
+                true
+            } else {
+                false
+            };
+        SetBitrateOutcome::Applied { adaptive_suspended }
+    }
+
+    /// Clear a manual bitrate override, returning the bitrate afterwards
+    /// and whether the source has an adaptive controller (which then
+    /// resumes from that value).  `None` when the stream has no bitrate
+    /// state at all (no source, or a non-native source).
+    #[cfg(feature = "source")]
+    pub async fn clear_manual_bitrate(&self, stream_id: &str) -> Option<(u32, bool)> {
+        let control = self.bitrate_controls.read().await.get(stream_id).cloned();
+        let control = control?;
+        control.clear_manual();
+
+        let source = {
+            let sources = self.sources.read().await;
+            sources.get(stream_id).cloned()
+        };
+        let adaptive = match source {
+            Some(source) => source.lock().await.adaptive_bitrate_config().is_some(),
+            None => false,
+        };
+        Some((control.current(), adaptive))
+    }
+
+    /// Resolve a configured tier name to its bitrate for a stream's source.
+    #[cfg(feature = "source")]
+    pub async fn resolve_bitrate_tier(&self, stream_id: &str, tier: &str) -> TierResolution {
+        let source = {
+            let sources = self.sources.read().await;
+            sources.get(stream_id).cloned()
+        };
+        let Some(source) = source else {
+            return TierResolution::SourceNotFound;
+        };
+        let tiers = source.lock().await.bitrate_tiers();
+        match tiers.iter().find(|t| t.name == tier) {
+            Some(t) => TierResolution::Resolved(t.bitrate),
+            None => TierResolution::TierNotFound,
+        }
+    }
+
+    /// Snapshot of a stream source's bitrate state for the admin API.
+    #[cfg(feature = "source")]
+    pub async fn source_bitrate_info(&self, stream_id: &str) -> Option<SourceBitrateInfo> {
+        let source = {
+            let sources = self.sources.read().await;
+            sources.get(stream_id).cloned()
+        }?;
+        let (tiers, adaptive) = {
+            let source_guard = source.lock().await;
+            (
+                source_guard.bitrate_tiers(),
+                source_guard.adaptive_bitrate_config().is_some(),
+            )
+        };
+
+        let control = self.bitrate_controls.read().await.get(stream_id).cloned();
+        let manual = control.as_ref().and_then(|c| c.manual());
+        let current = control.as_ref().map(|c| c.current());
+        let active_tier = manual.and_then(|m| {
+            tiers
+                .iter()
+                .find(|t| t.bitrate == m)
+                .map(|t| t.name.clone())
+        });
+        let mode = match (adaptive, manual) {
+            (true, None) => BitrateMode::Adaptive,
+            (_, Some(_)) => BitrateMode::Manual,
+            _ => BitrateMode::Fixed,
+        };
+
+        Some(SourceBitrateInfo {
+            mode,
+            current,
+            manual,
+            active_tier,
+            adaptive,
+            tiers,
+        })
+    }
+
     pub async fn stop_all(&self) -> Result<()> {
         info!("Stopping all sources");
 
@@ -339,6 +536,7 @@ impl SourceManager {
                     error!("Failed to stop bridge {}: {}", stream_id, e);
                 }
             }
+            self.bitrate_controls.write().await.clear();
         }
 
         let mut sources = self.sources.write().await;
@@ -374,6 +572,8 @@ mod tests {
         rtp_tx: broadcast::Sender<MediaPacket>,
         state_tx: broadcast::Sender<StateChangeEvent>,
         started: bool,
+        #[cfg(feature = "source")]
+        tiers: Vec<super::super::adaptive_bitrate::BitrateTier>,
     }
 
     impl MockSource {
@@ -386,6 +586,8 @@ mod tests {
                 rtp_tx,
                 state_tx,
                 started: false,
+                #[cfg(feature = "source")]
+                tiers: Vec::new(),
             }
         }
     }
@@ -419,6 +621,11 @@ mod tests {
         fn subscribe_state(&self) -> broadcast::Receiver<StateChangeEvent> {
             self.state_tx.subscribe()
         }
+
+        #[cfg(feature = "source")]
+        fn bitrate_tiers(&self) -> Vec<super::super::adaptive_bitrate::BitrateTier> {
+            self.tiers.clone()
+        }
     }
 
     #[tokio::test]
@@ -451,5 +658,63 @@ mod tests {
 
         let sources = manager.list_sources().await;
         assert!(sources.is_empty());
+    }
+
+    #[cfg(feature = "source")]
+    fn tiered_mock(id: &str) -> MockSource {
+        let mut source = MockSource::new(id);
+        source.tiers = vec![
+            super::super::adaptive_bitrate::BitrateTier {
+                name: "low".into(),
+                bitrate: 600_000,
+            },
+            super::super::adaptive_bitrate::BitrateTier {
+                name: "mid".into(),
+                bitrate: 2_000_000,
+            },
+        ];
+        source
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn resolve_bitrate_tier_matches_configured_names() {
+        let manager = SourceManager::new();
+        manager
+            .add_source(Box::new(tiered_mock("cam")))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager.resolve_bitrate_tier("cam", "mid").await,
+            super::TierResolution::Resolved(2_000_000)
+        );
+        assert_eq!(
+            manager.resolve_bitrate_tier("cam", "high").await,
+            super::TierResolution::TierNotFound
+        );
+        assert_eq!(
+            manager.resolve_bitrate_tier("other", "mid").await,
+            super::TierResolution::SourceNotFound
+        );
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn source_bitrate_info_reports_fixed_mode_without_control() {
+        let manager = SourceManager::new();
+        manager
+            .add_source(Box::new(tiered_mock("cam")))
+            .await
+            .unwrap();
+
+        let info = manager.source_bitrate_info("cam").await.unwrap();
+        assert_eq!(info.mode, super::BitrateMode::Fixed);
+        assert_eq!(info.tiers.len(), 2);
+        assert!(info.manual.is_none());
+        assert!(info.active_tier.is_none());
+        // MockSource has no configured bitrate: no control, no current.
+        assert!(info.current.is_none());
+        assert!(manager.source_bitrate_info("other").await.is_none());
     }
 }

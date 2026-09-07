@@ -26,14 +26,26 @@ impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
         let native_params = spec.to_native_params()?;
+        let tiers: Vec<super::adaptive_bitrate::BitrateTier> = spec
+            .tiers
+            .iter()
+            .map(|t| super::adaptive_bitrate::BitrateTier {
+                name: t.name.clone(),
+                bitrate: t.bitrate,
+            })
+            .collect();
         let adaptive = spec.encoder.adaptive_bitrate.then(|| {
-            super::adaptive_bitrate::AdaptiveBitrateConfig::new(
-                spec.encoder.bitrate,
-                spec.encoder.min_bitrate,
-            )
+            // Explicit min_bitrate wins; with tiers configured the AIMD
+            // floor defaults to the lowest tier instead of the generic
+            // max(target / 8, 300 kbps).
+            let min = spec
+                .encoder
+                .min_bitrate
+                .or_else(|| tiers.iter().map(|t| t.bitrate).min());
+            super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, min)
         });
         Ok(Self {
-            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params, adaptive),
+            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params, adaptive, tiers),
         })
     }
 }
@@ -88,5 +100,15 @@ impl StreamSource for NativeSource {
     #[cfg(feature = "source")]
     async fn set_bitrate(&self, bps: u32) -> bool {
         self.inner.set_bitrate(bps)
+    }
+
+    #[cfg(feature = "source")]
+    fn configured_bitrate(&self) -> Option<u32> {
+        Some(self.inner.configured_bitrate())
+    }
+
+    #[cfg(feature = "source")]
+    fn bitrate_tiers(&self) -> Vec<super::adaptive_bitrate::BitrateTier> {
+        self.inner.bitrate_tiers()
     }
 }
