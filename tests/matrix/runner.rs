@@ -632,6 +632,8 @@ where
                 encoder: None,
                 #[cfg(feature = "native-source")]
                 output: Default::default(),
+                #[cfg(feature = "native-source")]
+                tiers: vec![],
             }],
             ..Default::default()
         },

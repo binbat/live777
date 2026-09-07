@@ -111,9 +111,22 @@ ice_udp_addrs = ["auto"]
 # profile = "baseline"        # or a 6-digit hex profile-level-id like "42001f"
 # level = "3.1"               # required when profile is a name
 # gop = 60
+# adaptive_bitrate = true     # AIMD: lower the running encoder while WHEP
+#                             # subscribers report congestion (rkmpp/v4l2-m2m)
+# min_bitrate = 300000        # AIMD floor (default: lowest tier, else
+#                             # max(bitrate / 8, 300000))
 # [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
+#
+# Named quality tiers (bitrate presets), switchable at runtime via
+# POST /api/sources/pi-cam/bitrate {"tier": "mid"} or the WebUI:
+# [[stream.pi-cam.sources.tiers]]
+# name = "low"
+# bitrate = 300000
+# [[stream.pi-cam.sources.tiers]]
+# name = "mid"
+# bitrate = 600000
 #
 # Raspberry Pi USB camera:
 #   cargo build --bin live777 --release --no-default-features --features native-rpi,webui

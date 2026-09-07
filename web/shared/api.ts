@@ -146,6 +146,53 @@ export async function stopRecording(streamId: string): Promise<boolean> {
     return true;
 }
 
+const sourceBitrateUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/bitrate`;
+
+export type SourceBitrateMode = 'adaptive' | 'manual' | 'fixed';
+
+export interface SourceBitrateTier {
+    name: string;
+    bitrate: number;
+}
+
+export interface SourceBitrateStatus {
+    stream_id: string;
+    mode: SourceBitrateMode;
+    bitrate: number | null;
+    manual_bitrate: number | null;
+    active_tier: string | null;
+    adaptive: boolean;
+    tiers: SourceBitrateTier[];
+}
+
+export type SetSourceBitrateRequest = { tier: string } | { bitrate: number };
+
+export interface SetSourceBitrateResult {
+    stream_id: string;
+    bitrate: number;
+    tier: string | null;
+    adaptive_suspended: boolean;
+}
+
+export interface ClearSourceBitrateResult {
+    message: string;
+    stream_id: string;
+    bitrate: number;
+    mode: 'adaptive' | 'fixed';
+}
+
+export function getSourceBitrate(streamId: string) {
+    return w.url(sourceBitrateUrl(streamId)).get().json<SourceBitrateStatus>();
+}
+
+export function setSourceBitrate(streamId: string, params: SetSourceBitrateRequest) {
+    return w.url(sourceBitrateUrl(streamId)).post(params).json<SetSourceBitrateResult>();
+}
+
+export function clearSourceBitrate(streamId: string) {
+    return w.url(sourceBitrateUrl(streamId)).delete().json<ClearSourceBitrateResult>();
+}
+
 export interface ServerInfo {
     version: string;
     gitHash: string;

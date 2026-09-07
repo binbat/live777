@@ -48,6 +48,7 @@ import { useStreamSSE } from "../hooks/use-stream-sse";
 import { useToken } from "../context";
 
 import ClientsDialog, { type IClientsDialog } from "./dialog-clients.vue";
+import BitrateDialog, { type IBitrateDialog } from "./dialog-bitrate.vue";
 import CascadeDialog, { type ICascadeDialog } from "./dialog-cascade.vue";
 import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
@@ -145,6 +146,7 @@ const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
 const cascadePushDialog = useTemplateRef<ICascadeDialog>("cascadePushDialog");
 const clientsDialog = useTemplateRef<IClientsDialog>("clientsDialog");
+const bitrateDialog = useTemplateRef<IBitrateDialog>("bitrateDialog");
 const newStreamDialog = useTemplateRef<INewStreamDialog>("newStreamDialog");
 const webStreams = ref<string[]>([]);
 const newStreamId = ref("");
@@ -253,6 +255,10 @@ const selectedStreamSessions = computed(
 const handleViewClients = (id: string) => {
     selectedStreamId.value = id;
     clientsDialog.value?.show();
+};
+
+const handleViewBitrate = (id: string) => {
+    bitrateDialog.value?.show(id);
 };
 
 const handleCascadePullStream = () => {
@@ -509,6 +515,7 @@ const handleCancelStop = () => {
                             @click="handlePreview(i.id)"
                         >Preview</button>
                         <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
+                        <button class="btn btn-sm" @click="handleViewBitrate(i.id)">Bitrate</button>
                         <button v-if="showCascade" class="btn btn-sm" @click="handleCascadePushStream(i.id)">Cascade Push</button>
                         <button v-if="features.player" class="btn btn-sm" @click="handleOpenPlayerPage(i.id)">Player</button>
                         <button v-if="features.debugger" class="btn btn-sm" @click="handleOpenDebuggerPage(i.id)">Debugger</button>
@@ -600,6 +607,8 @@ const handleCancelStop = () => {
         :sessions="selectedStreamSessions"
         @client-kicked="updateData"
     />
+
+    <BitrateDialog ref="bitrateDialog" />
 
     <template v-if="showCascade">
         <CascadeDialog ref="cascadePullDialog" mode="pull" />

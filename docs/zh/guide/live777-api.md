@@ -214,6 +214,81 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## 媒体源
+
+### 查询源码率状态
+
+`GET` `/api/sources/:streamId/bitrate`
+
+查询该流配置的媒体源（仅限原生采集/编码源，见
+[livehal 指南](./livehal.md)）码率当前的驱动方式。
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "mode": "adaptive",
+  "bitrate": 2000000,
+  "manual_bitrate": null,
+  "active_tier": null,
+  "adaptive": true,
+  "tiers": [ { "name": "low", "bitrate": 600000 }, { "name": "mid", "bitrate": 2000000 } ]
+}
+```
+
+- `mode`: `adaptive`（AIMD 控制器驱动）、`manual`（手动覆盖生效中）、
+  `fixed`（按配置值运行）。
+- `bitrate`: 当前编码器码率（非原生源为 `null`）。
+- `manual_bitrate`: 生效中的手动覆盖值。
+- `active_tier`: 手动值恰好等于某档时的档名。
+- `tiers`: 源上配置的质量档位。
+
+该流没有媒体源时返回 [404]。
+
+### 手动设置源编码器码率
+
+`POST` `/api/sources/:streamId/bitrate`
+
+手动调整该流媒体源的编码器码率，立即生效。`bitrate` 和 `tier`
+两个字段必须且只能传一个：
+
+```json
+{ "bitrate": 1500000 }
+{ "tier": "mid" }
+```
+
+Response: [200]
+
+```json
+{ "stream_id": "pi-cam", "bitrate": 1500000, "tier": "mid", "adaptive_suspended": true }
+```
+
+- [400] `bitrate` 为 0、两个字段都传或都不传、档位名不存在。
+- [404] 该流没有媒体源。
+- [409] 该源的编码器后端不支持运行时调整码率（或源未在运行）。
+
+在开启了 `adaptive_bitrate = true` 的流上，AIMD 控制器会让位于手动
+设置的值（`adaptive_suspended: true`）；对同一路径发起 `DELETE`
+即可清除覆盖。对于固定码率的源，手动值会一直保持到下一次 `POST`
+或源重启。
+
+### 清除手动码率覆盖
+
+`DELETE` `/api/sources/:streamId/bitrate`
+
+清除手动覆盖。自适应（AIMD）控制器（如已开启）从当前值恢复调节；
+固定码率的源只是去掉手动标记。
+
+Response: [200]
+
+```json
+{ "message": "Manual override cleared, adaptive bitrate control resumed", "stream_id": "pi-cam", "bitrate": 1500000, "mode": "adaptive" }
+```
+
+`bitrate` 是控制器恢复时采用的基准码率。当该流没有码率状态（没有
+媒体源，或非原生源）时返回 [404]。
+
 ## 录制
 
 ### 开始录制流

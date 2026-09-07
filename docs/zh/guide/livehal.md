@@ -158,8 +158,42 @@ min_bitrate = 500_000      # 下限(默认:max(bitrate / 8, 300_000))
 语义:丢包连续两个窗口超过 5% 就把码率降 15%;持续 10 秒无丢包则回升目标
 码率的 5%。多个订阅者时按最差链路决定 —— 共享编码器会被一起拉低,单个弱网
 订阅者会拖累整条流(根本解法是 simulcast)。加入不到 5 秒的订阅者不纳入
-统计(解码器启动期的丢包属正常)。运行时调码率目前仅 `rkmpp` 后端支持;其他
-后端会打印警告并自动停用控制器。
+统计(解码器启动期的丢包属正常)。运行时调码率目前支持 `rkmpp` 和
+`v4l2-m2m` 后端;其他后端会打印警告并自动停用控制器。
+
+### 手动切换码率与质量档位
+
+`POST /api/sources/:streamId/bitrate` 可随时手动调整编码器码率(见
+[HTTP API 文档](./live777-api.md))。在自适应流上,控制器会让位于手动值,
+直到 `DELETE /api/sources/:streamId/bitrate` 清除覆盖;在固定码率的
+源上,手动值会一直保持到下一次 `POST` 或源重启。对同一路径发起
+`GET` 可以查询驱动方式(`adaptive` / `manual` / `fixed`)、当前码率和
+已配置的档位。
+
+可以在*源*层级声明命名质量档位:
+
+```toml
+[stream.pi-cam.sources.encoder]
+bitrate = 4_000_000        # 上限
+adaptive_bitrate = true
+# 声明了档位时,min_bitrate 默认取最低档
+
+[[stream.pi-cam.sources.tiers]]
+name = "low"
+bitrate = 600_000
+
+[[stream.pi-cam.sources.tiers]]
+name = "mid"
+bitrate = 2_000_000
+```
+
+声明之后一次请求即可切档:`POST {"tier": "mid"}`。档位放在
+`capture`/`encoder` 同级(而不是 encoder 块内),因为一个质量档位横跨
+两个块:`bitrate` 运行时调编码器,而分辨率档位还要改采集配置(livehal
+没有 scaler 环节 —— 采集尺寸就是编码器输入尺寸,帧率也是采集侧属性)。
+schema 里预留了档位级 `width`/`height`/`fps` 字段,但在编码器重建路径
+落地前会被校验拒绝;目前档位只是纯码率预设,且不能超过
+`encoder.bitrate`。
 
 ### 后端命名
 

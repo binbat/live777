@@ -22,6 +22,7 @@
 //!   debounce/recovery clocks reset so a (re)joining subscriber does not
 //!   inherit stale state.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -57,6 +58,15 @@ pub struct AdaptiveBitrateConfig {
     pub min: u32,
 }
 
+/// A named bitrate preset (quality tier) from the source config, switchable
+/// through the admin API.  Bitrate-only today; resolution/framerate tiers
+/// are reserved in the config schema for the encoder-rebuild path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitrateTier {
+    pub name: String,
+    pub bitrate: u32,
+}
+
 impl AdaptiveBitrateConfig {
     /// `min` defaults to `max(target / 8, 300 kbps)` and never exceeds the
     /// target.
@@ -70,6 +80,57 @@ impl AdaptiveBitrateConfig {
 enum Decision {
     Hold,
     Set(u32),
+}
+
+/// Shared manual/auto coordination state for one stream's bitrate control
+/// (issue #409).  Created next to the source bridge when adaptive bitrate
+/// is enabled; the controller task and the admin bitrate API both hold a
+/// handle.
+///
+/// A manual set (`POST /api/sources/{stream}/bitrate`) applies the bitrate
+/// directly and records it here; the controller then suspends its AIMD
+/// decisions until [`BitrateControl::clear_manual`] resumes adaptive mode.
+#[derive(Debug)]
+pub struct BitrateControl {
+    /// Manual override bitrate; `0` means adaptive mode.
+    manual: AtomicU32,
+    /// Last bitrate applied to the encoder, by the controller or manually.
+    current: AtomicU32,
+}
+
+impl BitrateControl {
+    pub fn new(target: u32) -> Self {
+        Self {
+            manual: AtomicU32::new(0),
+            current: AtomicU32::new(target),
+        }
+    }
+
+    /// The active manual override, or `None` in adaptive mode.
+    pub fn manual(&self) -> Option<u32> {
+        match self.manual.load(Ordering::Relaxed) {
+            0 => None,
+            bps => Some(bps),
+        }
+    }
+
+    pub fn set_manual(&self, bps: u32) {
+        self.current.store(bps, Ordering::Relaxed);
+        self.manual.store(bps, Ordering::Relaxed);
+    }
+
+    pub fn clear_manual(&self) {
+        self.manual.store(0, Ordering::Relaxed);
+    }
+
+    /// Last bitrate applied to the encoder.
+    pub fn current(&self) -> u32 {
+        self.current.load(Ordering::Relaxed)
+    }
+
+    fn note_applied(&self, bps: u32) {
+        self.current.store(bps, Ordering::Relaxed);
+    }
 }
 
 /// Pure AIMD state machine — no I/O, unit-testable.  One instance per
@@ -96,6 +157,17 @@ impl Aimd {
     fn can_change(&self, now: Instant) -> bool {
         self.last_change
             .is_none_or(|t| now.duration_since(t) >= MIN_CHANGE_INTERVAL)
+    }
+
+    /// Re-seed the controller after an external (manual) bitrate change:
+    /// adopt `bps` (clamped to the configured bounds) as the current rate
+    /// and reset the debounce/recovery clocks, so adaptive decisions resume
+    /// from a clean slate instead of a stale trajectory.
+    fn sync(&mut self, bps: u32, now: Instant) {
+        self.current = bps.clamp(self.cfg.min, self.cfg.target);
+        self.congested_windows = 0;
+        self.clean_since = None;
+        self.last_change = Some(now);
     }
 
     /// `worst_loss`: the highest loss fraction among eligible subscribers,
@@ -150,6 +222,7 @@ pub(crate) fn spawn(
     source: Arc<tokio::sync::Mutex<Box<dyn StreamSource>>>,
     bridge: Weak<tokio::sync::Mutex<SourceBridge>>,
     config: AdaptiveBitrateConfig,
+    control: Arc<BitrateControl>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut aimd = Aimd::new(config);
@@ -167,6 +240,14 @@ pub(crate) fn spawn(
                     stream_id
                 );
                 return;
+            }
+
+            // Manual override (admin bitrate API): suspend all automatic
+            // decisions and keep the AIMD seeded with the manual value so
+            // resuming adaptive mode starts from it, not a stale value.
+            if let Some(manual_bps) = control.manual() {
+                aimd.sync(manual_bps, Instant::now());
+                continue;
             }
 
             let mut worst: Option<f32> = None;
@@ -191,6 +272,7 @@ pub(crate) fn spawn(
             if let Decision::Set(bps) = aimd.on_window(worst, Instant::now()) {
                 let applied = source.lock().await.set_bitrate(bps).await;
                 if applied {
+                    control.note_applied(bps);
                     info!(
                         "[{}] adaptive bitrate: -> {} bps (worst loss {:.1}%, subs={})",
                         stream_id,
@@ -343,5 +425,51 @@ mod tests {
             a.on_window(Some(0.5), now + Duration::from_secs(3)),
             Decision::Set((1_700_000.0 * 0.85) as u32)
         );
+    }
+
+    #[test]
+    fn bitrate_control_manual_flag_roundtrip() {
+        let c = BitrateControl::new(2_000_000);
+        assert_eq!(c.manual(), None);
+        assert_eq!(c.current(), 2_000_000);
+
+        c.set_manual(800_000);
+        assert_eq!(c.manual(), Some(800_000));
+        assert_eq!(c.current(), 800_000);
+
+        c.clear_manual();
+        assert_eq!(c.manual(), None);
+        // Clearing the override keeps the manual value as the current rate
+        // until the controller applies its next decision.
+        assert_eq!(c.current(), 800_000);
+    }
+
+    #[test]
+    fn sync_adopts_manual_value_and_resets_clocks() {
+        let mut a = Aimd::new(cfg());
+        let now = Instant::now();
+        a.sync(1_500_000, now);
+        assert_eq!(a.current, 1_500_000);
+
+        // Decrease resumes from the manual value: two bad windows apply
+        // one multiplicative cut to it.
+        assert_eq!(
+            a.on_window(Some(0.5), now + Duration::from_secs(2)),
+            Decision::Hold
+        );
+        assert_eq!(
+            a.on_window(Some(0.5), now + Duration::from_secs(3)),
+            Decision::Set((1_500_000.0 * 0.85) as u32)
+        );
+    }
+
+    #[test]
+    fn sync_clamps_to_configured_bounds() {
+        let mut a = Aimd::new(cfg()); // target 2 Mbps, min 300 kbps
+        let now = Instant::now();
+        a.sync(10_000_000, now);
+        assert_eq!(a.current, 2_000_000);
+        a.sync(100_000, now);
+        assert_eq!(a.current, 300_000);
     }
 }

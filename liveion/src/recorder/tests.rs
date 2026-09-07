@@ -202,6 +202,8 @@ mod on_demand {
                     encoder: None,
                     #[cfg(feature = "native-source")]
                     output: Default::default(),
+                    #[cfg(feature = "native-source")]
+                    tiers: vec![],
                 }],
                 on_demand: true,
                 ..Default::default()
