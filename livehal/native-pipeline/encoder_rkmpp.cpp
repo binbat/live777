@@ -890,10 +890,6 @@ private:
     // ------------------------------------------------------------------
     // Drain output — aggregate partitions to EOI, dispatch one AU/frame
     // ------------------------------------------------------------------
-    // Periodic drain driver (drain_thread_): pops completed frames and
-    // releases their zero-copy capture buffers independently of new input.
-    // Serialized with submit()/stop() via mutex_; cheap when idle because
-    // it skips straight past an empty in_flight_ queue.
     // Drain driver (drain_thread_).  Completions — and with them the
     // zero-copy capture-buffer releases — must not depend on new input
     // arriving, and submit() must never block on encoder output.

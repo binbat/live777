@@ -95,6 +95,11 @@ public:
     /// codec state was reset, so request a keyframe / resend parameter sets
     /// instead of relying on pre-rebuild stream state.  Backends that never
     /// rebuild in place may leave the default.
+    ///
+    /// NOTE: no consumer is wired yet.  Post-rebuild decodability is
+    /// currently carried by the forced keyframe + parameter sets on the
+    /// first AU of a new context (EncodedKeyframe | EncodedConfig); this
+    /// API exists for the planned dynamic-reconfigure consumers.
     virtual uint64_t contextGeneration() const { return 0; }
 
     /// Change the target bitrate of a running encoder (adaptive bitrate

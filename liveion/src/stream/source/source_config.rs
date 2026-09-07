@@ -266,8 +266,7 @@ impl SourceSpec {
 
         // Validate pixel_format and codec strings early so config errors
         // surface during validation rather than at source creation time.
-        self.ensure_supported_pixel_format()
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        self.ensure_supported_pixel_format()?;
         pixel_format_to_u32(&self.capture.pixel_format)
             .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
         codec_to_u32(&self.encoder.codec).map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
