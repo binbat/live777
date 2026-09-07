@@ -1,0 +1,30 @@
+#!/bin/sh
+# S95watchdog — publish bitrate 连续 30s 为 0 则重启 live777(管线 wedge 兜底)
+# 防误杀两条:kill 后等 10s 让内核资源(相机/mpp)释放;重启后 60s 宽限期。
+# 注意:必须取 publish 侧 bitrate(JSON 里第一个 "bitrate"),不能整行贪婪
+# 匹配——最后一个 "bitrate" 是 subscribe 聚合,无人观看时恒 0,会误杀健康实例。
+case "$1" in
+  start)
+    (
+    FAILS=0
+    while true; do
+      sleep 10
+      B=$(wget -q -O - "http://127.0.0.1:7777/api/streams/cam" 2>/dev/null \
+          | tr ',{}' '\n' | sed -n 's/.*"bitrate":\([0-9]*\).*/\1/p' | head -1)
+      [ -z "$B" ] && B=0
+      if [ "$B" = "0" ]; then FAILS=$((FAILS+1)); else FAILS=0; fi
+      if [ $FAILS -ge 3 ]; then
+        echo "$(date -Iseconds) bitrate=0 x$FAILS, restart live777" >> /var/log/live777-watchdog.log
+        killall live777 2>/dev/null
+        sleep 10   # 等相机/mpp 内核资源释放,否则新实例起不了流
+        /etc/init.d/S90live777 start
+        FAILS=0
+        sleep 60   # 启动宽限:源起流 + stats 出数需要时间
+      fi
+    done
+    ) &
+    ;;
+  stop)
+    ;;
+esac
+exit 0

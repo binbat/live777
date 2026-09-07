@@ -1,0 +1,34 @@
+[http]
+listen = "[::]:7777"
+
+[[ice_servers]]
+urls = [
+    "stun:stun.l.google.com:19302",
+]
+
+[webrtc]
+ice_udp_addrs = ["auto"]
+
+[stream.cam]
+[[stream.cam.sources]]
+
+[stream.cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video13"
+width = 1344
+height = 752
+fps = 120
+pixel_format = "nv12"
+prefer_dmabuf = true
+
+[stream.cam.sources.encoder]
+backend = "rkmpp"
+codec = "h265"
+bitrate = 2_500_000
+profile = "main"
+gop = 60
+prefer_dmabuf = true
+
+[stream.cam.sources.output]
+payload_type = 98
+clock_rate = 90000

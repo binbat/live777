@@ -1,0 +1,12 @@
+#!/bin/sh
+# S50rkaiq — ISP 3A 守护进程(AE/AWB,iqfiles 在 /etc/iqfiles)
+case "$1" in
+  start)
+    export LD_LIBRARY_PATH=/usr/lib
+    /usr/bin/rkaiq_3A_server > /var/log/rkaiq.log 2>&1 &
+    ;;
+  stop)
+    killall rkaiq_3A_server 2>/dev/null
+    ;;
+esac
+exit 0

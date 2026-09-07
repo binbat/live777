@@ -1,0 +1,13 @@
+#!/bin/sh
+# S10kmpp — 加载 RV1126B 编码器内核模块(原 RkLunch 的活,产品自己管)
+case "$1" in
+  start)
+    insmod /usr/ko/kmpp.ko 2>/dev/null
+    insmod /usr/ko/kmpp_smart.ko 2>/dev/null
+    ;;
+  stop)
+    rmmod kmpp_smart 2>/dev/null
+    rmmod kmpp 2>/dev/null
+    ;;
+esac
+exit 0

@@ -1,0 +1,8 @@
+# busybox fragment:产品需要的非默认 applet
+# watchdog/watchdogd 守护(内核看门狗,断电保护用得上)
+CONFIG_WATCHDOG=y
+# pkill/pgrep(init 脚本用)
+CONFIG_PKILL=y
+# free/dmesg 之外常用诊断
+CONFIG_DMESG=y
+CONFIG_LSPCI=y

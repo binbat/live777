@@ -1,0 +1,19 @@
+#!/bin/sh
+# S90live777 — WebRTC SFU(WHEP /whep/cam,7777 端口)
+case "$1" in
+  start)
+    export LD_LIBRARY_PATH=/usr/lib
+    export RUST_LOG=info
+    # 启动前等全局地址就绪:ICE 候选在启动时一次性采集,若赶在 dhcpcd
+    # 之前启动只采集到 127.0.0.1,WHEP 对外全灭(候选不可达)。
+    for i in $(seq 1 30); do
+      ip -4 addr show scope global | grep -q "inet " && break
+      sleep 1
+    done
+    /usr/bin/live777 --config /etc/live777.toml >> /var/log/live777.log 2>&1 &
+    ;;
+  stop)
+    killall live777 2>/dev/null
+    ;;
+esac
+exit 0
