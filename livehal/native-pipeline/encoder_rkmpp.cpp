@@ -275,7 +275,7 @@ public:
         set_optional("rc:bps_min", static_cast<RK_S32>(cfg_.bitrate / 2));
         set_optional("rc:qp_init", 26);
         set_optional("rc:qp_min", 18);
-        set_optional("rc:qp_max", 40);
+        set_optional("rc:qp_max", 48);
 
         // Codec-specific
         if (cfg_.codec == VideoCodec::H264) {
