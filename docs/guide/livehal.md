@@ -190,7 +190,6 @@ itself.
 | `yuyv`, `yuyv422` | Yuyv422 | 0 |
 | `nv12` | Nv12 | 1 |
 | `yuv420`, `yuv420p` | Yuv420p | 2 |
-| `mjpeg` | Mjpeg | 3 |
 | `rgb888`, `rgb` | Rgb888 | 4 |
 | `uyvy`, `uyvy422` | Uyvy422 | 5 |
 
