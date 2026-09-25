@@ -270,7 +270,16 @@ pub(crate) fn spawn(
             }
 
             if let Decision::Set(bps) = aimd.on_window(worst, Instant::now()) {
-                let applied = source.lock().await.set_bitrate(bps).await;
+                let source_guard = source.lock().await;
+                // Re-check under the source lock — the same lock a manual
+                // set is applied under — so an override that landed while
+                // subscriber stats were sampled is not overwritten by this
+                // stale decision.  The next tick re-seeds the AIMD from the
+                // manual value.
+                if control.manual().is_some() {
+                    continue;
+                }
+                let applied = source_guard.set_bitrate(bps).await;
                 if applied {
                     control.note_applied(bps);
                     info!(

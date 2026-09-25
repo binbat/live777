@@ -432,17 +432,28 @@ impl SourceManager {
             return SetBitrateOutcome::SourceNotFound;
         };
 
-        if !source.lock().await.set_bitrate(bps).await {
+        // Hold the source lock across the encoder retune and the manual-flag
+        // update: the adaptive controller applies its decisions under the
+        // same lock and re-checks the flag there, so a manual set can
+        // neither interleave with nor be overwritten by an in-flight AIMD
+        // decision.
+        let source_guard = source.lock().await;
+        if !source_guard.set_bitrate(bps).await {
             return SetBitrateOutcome::Unsupported;
         }
+        let adaptive = source_guard.adaptive_bitrate_config().is_some();
 
+        // A control exists for every native source, adaptive or not —
+        // `adaptive_suspended` is only true when a controller is actually
+        // running for this stream.
         let adaptive_suspended =
             if let Some(control) = self.bitrate_controls.read().await.get(stream_id) {
                 control.set_manual(bps);
-                true
+                adaptive
             } else {
                 false
             };
+        drop(source_guard);
         SetBitrateOutcome::Applied { adaptive_suspended }
     }
 
@@ -574,6 +585,8 @@ mod tests {
         started: bool,
         #[cfg(feature = "source")]
         tiers: Vec<super::super::adaptive_bitrate::BitrateTier>,
+        #[cfg(feature = "source")]
+        adaptive: bool,
     }
 
     impl MockSource {
@@ -588,6 +601,8 @@ mod tests {
                 started: false,
                 #[cfg(feature = "source")]
                 tiers: Vec::new(),
+                #[cfg(feature = "source")]
+                adaptive: false,
             }
         }
     }
@@ -625,6 +640,22 @@ mod tests {
         #[cfg(feature = "source")]
         fn bitrate_tiers(&self) -> Vec<super::super::adaptive_bitrate::BitrateTier> {
             self.tiers.clone()
+        }
+
+        #[cfg(feature = "source")]
+        fn adaptive_bitrate_config(
+            &self,
+        ) -> Option<super::super::adaptive_bitrate::AdaptiveBitrateConfig> {
+            self.adaptive
+                .then_some(super::super::adaptive_bitrate::AdaptiveBitrateConfig {
+                    target: 4_000_000,
+                    min: 300_000,
+                })
+        }
+
+        #[cfg(feature = "source")]
+        async fn set_bitrate(&self, _bps: u32) -> bool {
+            true
         }
     }
 
@@ -716,5 +747,69 @@ mod tests {
         // MockSource has no configured bitrate: no control, no current.
         assert!(info.current.is_none());
         assert!(manager.source_bitrate_info("other").await.is_none());
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn set_source_bitrate_reports_adaptive_suspension() {
+        let manager = SourceManager::new();
+
+        // Fixed source with a control (the state every native source gets
+        // in `create_bridge`): no controller runs, so nothing suspends.
+        manager
+            .add_source(Box::new(tiered_mock("fixed")))
+            .await
+            .unwrap();
+        manager.bitrate_controls.write().await.insert(
+            "fixed".to_string(),
+            std::sync::Arc::new(super::super::adaptive_bitrate::BitrateControl::new(
+                4_000_000,
+            )),
+        );
+        assert_eq!(
+            manager.set_source_bitrate("fixed", 1_000_000).await,
+            super::SetBitrateOutcome::Applied {
+                adaptive_suspended: false
+            }
+        );
+
+        // Adaptive source: the manual set suspends its controller.
+        let mut adaptive_mock = tiered_mock("adaptive");
+        adaptive_mock.adaptive = true;
+        manager.add_source(Box::new(adaptive_mock)).await.unwrap();
+        manager.bitrate_controls.write().await.insert(
+            "adaptive".to_string(),
+            std::sync::Arc::new(super::super::adaptive_bitrate::BitrateControl::new(
+                4_000_000,
+            )),
+        );
+        assert_eq!(
+            manager.set_source_bitrate("adaptive", 1_000_000).await,
+            super::SetBitrateOutcome::Applied {
+                adaptive_suspended: true
+            }
+        );
+
+        // The manual override is recorded either way.
+        for id in ["fixed", "adaptive"] {
+            let control = manager.bitrate_controls.read().await;
+            assert_eq!(control[id].manual(), Some(1_000_000));
+        }
+
+        // Missing source and missing control both keep their outcomes.
+        assert_eq!(
+            manager.set_source_bitrate("other", 1_000_000).await,
+            super::SetBitrateOutcome::SourceNotFound
+        );
+        manager
+            .add_source(Box::new(tiered_mock("no-control")))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.set_source_bitrate("no-control", 1_000_000).await,
+            super::SetBitrateOutcome::Applied {
+                adaptive_suspended: false
+            }
+        );
     }
 }

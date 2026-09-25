@@ -82,7 +82,7 @@ const streamsSSEUrl = api.STREAMS_SSE_URL;
             v-else
             :streams-s-s-e-url="streamsSSEUrl"
             :show-cascade="cascadeAvailable"
-            :features="{ debugger: true, player: true, recording: recorderAvailable, autoDetectRecording: false, recordingPlayback: recorderAvailable }"
+            :features="{ debugger: true, player: true, recording: recorderAvailable, autoDetectRecording: false, recordingPlayback: recorderAvailable, sourceBitrate: true }"
         />
     </PageLayout>
     <Login :show="needsAuthorization" @success="onLoginSuccess" />

@@ -13,6 +13,7 @@ export interface StreamTableProps {
         recording?: boolean;
         autoDetectRecording?: boolean;
         recordingPlayback?: boolean;
+        sourceBitrate?: boolean;
     };
 }
 </script>
@@ -177,6 +178,7 @@ const features = computed(() => ({
     recording: true,
     autoDetectRecording: false,
     recordingPlayback: true,
+    sourceBitrate: false,
     ...props.features,
 }));
 
@@ -515,7 +517,7 @@ const handleCancelStop = () => {
                             @click="handlePreview(i.id)"
                         >Preview</button>
                         <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
-                        <button class="btn btn-sm" @click="handleViewBitrate(i.id)">Bitrate</button>
+                        <button v-if="features.sourceBitrate" class="btn btn-sm" @click="handleViewBitrate(i.id)">Bitrate</button>
                         <button v-if="showCascade" class="btn btn-sm" @click="handleCascadePushStream(i.id)">Cascade Push</button>
                         <button v-if="features.player" class="btn btn-sm" @click="handleOpenPlayerPage(i.id)">Player</button>
                         <button v-if="features.debugger" class="btn btn-sm" @click="handleOpenDebuggerPage(i.id)">Debugger</button>
