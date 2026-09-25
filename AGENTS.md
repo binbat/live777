@@ -263,6 +263,30 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   opt out with `strategy.override_publisher = false` (global or per-stream),
   restoring the 409; cascade-pull publishers are never displaced and always
   conflict (409), since their supervisor would reconnect and fight.
+  Source encoder bitrate control (issue #409): adaptive bitrate is on by
+  default for native encoder sources (`adaptive = false` opts out,
+  `adaptive = { min_bitrate = … }` sets a custom floor; the default floor
+  is the lowest tier's bitrate when tiers are declared, else
+  `max(bitrate / 8, 300k)`).  The AIMD controller
+  (`stream/source/adaptive_bitrate.rs`) retunes the running encoder from
+  WHEP subscriber RTCP feedback (sampled by
+  `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
+  support (`EncoderBackend::setBitrate` in livehal — rkmpp and v4l2-m2m
+  today). Two admin surfaces sit on top, deliberately separate:
+  `GET /api/sources/{stream}/bitrate` is read-only encoder telemetry
+  (drive mode `adaptive`/`fixed` plus the current rate), while
+  `GET`/`POST /api/sources/{stream}/tier` is the control surface — a
+  source-level ladder (`stream/source/tier.rs`): bitrate-only tiers
+  retune in place, and a tier carrying `width`/`height`/`fps` switches
+  the whole rung by rebuilding the capture+encoder pipeline
+  (`NativeEncodedSource::reconfigure` — the RTP broadcast channels
+  survive, so subscribers stay attached across the sub-second gap; a
+  failed rebuild rolls back to the previous params). A per-stream
+  `BitrateControl` (created for every native source in `create_bridge`)
+  coordinates tier applies with the controller: the tier's bitrate
+  becomes the AIMD's rung ceiling and resume seed without suspending
+  it, and an external-change generation counter guarantees the
+  controller re-seeds even for applies shorter than its 1 s tick.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

@@ -216,6 +216,96 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Source
+
+The bitrate endpoint is read-only *encoder* telemetry (native
+capture/encoder sources only — see the [livehal guide](./livehal.md)):
+how the source's bitrate is currently driven. The tier endpoint is the
+control surface: it re-provisions the source with a named preset of
+source parameters (capture geometry and/or encoder budget).
+
+### Get Source Bitrate State
+
+`GET` `/api/sources/:streamId/bitrate`
+
+Reports how the bitrate of the stream's configured media source is
+currently driven.
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "mode": "adaptive",
+  "bitrate": 2000000,
+  "adaptive": true
+}
+```
+
+- `mode`: `adaptive` (AIMD controller) or `fixed` (configured value, or
+  the last applied tier's).
+- `bitrate`: current encoder bitrate; the configured value while the source
+  is in standby (`null` for non-native sources).
+
+Returns [404] when the stream has no source and [405] for any method
+other than `GET`.
+
+### Get Source Quality Tiers
+
+`GET` `/api/sources/:streamId/tier`
+
+Reports the quality tiers configured on the stream's source and which one
+is active.
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "active_tier": "low",
+  "tiers": [
+    { "name": "mid", "bitrate": 2000000 },
+    { "name": "low", "bitrate": 600000, "width": 640, "height": 480, "fps": 15 }
+  ]
+}
+```
+
+- `active_tier`: the last tier applied through this API (`null` = the
+  configured base profile).
+- `tiers`: each entry carries `bitrate` and, for ladder rungs,
+  `width`/`height`/`fps` (see the [livehal guide](./livehal.md)).
+
+Returns [404] when the stream has no source.
+
+### Apply Source Quality Tier
+
+`POST` `/api/sources/:streamId/tier`
+
+Switches the source to a configured quality tier:
+
+```json
+{ "tier": "low" }
+```
+
+Response: [200]
+
+```json
+{ "stream_id": "pi-cam", "tier": "low", "bitrate": 600000, "rebuilt": true }
+```
+
+A bitrate-only tier retunes the running encoder in place (`rebuilt:
+false`). A tier carrying `width`/`height`/`fps` rebuilds the
+capture+encoder pipeline (`rebuilt: true`): subscribers stay connected
+but observe a brief frame gap and an in-band SPS/PPS change. Either way
+the adaptive controller is *not* suspended — the tier's bitrate becomes
+its new ceiling, so the AIMD keeps following network conditions within
+the rung.
+
+- [400] `tier` is missing or not defined for the stream.
+- [404] the stream has no source.
+- [409] the source is not running, or the pipeline rebuild failed (the
+  previous configuration was rolled back).
+
 ## Recorder
 
 ### Start Recording a Stream

@@ -1742,6 +1742,8 @@ mod tests {
             encoder: None,
             #[cfg(feature = "native-source")]
             output: Default::default(),
+            #[cfg(feature = "native-source")]
+            tiers: vec![],
         }
     }
 
@@ -1978,6 +1980,8 @@ mod tests {
                         encoder: None,
                         #[cfg(feature = "native-source")]
                         output: Default::default(),
+                        #[cfg(feature = "native-source")]
+                        tiers: vec![],
                     }],
                     on_demand: true,
                     on_demand_close_after_ms: 200,
@@ -2173,6 +2177,8 @@ mod tests {
                         encoder: None,
                         #[cfg(feature = "native-source")]
                         output: Default::default(),
+                        #[cfg(feature = "native-source")]
+                        tiers: vec![],
                     }],
                     on_demand: true,
                     on_demand_close_after_ms: 100,

@@ -13,6 +13,7 @@ export interface StreamTableProps {
         recording?: boolean;
         autoDetectRecording?: boolean;
         recordingPlayback?: boolean;
+        source?: boolean;
     };
 }
 </script>
@@ -36,6 +37,7 @@ import {
     type Stream as StreamType,
     deleteStream,
     getRecordingStatus,
+    getSources,
     getStreams,
     parseStreamsSSE,
     probeRecorderFeature,
@@ -48,6 +50,7 @@ import { useStreamSSE } from "../hooks/use-stream-sse";
 import { useToken } from "../context";
 
 import ClientsDialog, { type IClientsDialog } from "./dialog-clients.vue";
+import SourceDialog, { type ISourceDialog } from "./dialog-source.vue";
 import CascadeDialog, { type ICascadeDialog } from "./dialog-cascade.vue";
 import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
@@ -145,6 +148,7 @@ const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
 const cascadePushDialog = useTemplateRef<ICascadeDialog>("cascadePushDialog");
 const clientsDialog = useTemplateRef<IClientsDialog>("clientsDialog");
+const sourceDialog = useTemplateRef<ISourceDialog>("sourceDialog");
 const newStreamDialog = useTemplateRef<INewStreamDialog>("newStreamDialog");
 const webStreams = ref<string[]>([]);
 const newStreamId = ref("");
@@ -175,6 +179,7 @@ const features = computed(() => ({
     recording: true,
     autoDetectRecording: false,
     recordingPlayback: true,
+    source: false,
     ...props.features,
 }));
 
@@ -246,6 +251,37 @@ watch([streamsData, recordingAvailable], () => {
     })();
 }, { immediate: true });
 
+// Streams with a configured source (liveion only — liveman has no
+// /api/sources and keeps features.source off).  Sources change
+// only through the admin API, so a slow poll is enough.
+const sourceStreams = ref<Set<string>>(new Set());
+watchEffect((onCleanup) => {
+    void token.value;
+    if (!features.value.source) {
+        sourceStreams.value = new Set();
+        return;
+    }
+    let disposed = false;
+    const refresh = async () => {
+        try {
+            const res = await getSources();
+            if (!disposed) {
+                sourceStreams.value = new Set(res.sources.map(s => s.stream_id));
+            }
+        } catch {
+            if (!disposed) {
+                sourceStreams.value = new Set();
+            }
+        }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 10_000);
+    onCleanup(() => {
+        disposed = true;
+        clearInterval(timer);
+    });
+});
+
 const selectedStreamSessions = computed(
     () => streamsData.value.find(s => s.id == selectedStreamId.value)?.subscribe.sessions ?? []
 );
@@ -253,6 +289,10 @@ const selectedStreamSessions = computed(
 const handleViewClients = (id: string) => {
     selectedStreamId.value = id;
     clientsDialog.value?.show();
+};
+
+const handleViewSource = (id: string) => {
+    sourceDialog.value?.show(id);
 };
 
 const handleCascadePullStream = () => {
@@ -509,9 +549,28 @@ const handleCancelStop = () => {
                             @click="handlePreview(i.id)"
                         >Preview</button>
                         <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
-                        <button v-if="showCascade" class="btn btn-sm" @click="handleCascadePushStream(i.id)">Cascade Push</button>
-                        <button v-if="features.player" class="btn btn-sm" @click="handleOpenPlayerPage(i.id)">Player</button>
-                        <button v-if="features.debugger" class="btn btn-sm" @click="handleOpenDebuggerPage(i.id)">Debugger</button>
+                        <button
+                            v-if="features.source && sourceStreams.has(i.id)"
+                            class="btn btn-sm"
+                            @click="handleViewSource(i.id)"
+                        >Source</button>
+                        <div
+                            v-if="showCascade || features.player || features.debugger"
+                            class="dropdown dropdown-end"
+                        >
+                            <button tabindex="0" class="btn btn-sm">More</button>
+                            <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
+                                <li v-if="showCascade">
+                                    <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
+                                </li>
+                                <li v-if="features.player">
+                                    <a @click="handleOpenPlayerPage(i.id)">Player</a>
+                                </li>
+                                <li v-if="features.debugger">
+                                    <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
+                                </li>
+                            </ul>
+                        </div>
                         <button
                             v-if="recordingAvailable"
                             class="btn btn-sm"
@@ -600,6 +659,8 @@ const handleCancelStop = () => {
         :sessions="selectedStreamSessions"
         @client-kicked="updateData"
     />
+
+    <SourceDialog ref="sourceDialog" />
 
     <template v-if="showCascade">
         <CascadeDialog ref="cascadePullDialog" mode="pull" />

@@ -82,17 +82,37 @@ pub struct EncoderSpec {
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
-    /// Enable RTCP-feedback-driven adaptive bitrate (issue #409).
-    /// `bitrate` becomes the ceiling: the controller lowers the running
-    /// encoder's target while subscribers report congestion and ramps it
-    /// back up when the links stay clean.  Only effective with encoder
-    /// backends that support runtime retuning (currently `rkmpp`).
+    /// Adaptive bitrate (issue #409) — **on by default, no key needed**.
+    /// The controller lowers the running encoder's target while WHEP
+    /// subscribers report congestion and ramps it back up when the links
+    /// stay clean; a clean link is never touched, so a fixed-looking rate
+    /// is just an AIMD that never triggers.  Effective only with encoder
+    /// backends that support runtime retuning (currently `rkmpp` and
+    /// `v4l2-m2m`; others log a warning and disable it).
+    ///
+    /// Three self-describing forms:
+    /// - absent: enabled; the floor is the lowest tier's bitrate when
+    ///   tiers are declared, else `max(bitrate / 8, 300_000)`.
+    /// - `adaptive = false`: strictly fixed rate (no AIMD).
+    /// - `adaptive = { min_bitrate = 150000 }`: enabled, custom floor.
     #[serde(default)]
-    pub adaptive_bitrate: bool,
-    /// Adaptive-bitrate floor in bits per second
-    /// (default: `max(bitrate / 8, 300_000)`).
-    #[serde(default)]
-    pub min_bitrate: Option<u32>,
+    pub adaptive: Option<AdaptiveConfig>,
+}
+
+/// The `adaptive` encoder key — see [`EncoderSpec::adaptive`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AdaptiveConfig {
+    /// Plain switch: `adaptive = false` disables; `adaptive = true` is
+    /// the same as omitting the key.
+    Switch(bool),
+    /// Knobs: `adaptive = { min_bitrate = 150000 }`.
+    Knobs {
+        /// Adaptive floor in bits per second (default: lowest tier, else
+        /// `max(bitrate / 8, 300_000)`).
+        #[serde(default)]
+        min_bitrate: Option<u32>,
+    },
 }
 
 fn default_gop() -> u32 {
@@ -108,6 +128,78 @@ pub struct OutputSpec {
     /// RTP clock rate in Hz (default `90000`).
     #[serde(default = "default_clock_rate")]
     pub clock_rate: u32,
+}
+
+/// A named quality tier — a preset group of source parameters the stream
+/// can be switched to through the admin API
+/// (`POST /api/sources/{stream}/tier`).
+///
+/// A tier is a partial overlay on the source's own structure: optional
+/// `capture` and `encoder` blocks holding the parameters to change —
+/// anything left unset keeps the configured value.  Tiers sit at *source*
+/// level because a rung spans both blocks: retuning the encoder
+/// (`bitrate`) while reconfiguring the capture (`width`/`height`/`fps`,
+/// livehal has no scaler stage — capture size is encoder input size, and
+/// framerate is a capture-side property).  A tier that changes capture
+/// geometry switches by rebuilding the capture+encoder pipeline
+/// (sub-second frame gap); an encoder-only change retunes the running
+/// encoder seamlessly.  The same shape can later grow to switch more of
+/// the source (device, profile, or even the source type).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierSpec {
+    /// Unique tier name within the source, referenced by the admin API.
+    pub name: String,
+    /// Capture-parameter overlay (absent fields keep the configured
+    /// capture).  Changing any of these rebuilds the pipeline.
+    #[serde(default)]
+    pub capture: TierCaptureSpec,
+    /// Encoder-parameter overlay (absent fields keep the configured
+    /// encoder).  Retunes in place when it is the only change.
+    #[serde(default)]
+    pub encoder: TierEncoderSpec,
+}
+
+/// The `capture` block of a [`TierSpec`] — capture-side parameters a tier
+/// may override (see [`TierSpec`]).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierCaptureSpec {
+    /// Tier capture width (must pair with `height`; any size the sensor
+    /// supports, including above the boot profile — e.g. a 972p30 boot
+    /// with a 1080p20 max-quality rung).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Tier capture height (must pair with `width`; see `width`).
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Tier capture framerate.  May exceed `capture.fps` when the sensor
+    /// supports it (e.g. a low-latency rung trading resolution for
+    /// framerate on an OV5647: 1080p30 base, 480p60 rung); a mode the
+    /// camera cannot do is rejected at apply time and rolled back.
+    #[serde(default)]
+    pub fps: Option<u32>,
+}
+
+/// The `encoder` block of a [`TierSpec`] — encoder-side parameters a tier
+/// may override (see [`TierSpec`]).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierEncoderSpec {
+    /// Tier bitrate in bits per second — the AIMD's ceiling in this rung.
+    /// Optional: when unset it is derived from the tier's effective
+    /// geometry at ~0.07 bits per pixel (see [`TierSpec::derived_bitrate`]),
+    /// which covers the common case; set it explicitly to tune for content
+    /// (e.g. sports) or to offer premium/economy rungs at the same
+    /// geometry.  Bounded only by the encoder's signed-32-bit control
+    /// channel, so a rung may exceed the boot `encoder.bitrate`.
+    #[serde(default)]
+    pub bitrate: Option<u32>,
+}
+
+impl TierSpec {
+    /// Geometry-derived default bitrate: ~0.07 bits per pixel per frame
+    /// (where the hand-tuned OV5647 ladder lands), floored at 50 kbps.
+    pub fn derived_bitrate(width: u32, height: u32, fps: u32) -> u32 {
+        ((width as u64 * height as u64 * fps as u64 * 7 / 100) as u32).max(50_000)
+    }
 }
 
 fn default_payload_type() -> u8 {
@@ -133,6 +225,11 @@ pub struct SourceSpec {
     /// RTP output parameters.
     #[serde(default)]
     pub output: OutputSpec,
+    /// Optional named quality tiers (bitrate presets; resolution/framerate
+    /// tiers reserved).  See [`TierSpec`] for why this lives at source
+    /// level rather than inside the encoder block.
+    #[serde(default)]
+    pub tiers: Vec<TierSpec>,
 }
 
 impl Default for OutputSpec {
@@ -243,10 +340,77 @@ impl SourceSpec {
         if self.encoder.gop == 0 {
             anyhow::bail!("encoder.gop must be non-zero");
         }
-        if let Some(min) = self.encoder.min_bitrate
-            && min > self.encoder.bitrate
+        if let Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(min),
+        }) = &self.encoder.adaptive
+            && *min > self.encoder.bitrate
         {
-            anyhow::bail!("encoder.min_bitrate must not exceed encoder.bitrate");
+            anyhow::bail!("encoder.adaptive.min_bitrate must not exceed encoder.bitrate");
+        }
+
+        let mut tier_names = std::collections::HashSet::new();
+        for tier in &self.tiers {
+            if tier.name.trim().is_empty() {
+                anyhow::bail!("tiers.name cannot be empty");
+            }
+            if !tier_names.insert(tier.name.as_str()) {
+                anyhow::bail!("duplicate tier name '{}'", tier.name);
+            }
+            if let Some(bps) = tier.encoder.bitrate {
+                if bps == 0 {
+                    anyhow::bail!("tier '{}': encoder.bitrate must be non-zero", tier.name);
+                }
+                // The only upper bound is the encoder control channel (a
+                // signed 32-bit value): a rung may legitimately exceed the
+                // boot encoder.bitrate — the ladder top need not be the boot
+                // profile (2M boot with a 3M max-quality rung).
+                if bps > i32::MAX as u32 {
+                    anyhow::bail!(
+                        "tier '{}': encoder.bitrate {} exceeds the encoder control range",
+                        tier.name,
+                        bps
+                    );
+                }
+            }
+            // Capture fields turn the tier into a ladder rung that
+            // rebuilds the pipeline: dimensions must pair up and be
+            // non-zero.  There is deliberately no bound against the
+            // configured capture — a rung may exceed the boot profile
+            // (e.g. a 972p30 boot with a 1080p20 max-quality rung) or
+            // trade resolution for framerate (1080p30 base, 480p60
+            // rung).  Sensor/ISP capability is enforced at apply time:
+            // a mode the camera rejects rolls the pipeline back.
+            match (tier.capture.width, tier.capture.height) {
+                (Some(0), _) | (_, Some(0)) => {
+                    anyhow::bail!(
+                        "tier '{}': capture.width/height must be non-zero",
+                        tier.name
+                    );
+                }
+                (Some(_), Some(_)) | (None, None) => {}
+                _ => {
+                    anyhow::bail!(
+                        "tier '{}': capture.width and capture.height must be set together",
+                        tier.name
+                    );
+                }
+            }
+            if let Some(fps) = tier.capture.fps
+                && fps == 0
+            {
+                anyhow::bail!("tier '{}': capture.fps must be non-zero", tier.name);
+            }
+            // A tier is a parameter preset — it must change something.
+            if tier.capture.width.is_none()
+                && tier.capture.height.is_none()
+                && tier.capture.fps.is_none()
+                && tier.encoder.bitrate.is_none()
+            {
+                anyhow::bail!(
+                    "tier '{}': empty tier — set at least one capture or encoder parameter",
+                    tier.name
+                );
+            }
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
@@ -600,10 +764,10 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
-                adaptive_bitrate: false,
-                min_bitrate: None,
+                adaptive: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -628,10 +792,10 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
-                adaptive_bitrate: false,
-                min_bitrate: None,
+                adaptive: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -656,10 +820,10 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
-                adaptive_bitrate: false,
-                min_bitrate: None,
+                adaptive: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -684,10 +848,10 @@ mod tests {
                 tier: None,
                 gop: 60,
                 prefer_dmabuf: false,
-                adaptive_bitrate: false,
-                min_bitrate: None,
+                adaptive: None,
             },
             output: OutputSpec::default(),
+            tiers: vec![],
         }
     }
 
@@ -737,6 +901,229 @@ mod tests {
         let mut spec = v4l2_spec();
         spec.capture.pixel_format = "mjpeg".into();
         assert!(spec.validate().is_err());
+    }
+
+    // --- tier validation tests ---
+
+    fn tier(name: &str, bitrate: u32) -> TierSpec {
+        TierSpec {
+            name: name.into(),
+            capture: TierCaptureSpec::default(),
+            encoder: TierEncoderSpec {
+                bitrate: Some(bitrate),
+            },
+        }
+    }
+
+    #[test]
+    fn test_tiers_valid() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("mid", 2_000_000)];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_empty_name_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("  ", 600_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_duplicate_name_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("low", 800_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_duplicate_bitrate_allowed() {
+        // Same bitrate on two rungs is fine — the active tier is tracked
+        // by name, not matched by value.
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("mid", 600_000)];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_bitrate_optional_with_geometry() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.encoder.bitrate = None;
+        t.capture.width = Some(640);
+        t.capture.height = Some(480);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_empty_rejected() {
+        // A tier must change at least one parameter.
+        let mut spec = rkmpp_spec();
+        let mut t = tier("bare", 600_000);
+        t.encoder.bitrate = None;
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_derived_bitrate() {
+        // ~0.07 bpp, floored at 50 kbps.
+        assert_eq!(TierSpec::derived_bitrate(640, 480, 30), 645_120);
+        assert_eq!(TierSpec::derived_bitrate(1920, 1080, 20), 2_903_040);
+        assert_eq!(TierSpec::derived_bitrate(320, 240, 10), 53_760);
+        assert_eq!(TierSpec::derived_bitrate(1, 1, 1), 50_000);
+    }
+
+    #[test]
+    fn test_tier_zero_bitrate_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 0)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_bitrate_above_boot_allowed() {
+        // A rung may exceed the boot encoder.bitrate (2M boot + 3M max
+        // rung); the only bound is the encoder's signed-32-bit control.
+        let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
+        spec.tiers = vec![tier("ultra", 5_000_000)];
+        assert!(spec.validate().is_ok());
+        spec.tiers = vec![tier("overflow", i32::MAX as u32 + 1)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_resolution_downscale_ok() {
+        let mut spec = rkmpp_spec(); // capture 1920x1080@30
+        let mut t = tier("low", 600_000);
+        t.capture.width = Some(1280);
+        t.capture.height = Some(720);
+        t.capture.fps = Some(15);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_width_without_height_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.capture.width = Some(1280);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_zero_dimension_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.capture.width = Some(0);
+        t.capture.height = Some(720);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_above_boot_profile_allowed() {
+        // A rung may exceed the boot capture profile: the ladder top need
+        // not be the boot config (972p30 boot + 1080p20 maxres rung).
+        let mut spec = rkmpp_spec(); // capture 1920x1080
+        let mut t = tier("big", 600_000);
+        t.capture.width = Some(2592);
+        t.capture.height = Some(1944);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_fps_above_capture_allowed() {
+        // A low-latency rung trades resolution for framerate: 1080p30
+        // base with a 480p60 tier is a valid ladder on e.g. the OV5647.
+        let mut spec = rkmpp_spec(); // capture 1920x1080@30
+        let mut t = tier("lowlatency", 600_000);
+        t.capture.width = Some(640);
+        t.capture.height = Some(480);
+        t.capture.fps = Some(60);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_zero_fps_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.capture.fps = Some(0);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_key_forms() {
+        let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
+        // Off is valid.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Switch(false));
+        assert!(spec.validate().is_ok());
+        // A floor above the ceiling is rejected.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(5_000_000),
+        });
+        assert!(spec.validate().is_err());
+        // A sane custom floor is fine.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(300_000),
+        });
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_toml_forms() {
+        // Untagged key: bool switch, inline knobs, and absent all parse.
+        #[derive(Deserialize)]
+        struct W {
+            encoder: EncoderSpec,
+        }
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            adaptive = false
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            w.encoder.adaptive,
+            Some(AdaptiveConfig::Switch(false))
+        ));
+
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            adaptive = { min_bitrate = 150000 }
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            w.encoder.adaptive,
+            Some(AdaptiveConfig::Knobs {
+                min_bitrate: Some(150_000)
+            })
+        ));
+
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            "#,
+        )
+        .unwrap();
+        assert!(w.encoder.adaptive.is_none());
     }
 
     // --- pixel_format / codec mapping tests ---

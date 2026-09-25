@@ -214,6 +214,87 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## 媒体源
+
+码率端点是只读的*编码器*遥测（仅限原生采集/编码源，见
+[livehal 指南](./livehal.md)）：该源码率当前的驱动方式。档位端点是
+控制面：用命名的源参数预设（采集几何和/或编码预算）重新配置源。
+
+### 查询源码率状态
+
+`GET` `/api/sources/:streamId/bitrate`
+
+查询该流配置的媒体源码率当前的驱动方式。
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "mode": "adaptive",
+  "bitrate": 2000000,
+  "adaptive": true
+}
+```
+
+- `mode`: `adaptive`（AIMD 控制器驱动）或 `fixed`（按配置值或最近
+  应用的档位运行）。
+- `bitrate`: 当前编码器码率；源处于 standby 时为配置值（非原生源为 `null`）。
+
+该流没有媒体源时返回 [404]；`GET` 以外的方法返回 [405]。
+
+### 查询源质量档位
+
+`GET` `/api/sources/:streamId/tier`
+
+查询该流媒体源配置的质量档位以及当前生效的档位。
+
+Response: [200]
+
+```json
+{
+  "stream_id": "pi-cam",
+  "active_tier": "low",
+  "tiers": [
+    { "name": "mid", "bitrate": 2000000 },
+    { "name": "low", "bitrate": 600000, "width": 640, "height": 480, "fps": 15 }
+  ]
+}
+```
+
+- `active_tier`: 最后一次通过本 API 应用的档位（`null` 表示配置的
+  基础档）。
+- `tiers`: 每项携带 `bitrate`；阶梯档还携带 `width`/`height`/`fps`
+  （见 [livehal 指南](./livehal.md)）。
+
+该流没有媒体源时返回 [404]。
+
+### 应用源质量档位
+
+`POST` `/api/sources/:streamId/tier`
+
+把源切换到某个配置好的质量档位：
+
+```json
+{ "tier": "low" }
+```
+
+Response: [200]
+
+```json
+{ "stream_id": "pi-cam", "tier": "low", "bitrate": 600000, "rebuilt": true }
+```
+
+纯码率档原地调运行中的编码器（`rebuilt: false`）；携带
+`width`/`height`/`fps` 的档位重建采集+编码管线
+（`rebuilt: true`）：订阅者保持连接，但会观察到短暂断帧和一次
+带内 SPS/PPS 变更。两种方式都*不会*挂起自适应控制器——档位的
+码率成为 AIMD 的新上限，AIMD 继续在档内跟随网络状况调节。
+
+- [400] `tier` 缺失或该流未定义此档位。
+- [404] 该流没有媒体源。
+- [409] 源未在运行，或管线重建失败（已回滚到之前的配置）。
+
 ## 录制
 
 ### 开始录制流

@@ -168,6 +168,51 @@ async fn test_liveion_stream_create() {
     assert_eq!(1, body.len());
 }
 
+#[cfg(feature = "source")]
+#[tokio::test]
+async fn test_liveion_source_bitrate_api() {
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let port = 0;
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = reqwest::Client::new();
+    let bitrate_url = format!("http://{addr}/api/sources/webcam/bitrate");
+    let tier_url = format!("http://{addr}/api/sources/webcam/tier");
+
+    // The bitrate endpoint is read-only telemetry: writes are rejected
+    // with 405 regardless of the stream.
+    let res = client
+        .post(&bitrate_url)
+        .json(&serde_json::json!({ "bitrate": 1_000_000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::METHOD_NOT_ALLOWED, res.status());
+    let res = client.delete(&bitrate_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::METHOD_NOT_ALLOWED, res.status());
+
+    // No source registered for the stream: bitrate state query, tier
+    // state query, and tier apply all report 404.
+    let res = client.get(&bitrate_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client.get(&tier_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client
+        .post(&tier_url)
+        .json(&serde_json::json!({ "tier": "low" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+}
+
 #[cfg(feature = "rsmpeg")]
 #[tokio::test]
 async fn test_livetwo_whipinto_synth_input() {

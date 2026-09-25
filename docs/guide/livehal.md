@@ -155,26 +155,95 @@ clock_rate = 90000
 
 ### Adaptive bitrate (experimental)
 
-With `adaptive_bitrate = true` in the encoder section, the running encoder's
-target bitrate is driven by WHEP subscriber RTCP feedback (issue #409):
-TWCC loss (falling back to Receiver Report `fraction_lost`) is sampled once
-per second, and an AIMD controller retunes the encoder at runtime.
+Adaptive bitrate is **on by default** for native encoder sources — the
+running encoder's target bitrate is driven by WHEP subscriber RTCP
+feedback (issue #409): TWCC loss (falling back to Receiver Report
+`fraction_lost`) is sampled once per second, and an AIMD controller
+retunes the encoder at runtime.  No config key is needed; the two
+optional forms are an opt-out and a custom floor:
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # ceiling — the controller only lowers from here
-adaptive_bitrate = true
-min_bitrate = 500_000      # floor (default: max(bitrate / 8, 300_000))
+bitrate = 4_000_000           # ceiling — the controller only lowers from here
+# adaptive = false            # strictly fixed rate (no AIMD)
+# adaptive = { min_bitrate = 500_000 }
+                              # custom floor (default: lowest tier when
+                              # tiers are declared, else
+                              # max(bitrate / 8, 300_000))
 ```
 
 Semantics: loss above 5 % for two consecutive windows cuts the bitrate by
 15 %; a sustained 10 s clean window adds 5 % of the target back.  With
 several subscribers the worst link wins — the shared encoder is lowered for
 everyone, so a single weak subscriber penalizes the whole stream (simulcast
-would be the real fix).  Subscribers younger than 5 s are ignored while
-their decoder primes.  Runtime retuning currently works on the `rkmpp`
-backend only; other backends log a warning and the controller disables
-itself.
+would be the real fix; if that is unacceptable for your stream, use
+`adaptive = false`).  Subscribers younger than 5 s are ignored while
+their decoder primes.  Runtime retuning currently works on the `rkmpp` and
+`v4l2-m2m` backends; other backends log a warning and the controller
+disables itself.
+
+### Bitrate telemetry & quality tiers
+
+`GET /api/sources/:streamId/bitrate` reports how the source's encoder
+bitrate is currently driven — `adaptive` (the AIMD controller above) or
+`fixed` — plus the current rate (see the [HTTP API
+guide](./live777-api.md#source)).  Control goes through **quality
+tiers**: named presets of source parameters, applied with
+`POST /api/sources/:streamId/tier`.  A tier is a partial overlay on the
+source's own structure — optional `capture` and `encoder` blocks holding
+the parameters to change; anything left out keeps the configured value:
+
+```toml
+[stream.pi-cam.sources.encoder]
+bitrate = 4_000_000        # the AIMD's ceiling at boot
+adaptive = { min_bitrate = 300_000 }  # optional; the AIMD is on by default
+
+# Encoder-only tier: retunes the running encoder, seamless.
+[[stream.pi-cam.sources.tiers]]
+name = "mid"
+encoder = { bitrate = 2_000_000 }
+
+# Ladder rung: capture geometry + encoder budget, applied by rebuilding
+# the capture+encoder pipeline (sub-second frame gap, subscribers stay
+# connected).  encoder.bitrate omitted here — derived from 640x480x15
+# at ~0.07 bpp (~645 kbps).
+[[stream.pi-cam.sources.tiers]]
+name = "low"
+capture = { width = 640, height = 480, fps = 15 }
+```
+
+Tiers sit next to `capture`/`encoder` (not inside the encoder block)
+because a rung spans both blocks: the `encoder` overlay retunes the
+encoder, while the `capture` overlay reconfigures the capture (livehal
+has no scaler stage — capture size is encoder input size — and framerate
+is a capture-side property).  An encoder-only tier switches seamlessly
+in place; a tier touching capture geometry rebuilds the pipeline
+underneath the stream — the RTP session survives, subscribers just see a
+brief freeze and an in-band SPS/PPS change.  `capture.width`/`height`
+must be set together and may be any size the sensor supports — including
+above the boot profile, so the ladder top need not be the boot config (a
+972p30 boot with a 1080p20 max-quality rung); `capture.fps` may likewise
+be any rate the sensor supports (a low-latency rung can trade resolution
+for framerate, e.g. a 480p60 tier on an OV5647 — unsupported modes are
+rejected at apply time and rolled back).  `encoder.bitrate` may likewise
+exceed the boot `encoder.bitrate` (only the encoder's signed-32-bit
+control range bounds it), so the ladder top can carry more bits than the
+boot rung — and it is *optional*: when omitted it is derived from the
+tier's effective geometry at ~0.07 bits per pixel (floored at 50 kbps),
+which is where hand-tuned ladders usually land anyway; set it explicitly
+for content that needs more or fewer bits, or to offer premium/economy
+rungs at the same geometry.  An empty tier (nothing set) is rejected.
+
+Applying a tier does *not* suspend the adaptive controller: the tier's
+bitrate becomes the AIMD's new ceiling, so it keeps following network
+conditions within the rung.  A failed rebuild (e.g. the camera rejects
+the new size) rolls back to the previous configuration, and the tier's
+fields are always overlaid on the configured capture: unset fields
+restore the configured values, so a mixed ladder (bitrate-only and
+geometry tiers side by side) is well-defined.  The same mechanism can
+later grow to switch source *types* entirely (e.g. from the camera to
+an RTSP URL) — tiers describe source configuration, not encoder
+internals.
 
 ### Backend naming
 

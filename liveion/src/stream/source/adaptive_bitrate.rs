@@ -22,6 +22,7 @@
 //!   debounce/recovery clocks reset so a (re)joining subscriber does not
 //!   inherit stale state.
 
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,67 @@ enum Decision {
     Set(u32),
 }
 
+/// Shared tier/controller coordination state for one stream's bitrate
+/// control (issue #409).  Created next to the source bridge; the
+/// controller task and the admin tier API both hold a handle.
+///
+/// A tier apply (`POST /api/sources/{stream}/tier`) moves the rung
+/// ceiling and re-seeds the current rate; the AIMD keeps running but
+/// may no longer climb above the tier's bitrate.  The apply bumps
+/// `generation`, so the controller — ticking at 1 Hz — can never miss
+/// it, not even one shorter than its tick.
+#[derive(Debug)]
+pub struct BitrateControl {
+    /// Last bitrate applied to the encoder.
+    current: AtomicU32,
+    /// Bumped by every external (tier apply) change.  The controller
+    /// re-seeds its AIMD from `current` whenever this advances, so an
+    /// apply between two ticks still takes effect.
+    generation: AtomicU64,
+    /// Rung ceiling: the most the AIMD may climb to.  Starts at the
+    /// configured target; a tier apply moves it to the tier's bitrate.
+    rung_target: AtomicU32,
+}
+
+impl BitrateControl {
+    pub fn new(target: u32) -> Self {
+        Self {
+            current: AtomicU32::new(target),
+            generation: AtomicU64::new(0),
+            rung_target: AtomicU32::new(target),
+        }
+    }
+
+    /// Last bitrate applied to the encoder.
+    pub fn current(&self) -> u32 {
+        self.current.load(Ordering::Relaxed)
+    }
+
+    /// The ceiling the AIMD currently modulates under.
+    pub fn rung_target(&self) -> u32 {
+        self.rung_target.load(Ordering::Relaxed)
+    }
+
+    /// Tier apply (external, source-level): adopt the tier's bitrate as
+    /// both the current rate and the new rung ceiling, and bump the
+    /// generation so the controller re-seeds.  The AIMD is not
+    /// suspended — it keeps modulating within the rung.
+    pub fn apply_tier(&self, bps: u32) {
+        self.rung_target.store(bps, Ordering::Relaxed);
+        self.current.store(bps, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// External-change counter; advances on every tier apply.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_applied(&self, bps: u32) {
+        self.current.store(bps, Ordering::Relaxed);
+    }
+}
+
 /// Pure AIMD state machine — no I/O, unit-testable.  One instance per
 /// stream (per source-bridge lifetime).
 struct Aimd {
@@ -96,6 +158,17 @@ impl Aimd {
     fn can_change(&self, now: Instant) -> bool {
         self.last_change
             .is_none_or(|t| now.duration_since(t) >= MIN_CHANGE_INTERVAL)
+    }
+
+    /// Re-seed the controller after an external (manual) bitrate change:
+    /// adopt `bps` (clamped to the configured bounds) as the current rate
+    /// and reset the debounce/recovery clocks, so adaptive decisions resume
+    /// from a clean slate instead of a stale trajectory.
+    fn sync(&mut self, bps: u32, now: Instant) {
+        self.current = bps.clamp(self.cfg.min, self.cfg.target);
+        self.congested_windows = 0;
+        self.clean_since = None;
+        self.last_change = Some(now);
     }
 
     /// `worst_loss`: the highest loss fraction among eligible subscribers,
@@ -150,9 +223,11 @@ pub(crate) fn spawn(
     source: Arc<tokio::sync::Mutex<Box<dyn StreamSource>>>,
     bridge: Weak<tokio::sync::Mutex<SourceBridge>>,
     config: AdaptiveBitrateConfig,
+    control: Arc<BitrateControl>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut aimd = Aimd::new(config);
+        let mut seen_generation = control.generation();
         let mut ticker = tokio::time::interval(TICK);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         info!(
@@ -167,6 +242,27 @@ pub(crate) fn spawn(
                     stream_id
                 );
                 return;
+            }
+
+            // Rung bounds: a tier apply may have moved the ceiling, so the
+            // AIMD keeps modulating within the current rung and never
+            // climbs above the tier's bitrate.  The floor never exceeds
+            // the ceiling.
+            let rung_target = control.rung_target();
+            if aimd.cfg.target != rung_target {
+                aimd.cfg.target = rung_target;
+                aimd.cfg.min = config.min.min(rung_target);
+            }
+
+            // Tier applies re-seed the AIMD once per external change
+            // rather than every tick, and — crucially — the generation
+            // check also catches an apply that fits between two ticks:
+            // decisions then resume from the externally applied value,
+            // not a stale trajectory.
+            let generation = control.generation();
+            if generation != seen_generation {
+                aimd.sync(control.current(), Instant::now());
+                seen_generation = generation;
             }
 
             let mut worst: Option<f32> = None;
@@ -189,8 +285,18 @@ pub(crate) fn spawn(
             }
 
             if let Decision::Set(bps) = aimd.on_window(worst, Instant::now()) {
-                let applied = source.lock().await.set_bitrate(bps).await;
+                let source_guard = source.lock().await;
+                // Re-check under the source lock — the same lock a tier
+                // apply is taken under — so an apply that landed while
+                // subscriber stats were sampled is not overwritten by
+                // this stale decision.  The next tick re-seeds the AIMD
+                // from the tier's value.
+                if control.generation() != seen_generation {
+                    continue;
+                }
+                let applied = source_guard.set_bitrate(bps).await;
                 if applied {
+                    control.note_applied(bps);
                     info!(
                         "[{}] adaptive bitrate: -> {} bps (worst loss {:.1}%, subs={})",
                         stream_id,
@@ -343,5 +449,64 @@ mod tests {
             a.on_window(Some(0.5), now + Duration::from_secs(3)),
             Decision::Set((1_700_000.0 * 0.85) as u32)
         );
+    }
+
+    #[test]
+    fn bitrate_control_tier_apply_moves_rung_and_current() {
+        let c = BitrateControl::new(2_000_000);
+        assert_eq!(c.current(), 2_000_000);
+        assert_eq!(c.rung_target(), 2_000_000);
+
+        c.apply_tier(800_000);
+        assert_eq!(c.current(), 800_000);
+        assert_eq!(c.rung_target(), 800_000);
+    }
+
+    #[test]
+    fn generation_advances_on_external_changes() {
+        let c = BitrateControl::new(2_000_000);
+        let g0 = c.generation();
+
+        // The controller's own applies do not count as external changes.
+        c.note_applied(1_500_000);
+        assert_eq!(c.generation(), g0);
+
+        c.apply_tier(800_000);
+        let g1 = c.generation();
+        assert!(g1 > g0);
+
+        // Even applies faster than the controller tick advance the
+        // generation, so the re-seed cannot be lost.
+        c.apply_tier(1_000_000);
+        assert!(c.generation() > g1);
+    }
+
+    #[test]
+    fn sync_adopts_manual_value_and_resets_clocks() {
+        let mut a = Aimd::new(cfg());
+        let now = Instant::now();
+        a.sync(1_500_000, now);
+        assert_eq!(a.current, 1_500_000);
+
+        // Decrease resumes from the manual value: two bad windows apply
+        // one multiplicative cut to it.
+        assert_eq!(
+            a.on_window(Some(0.5), now + Duration::from_secs(2)),
+            Decision::Hold
+        );
+        assert_eq!(
+            a.on_window(Some(0.5), now + Duration::from_secs(3)),
+            Decision::Set((1_500_000.0 * 0.85) as u32)
+        );
+    }
+
+    #[test]
+    fn sync_clamps_to_configured_bounds() {
+        let mut a = Aimd::new(cfg()); // target 2 Mbps, min 300 kbps
+        let now = Instant::now();
+        a.sync(10_000_000, now);
+        assert_eq!(a.current, 2_000_000);
+        a.sync(100_000, now);
+        assert_eq!(a.current, 300_000);
     }
 }

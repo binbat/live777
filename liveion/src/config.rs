@@ -254,6 +254,52 @@ mod tests {
         let strategy = entry.strategy.as_ref().unwrap();
         assert!(!strategy.auto_create_whip);
     }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_stream_entry_source_tiers() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.capture]
+            backend = "v4l2"
+            device = "/dev/video11"
+            width = 1920
+            height = 1080
+            fps = 30
+            pixel_format = "nv12"
+            [sources.encoder]
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            gop = 60
+            adaptive = { min_bitrate = 300000 }
+
+            [[sources.tiers]]
+            name = "low"
+            encoder = { bitrate = 600000 }
+            [[sources.tiers]]
+            name = "mid"
+            capture = { width = 1280, height = 720, fps = 15 }
+            "#,
+        )
+        .unwrap();
+
+        let source = entry.sources.first().unwrap();
+        assert_eq!(source.tiers.len(), 2);
+        assert_eq!(source.tiers[0].name, "low");
+        assert_eq!(source.tiers[0].encoder.bitrate, Some(600_000));
+        assert_eq!(source.tiers[1].name, "mid");
+        assert_eq!(source.tiers[1].capture.width, Some(1280));
+
+        // The spec built from this config must pass validation and carry
+        // the tiers through.
+        let spec = source.to_spec("cam").unwrap();
+        assert!(spec.validate().is_ok());
+        assert_eq!(spec.tiers.len(), 2);
+        assert!(spec.encoder.adaptive.is_some());
+    }
 }
 
 #[cfg(test)]
@@ -690,6 +736,11 @@ pub struct SourceConfig {
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub output: crate::stream::source::source_config::OutputSpec,
+
+    /// Named quality tiers (bitrate presets) for this source.
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub tiers: Vec<crate::stream::source::source_config::TierSpec>,
 }
 
 impl SourceConfig {
@@ -759,6 +810,7 @@ impl SourceConfig {
             capture,
             encoder,
             output: self.output.clone(),
+            tiers: self.tiers.clone(),
         })
     }
 }

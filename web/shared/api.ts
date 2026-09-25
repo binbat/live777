@@ -146,6 +146,62 @@ export async function stopRecording(streamId: string): Promise<boolean> {
     return true;
 }
 
+export interface SourceListEntry {
+    id: string;
+    stream_id: string;
+    source_type: string;
+    state: string;
+}
+
+export function getSources() {
+    return w.url('/api/sources').get().json<{ sources: SourceListEntry[] }>();
+}
+
+const sourceBitrateUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/bitrate`;
+const sourceTierUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/tier`;
+
+export type SourceBitrateMode = 'adaptive' | 'fixed';
+
+export interface SourceBitrateStatus {
+    stream_id: string;
+    mode: SourceBitrateMode;
+    bitrate: number | null;
+    adaptive: boolean;
+}
+
+export function getSourceBitrate(streamId: string) {
+    return w.url(sourceBitrateUrl(streamId)).get().json<SourceBitrateStatus>();
+}
+
+export interface SourceTier {
+    name: string;
+    bitrate: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+}
+
+export interface SourceTierStatus {
+    stream_id: string;
+    active_tier: string | null;
+    tiers: SourceTier[];
+}
+
+export interface ApplySourceTierResult {
+    stream_id: string;
+    tier: string;
+    bitrate: number;
+    rebuilt: boolean;
+}
+
+export function getSourceTier(streamId: string) {
+    return w.url(sourceTierUrl(streamId)).get().json<SourceTierStatus>();
+}
+
+export function applySourceTier(streamId: string, tier: string) {
+    return w.url(sourceTierUrl(streamId)).post({ tier }).json<ApplySourceTierResult>();
+}
+
 export interface ServerInfo {
     version: string;
     gitHash: string;

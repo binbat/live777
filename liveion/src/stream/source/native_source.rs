@@ -20,21 +20,74 @@ use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 pub struct NativeSource {
     inner: NativeEncodedSource,
+    /// Configured (spec) pipeline params — the ladder's top rung and the
+    /// fallback for tier fields a tier leaves unset.
+    base_params: livehal::NativeSourceParams,
 }
 
 impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
         let native_params = spec.to_native_params()?;
-        let adaptive = spec.encoder.adaptive_bitrate.then(|| {
-            super::adaptive_bitrate::AdaptiveBitrateConfig::new(
-                spec.encoder.bitrate,
-                spec.encoder.min_bitrate,
-            )
-        });
+        let tiers: Vec<super::tier::QualityTier> = spec
+            .tiers
+            .iter()
+            .map(|t| super::tier::QualityTier {
+                name: t.name.clone(),
+                // Unset fields overlay on the configured capture — the
+                // derivation sees the tier's effective geometry.
+                bitrate: t.encoder.bitrate.unwrap_or_else(|| {
+                    super::source_config::TierSpec::derived_bitrate(
+                        t.capture.width.unwrap_or(spec.capture.width),
+                        t.capture.height.unwrap_or(spec.capture.height),
+                        t.capture.fps.unwrap_or(spec.capture.fps),
+                    )
+                }),
+                width: t.capture.width,
+                height: t.capture.height,
+                fps: t.capture.fps,
+            })
+            .collect();
+
+        // Adaptive bitrate is on unless explicitly switched off.  The
+        // floor defaults to the lowest rung when tiers are declared (the
+        // ladder bottom is the natural floor), else the generic
+        // `max(target / 8, 300 kbps)` inside AdaptiveBitrateConfig::new.
+        use super::source_config::AdaptiveConfig;
+        let floor = tiers.iter().map(|t| t.bitrate).min();
+        let adaptive = match spec.encoder.adaptive {
+            Some(AdaptiveConfig::Switch(false)) => None,
+            Some(AdaptiveConfig::Knobs { min_bitrate }) => {
+                Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                    spec.encoder.bitrate,
+                    min_bitrate.or(floor),
+                ))
+            }
+            Some(AdaptiveConfig::Switch(true)) | None => Some(
+                super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, floor),
+            ),
+        };
         Ok(Self {
-            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params, adaptive),
+            inner: NativeEncodedSource::new(
+                spec.stream_id.clone(),
+                native_params.clone(),
+                adaptive,
+                tiers,
+            ),
+            base_params: native_params,
         })
+    }
+
+    /// Effective pipeline params for a tier: the configured (spec) values
+    /// with the tier's geometry/bitrate overlaid.
+    #[cfg(feature = "source")]
+    fn tier_params(&self, tier: &super::tier::QualityTier) -> livehal::NativeSourceParams {
+        let mut params = self.base_params.clone();
+        params.width = tier.width.unwrap_or(params.width);
+        params.height = tier.height.unwrap_or(params.height);
+        params.fps = tier.fps.unwrap_or(params.fps);
+        params.bitrate = tier.bitrate;
+        params
     }
 }
 
@@ -88,5 +141,39 @@ impl StreamSource for NativeSource {
     #[cfg(feature = "source")]
     async fn set_bitrate(&self, bps: u32) -> bool {
         self.inner.set_bitrate(bps)
+    }
+
+    #[cfg(feature = "source")]
+    fn configured_bitrate(&self) -> Option<u32> {
+        Some(self.inner.configured_bitrate())
+    }
+
+    #[cfg(feature = "source")]
+    fn tiers(&self) -> Vec<super::tier::QualityTier> {
+        self.inner.tiers()
+    }
+
+    #[cfg(feature = "source")]
+    fn active_tier(&self) -> Option<String> {
+        self.inner.active_tier()
+    }
+
+    #[cfg(feature = "source")]
+    async fn apply_tier(&mut self, tier: &super::tier::QualityTier) -> bool {
+        // Bitrate-only rung: seamless in-place retune, no rebuild.
+        if !tier.needs_rebuild() {
+            if !self.inner.set_bitrate(tier.bitrate) {
+                return false;
+            }
+            self.inner.set_active_tier(Some(tier.name.clone()));
+            return true;
+        }
+        let params = self.tier_params(tier);
+        if self.inner.reconfigure(params).await.is_ok() {
+            self.inner.set_active_tier(Some(tier.name.clone()));
+            true
+        } else {
+            false
+        }
     }
 }

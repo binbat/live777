@@ -202,16 +202,54 @@ void PiCameraImpl::on_request_completed(Request* request) {
         mapped = &it->second;
     }
 
-    // Copy each plane into the contiguous staging buffer.
+    // Copy each plane into the contiguous staging buffer, compacting away
+    // row padding: the ISP may stride-align plane rows (e.g. 1296-wide
+    // frames come back with a padded pitch), while the frame contract
+    // downstream is a single tightly packed I420 blob with stride == width.
     uint8_t* dst = mapped->contiguous.data();
     size_t offset = 0;
     const auto& planes = mapped->framebuffer->planes();
-    for (const auto& plane : planes) {
+    const size_t plane_rows[3] = {
+        static_cast<size_t>(height_),
+        static_cast<size_t>(height_ / 2),
+        static_cast<size_t>(height_ / 2),
+    };
+    const size_t plane_widths[3] = {
+        static_cast<size_t>(width_),
+        static_cast<size_t>(width_ / 2),
+        static_cast<size_t>(width_ / 2),
+    };
+    bool padded = false;
+    for (size_t i = 0; i < planes.size(); ++i) {
+        const auto& plane = planes[i];
+        const size_t rows = plane_rows[std::min(i, static_cast<size_t>(2))];
+        const size_t row_bytes = plane_widths[std::min(i, static_cast<size_t>(2))];
         if (mapped->base_addr && mapped->base_addr != MAP_FAILED) {
-            uint8_t* src = static_cast<uint8_t*>(mapped->base_addr) + plane.offset;
-            memcpy(dst + offset, src, plane.length);
+            const uint8_t* src =
+                static_cast<const uint8_t*>(mapped->base_addr) + plane.offset;
+            if (plane.length == rows * row_bytes) {
+                // Already tightly packed — one copy for the whole plane.
+                memcpy(dst + offset, src, plane.length);
+                offset += plane.length;
+            } else {
+                // Padded rows: copy row by row, dropping the pitch.
+                padded = true;
+                const size_t src_stride = plane.length / rows;
+                for (size_t row = 0; row < rows; ++row) {
+                    memcpy(dst + offset, src + row * src_stride, row_bytes);
+                    offset += row_bytes;
+                }
+            }
+        } else {
+            offset += rows * row_bytes;
         }
-        offset += plane.length;
+    }
+    if (padded && seq_ == 0) {
+        fprintf(stderr,
+                "[CameraInternal] %dx%d: compacting stride-padded planes"
+                " (plane lengths: %zu planes, first=%u)\n",
+                width_, height_, planes.size(),
+                planes.empty() ? 0u : planes[0].length);
     }
 
     CaptureFrameCallback cb;
@@ -246,7 +284,7 @@ void PiCameraImpl::on_request_completed(Request* request) {
         f.planes[0] = {
             mapped->contiguous.data(),
             static_cast<uint32_t>(width_),
-            static_cast<uint32_t>(mapped->contiguous.size()),
+            static_cast<uint32_t>(offset),
             -1,
             0,
         };
