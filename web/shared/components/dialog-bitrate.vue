@@ -5,7 +5,7 @@ export interface IBitrateDialog {
 </script>
 
 <script setup lang="ts">
-import { computed, ref, useTemplateRef } from "vue";
+import { ref, useTemplateRef } from "vue";
 
 import {
     type SourceBitrateStatus,
@@ -14,7 +14,6 @@ import {
     clearSourceBitrate,
     getSourceBitrate,
     getSourceTier,
-    setSourceBitrate,
 } from "../api";
 import { formatBitrate } from "../utils";
 
@@ -27,7 +26,6 @@ const loading = ref(false);
 const busy = ref(false);
 const noSource = ref(false);
 const errorMessage = ref("");
-const manualInput = ref("");
 
 const MODE_LABELS: Record<string, string> = {
     adaptive: "Adaptive",
@@ -41,7 +39,6 @@ const show = (id: string) => {
     tierStatus.value = null;
     noSource.value = false;
     errorMessage.value = "";
-    manualInput.value = "";
     dialogEl.value?.showModal();
     void refresh();
 };
@@ -95,20 +92,6 @@ const runAction = async (action: () => Promise<unknown>) => {
 
 const handleSelectTier = (tier: string) => runAction(() => applySourceTier(streamId.value, tier));
 
-const manualBitrate = computed(() => {
-    const value = Number(manualInput.value);
-    return Number.isInteger(value) && value > 0 ? value : null;
-});
-
-const handleApplyManual = () => {
-    const bitrate = manualBitrate.value;
-    if (bitrate === null) {
-        errorMessage.value = "Bitrate must be a positive integer (bps)";
-        return;
-    }
-    void runAction(() => setSourceBitrate(streamId.value, bitrate));
-};
-
 const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.value));
 </script>
 
@@ -149,26 +132,6 @@ const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.va
                             :disabled="busy"
                             @click="handleSelectTier(tier.name)"
                         >{{ tier.name }}<template v-if="tier.width && tier.height"> · {{ tier.width }}×{{ tier.height }}<template v-if="tier.fps">@{{ tier.fps }}</template></template> · {{ formatBitrate(tier.bitrate) }}</button>
-                    </div>
-                </div>
-                <div class="form-control">
-                    <label class="label px-0">Manual bitrate (bps):</label>
-                    <div class="flex gap-2">
-                        <input
-                            v-model="manualInput"
-                            type="number"
-                            min="1"
-                            step="1"
-                            placeholder="e.g. 1500000"
-                            class="input input-bordered input-sm flex-1"
-                            @keyup.enter="handleApplyManual"
-                        />
-                        <button
-                            class="btn btn-sm btn-primary"
-                            :class="{ 'btn-disabled': busy || manualBitrate === null }"
-                            :disabled="busy || manualBitrate === null"
-                            @click="handleApplyManual"
-                        >Apply</button>
                     </div>
                 </div>
                 <div v-if="status.manual_bitrate !== null" class="pt-2">

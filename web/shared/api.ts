@@ -159,12 +159,6 @@ export interface SourceBitrateStatus {
     adaptive: boolean;
 }
 
-export interface SetSourceBitrateResult {
-    stream_id: string;
-    bitrate: number;
-    adaptive_suspended: boolean;
-}
-
 export interface ClearSourceBitrateResult {
     message: string;
     stream_id: string;
@@ -174,10 +168,6 @@ export interface ClearSourceBitrateResult {
 
 export function getSourceBitrate(streamId: string) {
     return w.url(sourceBitrateUrl(streamId)).get().json<SourceBitrateStatus>();
-}
-
-export function setSourceBitrate(streamId: string, bitrate: number) {
-    return w.url(sourceBitrateUrl(streamId)).post({ bitrate }).json<SetSourceBitrateResult>();
 }
 
 export function clearSourceBitrate(streamId: string) {
