@@ -16,7 +16,7 @@
 | `-t`, `--token` | 无 | WHEP 认证使用的 Bearer token |
 | `--command` | 无 | 以子进程方式运行命令 |
 | `--channel` | 无 | DataChannel &lt;-&gt; UDP 转发 URL，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
+| `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 | `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
 
 ## RTP

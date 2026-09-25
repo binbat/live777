@@ -45,7 +45,7 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `--decode-duration` | `5` | Seconds to decode after the WHEP session connects. Values above `10` are silently capped. |
 | `--output` | `human` | Output format: `human`, `json` |
 | `--timeout` | `30` | Overall timeout in seconds |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 
 ## Exit code
 

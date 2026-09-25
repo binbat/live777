@@ -69,7 +69,7 @@ just livewrk-whep 100 60 load-0
 | `--width` | `640` | 视频宽度（像素） |
 | `--height` | `480` | 视频高度（像素） |
 | `--fps` | `30` | 视频帧率 |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
+| `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 
 ## `whep` 选项
 
@@ -77,7 +77,7 @@ just livewrk-whep 100 60 load-0
 |------|--------|------|
 | `--verify-window` | 无 | 启用旋转解码验证（每个窗口的秒数） |
 | `--verify-tolerant` | `false` | 只报告验证失败，不让整个运行失败 |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`（空字符串表示禁用 ICE 服务器） |
+| `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 
 ### 旋转解码验证
 

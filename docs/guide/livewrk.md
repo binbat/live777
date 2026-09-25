@@ -74,7 +74,7 @@ The `whip` subcommand publishes synthetic test patterns generated in-process
 | `--width` | `640` | Video width in pixels |
 | `--height` | `480` | Video height in pixels |
 | `--fps` | `30` | Video frame rate |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 
 ## `whep` options
 
@@ -82,7 +82,7 @@ The `whip` subcommand publishes synthetic test patterns generated in-process
 |--------|---------|-------------|
 | `--verify-window` | none | Enable rotating decode verification (seconds per window) |
 | `--verify-tolerant` | `false` | Report verification failures without failing the whole run |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 
 ### Rotating decode verification
 
