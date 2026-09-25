@@ -37,6 +37,7 @@ import {
     type Stream as StreamType,
     deleteStream,
     getRecordingStatus,
+    getSources,
     getStreams,
     parseStreamsSSE,
     probeRecorderFeature,
@@ -250,6 +251,37 @@ watch([streamsData, recordingAvailable], () => {
     })();
 }, { immediate: true });
 
+// Streams with a configured source (liveion only — liveman has no
+// /api/sources and keeps features.sourceBitrate off).  Sources change
+// only through the admin API, so a slow poll is enough.
+const sourceStreams = ref<Set<string>>(new Set());
+watchEffect((onCleanup) => {
+    void token.value;
+    if (!features.value.sourceBitrate) {
+        sourceStreams.value = new Set();
+        return;
+    }
+    let disposed = false;
+    const refresh = async () => {
+        try {
+            const res = await getSources();
+            if (!disposed) {
+                sourceStreams.value = new Set(res.sources.map(s => s.stream_id));
+            }
+        } catch {
+            if (!disposed) {
+                sourceStreams.value = new Set();
+            }
+        }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 10_000);
+    onCleanup(() => {
+        disposed = true;
+        clearInterval(timer);
+    });
+});
+
 const selectedStreamSessions = computed(
     () => streamsData.value.find(s => s.id == selectedStreamId.value)?.subscribe.sessions ?? []
 );
@@ -259,7 +291,7 @@ const handleViewClients = (id: string) => {
     clientsDialog.value?.show();
 };
 
-const handleViewBitrate = (id: string) => {
+const handleViewSource = (id: string) => {
     bitrateDialog.value?.show(id);
 };
 
@@ -517,10 +549,28 @@ const handleCancelStop = () => {
                             @click="handlePreview(i.id)"
                         >Preview</button>
                         <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
-                        <button v-if="features.sourceBitrate" class="btn btn-sm" @click="handleViewBitrate(i.id)">Bitrate</button>
-                        <button v-if="showCascade" class="btn btn-sm" @click="handleCascadePushStream(i.id)">Cascade Push</button>
-                        <button v-if="features.player" class="btn btn-sm" @click="handleOpenPlayerPage(i.id)">Player</button>
-                        <button v-if="features.debugger" class="btn btn-sm" @click="handleOpenDebuggerPage(i.id)">Debugger</button>
+                        <button
+                            v-if="features.sourceBitrate && sourceStreams.has(i.id)"
+                            class="btn btn-sm"
+                            @click="handleViewSource(i.id)"
+                        >Source</button>
+                        <div
+                            v-if="showCascade || features.player || features.debugger"
+                            class="dropdown dropdown-end"
+                        >
+                            <button tabindex="0" class="btn btn-sm">More</button>
+                            <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
+                                <li v-if="showCascade">
+                                    <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
+                                </li>
+                                <li v-if="features.player">
+                                    <a @click="handleOpenPlayerPage(i.id)">Player</a>
+                                </li>
+                                <li v-if="features.debugger">
+                                    <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
+                                </li>
+                            </ul>
+                        </div>
                         <button
                             v-if="recordingAvailable"
                             class="btn btn-sm"

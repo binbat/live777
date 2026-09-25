@@ -146,6 +146,17 @@ export async function stopRecording(streamId: string): Promise<boolean> {
     return true;
 }
 
+export interface SourceListEntry {
+    id: string;
+    stream_id: string;
+    source_type: string;
+    state: string;
+}
+
+export function getSources() {
+    return w.url('/api/sources').get().json<{ sources: SourceListEntry[] }>();
+}
+
 const sourceBitrateUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/bitrate`;
 const sourceTierUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/tier`;
 

@@ -95,7 +95,7 @@ const handleSelectTier = (tier: string) => runAction(() => applySourceTier(strea
     <dialog ref="dialogEl" aria-label="Modal" aria-hidden="true" class="modal">
         <div class="modal-box max-w-md">
             <div class="w-full text-xl mb-2">
-                <h3 class="font-bold">Source Bitrate ({{ streamId }})</h3>
+                <h3 class="font-bold">Source ({{ streamId }})</h3>
             </div>
             <div v-if="loading && !status" class="py-4 text-sm opacity-70">Loading…</div>
             <div v-else-if="noSource" class="py-4 text-sm opacity-70">
