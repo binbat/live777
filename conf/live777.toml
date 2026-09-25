@@ -88,7 +88,7 @@ ice_udp_addrs = ["auto"]
 
 # --- Native source examples (structured config, recommended) ---
 #
-# Raspberry Pi CSI camera:
+# Raspberry Pi CSI camera (tested on OV5647 / Camera Module v1):
 #   cargo build --bin live777 --release \
 #     --no-default-features --features native-rpi,webui
 # Or:
@@ -100,41 +100,70 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
-# width = 640
-# height = 480
+# width = 1920
+# height = 1080
 # fps = 30
 # pixel_format = "yuv420"
 # [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
-# bitrate = 1000000
-# profile = "baseline"        # or a 6-digit hex profile-level-id like "42001f"
-# level = "3.1"               # required when profile is a name
+# bitrate = 4000000
+# profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
+# level = "4.0"               # required when profile is a name; 1080p30 needs >= 4.0
 # gop = 60
 # adaptive_bitrate = true     # AIMD: lower the running encoder while WHEP
 #                             # subscribers report congestion (rkmpp/v4l2-m2m)
-# min_bitrate = 300000        # AIMD floor (default: lowest tier, else
-#                             # max(bitrate / 8, 300000))
+# min_bitrate = 300000        # AIMD floor (default: max(bitrate / 8, 300000))
 # [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Named quality tiers, switchable at runtime via
+# Quality-tier ladder (tested on OV5647), switchable at runtime via
 # POST /api/sources/pi-cam/tier {"tier": "mid"} or the WebUI.
 # Bitrate-only tiers retune the running encoder seamlessly; a tier that
 # also sets width/height/fps switches the whole ladder rung by rebuilding
-# the capture+encoder pipeline (brief frame gap; downscale/downclock only).
-# The tier's bitrate becomes the AIMD's new ceiling — it keeps following
-# network conditions within the rung:
+# the capture+encoder pipeline (brief frame gap).  The tier's bitrate
+# becomes the AIMD's new ceiling — it keeps following network conditions
+# within the rung.
+#
+# Max-quality rung — back to the full 1080p30 base profile:
+# [[stream.pi-cam.sources.tiers]]
+# name = "maxres"
+# bitrate = 4000000
+# width = 1920
+# height = 1080
+# fps = 30
+# Plain resolution+bitrate steps down:
 # [[stream.pi-cam.sources.tiers]]
 # name = "mid"
-# bitrate = 600000
+# bitrate = 2000000
+# width = 1296
+# height = 972
+# fps = 30
 # [[stream.pi-cam.sources.tiers]]
 # name = "low"
-# bitrate = 300000
+# bitrate = 800000
 # width = 640
 # height = 480
+# fps = 30
+# Floor rung for very slow links:
+# [[stream.pi-cam.sources.tiers]]
+# name = "tiny"
+# bitrate = 300000
+# width = 320
+# height = 240
 # fps = 15
+# 60 fps low-latency rung — OV5647 does 60 fps at 640x480; the smaller
+# frame cuts encode and decode latency end to end:
+# [[stream.pi-cam.sources.tiers]]
+# name = "lowlatency"
+# bitrate = 1000000
+# width = 640
+# height = 480
+# fps = 60
+# Note: the OV5647's full 2592x1944 mode is capture-only territory —
+# the bcm2835 H.264 encoder tops out at 1080p, so 1080p30 is the top
+# rung here.
 #
 # Raspberry Pi USB camera:
 #   cargo build --bin live777 --release --no-default-features --features native-rpi,webui

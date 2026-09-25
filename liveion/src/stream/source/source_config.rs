@@ -132,7 +132,10 @@ pub struct TierSpec {
     /// Tier capture height (must pair with `width`, downscale only).
     #[serde(default)]
     pub height: Option<u32>,
-    /// Tier capture framerate (must not exceed `capture.fps`).
+    /// Tier capture framerate.  May exceed `capture.fps` when the sensor
+    /// supports it (e.g. a low-latency rung trading resolution for
+    /// framerate on an OV5647: 1080p30 base, 480p60 rung); a mode the
+    /// camera cannot do is rejected at apply time and rolled back.
     #[serde(default)]
     pub fps: Option<u32>,
 }
@@ -342,14 +345,10 @@ impl SourceSpec {
                 if fps == 0 {
                     anyhow::bail!("tier '{}': fps must be non-zero", tier.name);
                 }
-                if fps > self.capture.fps {
-                    anyhow::bail!(
-                        "tier '{}': fps {} exceeds capture fps {}",
-                        tier.name,
-                        fps,
-                        self.capture.fps
-                    );
-                }
+                // No upper bound check here: a low-latency rung may trade
+                // resolution for framerate (e.g. 1080p30 base, 480p60
+                // rung).  Sensor capability is enforced at apply time —
+                // a mode the camera rejects rolls the pipeline back.
             }
         }
 
@@ -943,12 +942,16 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_fps_above_capture_rejected() {
-        let mut spec = rkmpp_spec(); // capture fps 30
-        let mut t = tier("low", 600_000);
+    fn test_tier_fps_above_capture_allowed() {
+        // A low-latency rung trades resolution for framerate: 1080p30
+        // base with a 480p60 tier is a valid ladder on e.g. the OV5647.
+        let mut spec = rkmpp_spec(); // capture 1920x1080@30
+        let mut t = tier("lowlatency", 600_000);
+        t.width = Some(640);
+        t.height = Some(480);
         t.fps = Some(60);
         spec.tiers = vec![t];
-        assert!(spec.validate().is_err());
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
