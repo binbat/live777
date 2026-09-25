@@ -29,10 +29,10 @@ impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
         let native_params = spec.to_native_params()?;
-        let tiers: Vec<super::adaptive_bitrate::QualityTier> = spec
+        let tiers: Vec<super::tier::QualityTier> = spec
             .tiers
             .iter()
-            .map(|t| super::adaptive_bitrate::QualityTier {
+            .map(|t| super::tier::QualityTier {
                 name: t.name.clone(),
                 bitrate: t.bitrate,
                 width: t.width,
@@ -41,14 +41,10 @@ impl NativeSource {
             })
             .collect();
         let adaptive = spec.encoder.adaptive_bitrate.then(|| {
-            // Explicit min_bitrate wins; with tiers configured the AIMD
-            // floor defaults to the lowest tier instead of the generic
-            // max(target / 8, 300 kbps).
-            let min = spec
-                .encoder
-                .min_bitrate
-                .or_else(|| tiers.iter().map(|t| t.bitrate).min());
-            super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, min)
+            super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                spec.encoder.bitrate,
+                spec.encoder.min_bitrate,
+            )
         });
         Ok(Self {
             inner: NativeEncodedSource::new(
@@ -64,10 +60,7 @@ impl NativeSource {
     /// Effective pipeline params for a tier: the configured (spec) values
     /// with the tier's geometry/bitrate overlaid.
     #[cfg(feature = "source")]
-    fn tier_params(
-        &self,
-        tier: &super::adaptive_bitrate::QualityTier,
-    ) -> livehal::NativeSourceParams {
+    fn tier_params(&self, tier: &super::tier::QualityTier) -> livehal::NativeSourceParams {
         let mut params = self.base_params.clone();
         params.width = tier.width.unwrap_or(params.width);
         params.height = tier.height.unwrap_or(params.height);
@@ -135,13 +128,31 @@ impl StreamSource for NativeSource {
     }
 
     #[cfg(feature = "source")]
-    fn quality_tiers(&self) -> Vec<super::adaptive_bitrate::QualityTier> {
-        self.inner.quality_tiers()
+    fn tiers(&self) -> Vec<super::tier::QualityTier> {
+        self.inner.tiers()
     }
 
     #[cfg(feature = "source")]
-    async fn apply_quality_tier(&mut self, tier: &super::adaptive_bitrate::QualityTier) -> bool {
+    fn active_tier(&self) -> Option<String> {
+        self.inner.active_tier()
+    }
+
+    #[cfg(feature = "source")]
+    async fn apply_tier(&mut self, tier: &super::tier::QualityTier) -> bool {
+        // Bitrate-only rung: seamless in-place retune, no rebuild.
+        if !tier.needs_rebuild() {
+            if !self.inner.set_bitrate(tier.bitrate) {
+                return false;
+            }
+            self.inner.set_active_tier(Some(tier.name.clone()));
+            return true;
+        }
         let params = self.tier_params(tier);
-        self.inner.reconfigure(params).await.is_ok()
+        if self.inner.reconfigure(params).await.is_ok() {
+            self.inner.set_active_tier(Some(tier.name.clone()));
+            true
+        } else {
+            false
+        }
     }
 }

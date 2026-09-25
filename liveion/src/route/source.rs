@@ -16,28 +16,25 @@ pub struct CreateSourceRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct SetBitrateRequest {
-    /// Target encoder bitrate in bits per second.  Exactly one of
-    /// `bitrate` / `tier` must be set.
+    /// Target encoder bitrate in bits per second (required).
     #[serde(default)]
     pub bitrate: Option<u32>,
-    /// Name of a configured quality tier to switch to.
-    #[serde(default)]
-    pub tier: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BitrateResponse {
     pub stream_id: String,
     pub bitrate: u32,
-    /// The tier that was switched to, when the request named one.
-    pub tier: Option<String>,
     /// True when the stream's adaptive-bitrate controller suspended itself
     /// in favour of this manual override (`DELETE` resumes it).
     pub adaptive_suspended: bool,
-    /// True when the tier carried resolution/framerate and the switch
-    /// rebuilt the capture+encoder pipeline (brief frame gap), as opposed
-    /// to a seamless in-place retune.
-    pub rebuilt: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetTierRequest {
+    /// Name of a configured quality tier to switch to (required).
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +49,40 @@ pub struct TierInfo {
     pub fps: Option<u32>,
 }
 
+impl From<crate::stream::source::tier::QualityTier> for TierInfo {
+    fn from(t: crate::stream::source::tier::QualityTier) -> Self {
+        Self {
+            name: t.name,
+            bitrate: t.bitrate,
+            width: t.width,
+            height: t.height,
+            fps: t.fps,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TierResponse {
+    pub stream_id: String,
+    /// The tier that was switched to.
+    pub tier: String,
+    pub bitrate: u32,
+    /// True when the tier carried resolution/framerate and the switch
+    /// rebuilt the capture+encoder pipeline (brief frame gap), as opposed
+    /// to a seamless in-place retune.
+    pub rebuilt: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SourceTierResponse {
+    pub stream_id: String,
+    /// The last tier applied through this API (`null` = the configured
+    /// base profile).
+    pub active_tier: Option<String>,
+    /// Configured quality tiers (empty when the source defines none).
+    pub tiers: Vec<TierInfo>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SourceBitrateResponse {
     pub stream_id: String,
@@ -62,12 +93,8 @@ pub struct SourceBitrateResponse {
     pub bitrate: Option<u32>,
     /// Active manual override bitrate.
     pub manual_bitrate: Option<u32>,
-    /// The tier whose bitrate equals the manual override, if any.
-    pub active_tier: Option<String>,
     /// Whether the source opted into adaptive bitrate.
     pub adaptive: bool,
-    /// Configured quality tiers (empty when the source defines none).
-    pub tiers: Vec<TierInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +134,10 @@ pub fn route() -> Router<AppState> {
             get(get_source_bitrate)
                 .post(set_source_bitrate)
                 .delete(clear_manual_bitrate),
+        )
+        .route(
+            "/api/sources/{stream}/tier",
+            get(get_source_tier).post(apply_source_tier),
         )
 }
 
@@ -297,31 +328,17 @@ async fn get_source_bitrate(
         mode: info.mode.as_str().to_string(),
         bitrate: info.current,
         manual_bitrate: info.manual,
-        active_tier: info.active_tier,
         adaptive: info.adaptive,
-        tiers: info
-            .tiers
-            .into_iter()
-            .map(|t| TierInfo {
-                name: t.name,
-                bitrate: t.bitrate,
-                width: t.width,
-                height: t.height,
-                fps: t.fps,
-            })
-            .collect(),
     }))
 }
 
-/// Manually retune the stream source's encoder bitrate (issue #409),
-/// either with a raw `bitrate` value or by naming a configured `tier`.
+/// Manually retune the stream source's encoder bitrate (issue #409) with
+/// a raw `bitrate` value.
 ///
-/// Takes effect immediately.  A bitrate-only tier retunes the running
-/// encoder in place; a tier carrying resolution/framerate rebuilds the
-/// capture+encoder pipeline (brief frame gap).  On a stream with
-/// `encoder.adaptive_bitrate` enabled the AIMD controller suspends in
-/// favour of the manual value; `DELETE` on the same path clears the
-/// override and resumes adaptive control.
+/// Takes effect immediately.  On a stream with `encoder.adaptive_bitrate`
+/// enabled the AIMD controller suspends in favour of the manual value;
+/// `DELETE` on the same path clears the override and resumes adaptive
+/// control.
 #[cfg(feature = "source")]
 async fn set_source_bitrate(
     State(state): State<AppState>,
@@ -329,87 +346,14 @@ async fn set_source_bitrate(
     Json(req): Json<SetBitrateRequest>,
 ) -> Result<Json<BitrateResponse>> {
     use crate::error::AppError;
-    use crate::stream::source::manager::{SetBitrateOutcome, TierResolution};
+    use crate::stream::source::manager::SetBitrateOutcome;
 
-    let (bps, tier_name, rebuilt) = match (req.bitrate, req.tier) {
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(AppError::bad_request(
-                "exactly one of 'bitrate' or 'tier' must be set",
-            ));
-        }
-        (Some(0), None) => return Err(AppError::bad_request("bitrate must be non-zero")),
-        (Some(bps), None) => (bps, None, false),
-        (None, Some(tier)) => {
-            let resolved = match state
-                .stream_manager
-                .source_manager
-                .resolve_bitrate_tier(&stream, &tier)
-                .await
-            {
-                TierResolution::Resolved(t) => t,
-                TierResolution::SourceNotFound => {
-                    return Err(AppError::source_not_found(format!(
-                        "Source not found: {stream}"
-                    )));
-                }
-                TierResolution::TierNotFound => {
-                    return Err(AppError::bad_request(format!(
-                        "tier '{tier}' is not defined for stream: {stream}"
-                    )));
-                }
-            };
-
-            // A tier carrying geometry switches the whole ladder rung by
-            // rebuilding the pipeline; a bitrate-only tier takes the
-            // seamless in-place retune path below.
-            if resolved.needs_rebuild() {
-                let bps = resolved.bitrate;
-                let tier_name = resolved.name.clone();
-                match state
-                    .stream_manager
-                    .source_manager
-                    .apply_source_tier(&stream, &resolved)
-                    .await
-                {
-                    SetBitrateOutcome::Applied { adaptive_suspended } => {
-                        info!(
-                            "Source quality tier applied (pipeline rebuilt): {} -> {} [{} bps \
-                             {}x{} @ {} fps] (adaptive suspended: {})",
-                            stream,
-                            tier_name,
-                            bps,
-                            resolved.width.map(|w| w.to_string()).unwrap_or("-".into()),
-                            resolved.height.map(|h| h.to_string()).unwrap_or("-".into()),
-                            resolved.fps.map(|f| f.to_string()).unwrap_or("-".into()),
-                            adaptive_suspended
-                        );
-                        return Ok(Json(BitrateResponse {
-                            stream_id: stream,
-                            bitrate: bps,
-                            tier: Some(tier_name),
-                            adaptive_suspended,
-                            rebuilt: true,
-                        }));
-                    }
-                    SetBitrateOutcome::SourceNotFound => {
-                        return Err(AppError::source_not_found(format!(
-                            "Source not found: {stream}"
-                        )));
-                    }
-                    SetBitrateOutcome::AboveCeiling(_) => {
-                        unreachable!("apply_source_tier does not check the ceiling")
-                    }
-                    SetBitrateOutcome::Unsupported => {
-                        return Err(AppError::source_bitrate_unsupported(format!(
-                            "Rebuilding the source pipeline of {stream} for tier \
-                             '{tier_name}' failed (or the source is not running)"
-                        )));
-                    }
-                }
-            }
-            (resolved.bitrate, Some(tier), false)
-        }
+    let Some(bps) = req.bitrate else {
+        return Err(AppError::bad_request("missing required field 'bitrate'"));
     };
+    if bps == 0 {
+        return Err(AppError::bad_request("bitrate must be non-zero"));
+    }
 
     match state
         .stream_manager
@@ -419,21 +363,13 @@ async fn set_source_bitrate(
     {
         SetBitrateOutcome::Applied { adaptive_suspended } => {
             info!(
-                "Source bitrate manually set: {} -> {} bps{} (adaptive suspended: {})",
-                stream,
-                bps,
-                tier_name
-                    .as_ref()
-                    .map(|t| format!(" [tier: {t}]"))
-                    .unwrap_or_default(),
-                adaptive_suspended
+                "Source bitrate manually set: {} -> {} bps (adaptive suspended: {})",
+                stream, bps, adaptive_suspended
             );
             Ok(Json(BitrateResponse {
                 stream_id: stream,
                 bitrate: bps,
-                tier: tier_name,
                 adaptive_suspended,
-                rebuilt,
             }))
         }
         SetBitrateOutcome::SourceNotFound => Err(AppError::source_not_found(format!(
@@ -493,6 +429,100 @@ async fn clear_manual_bitrate(
         None => Err(AppError::source_not_found(format!(
             "No bitrate state for stream: {stream} \
              (no source, or the source is not a native encoder source)"
+        ))),
+    }
+}
+
+/// Query the stream source's quality-tier state: the configured tiers
+/// and the active one.
+#[cfg(feature = "source")]
+async fn get_source_tier(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+) -> Result<Json<SourceTierResponse>> {
+    use crate::error::AppError;
+
+    let info = state
+        .stream_manager
+        .source_manager
+        .source_tier_info(&stream)
+        .await
+        .ok_or_else(|| AppError::source_not_found(format!("Source not found: {stream}")))?;
+
+    Ok(Json(SourceTierResponse {
+        stream_id: stream,
+        active_tier: info.active_tier,
+        tiers: info.tiers.into_iter().map(TierInfo::from).collect(),
+    }))
+}
+
+/// Apply a configured quality tier: re-provision the stream source with
+/// the tier's geometry and bitrate.  A bitrate-only tier retunes the
+/// running encoder in place; a tier carrying resolution/framerate
+/// rebuilds the capture+encoder pipeline (brief frame gap, subscribers
+/// stay connected).  The adaptive controller is not suspended — the
+/// tier's bitrate becomes its new rung ceiling.
+#[cfg(feature = "source")]
+async fn apply_source_tier(
+    State(state): State<AppState>,
+    Path(stream): Path<String>,
+    Json(req): Json<SetTierRequest>,
+) -> Result<Json<TierResponse>> {
+    use crate::error::AppError;
+    use crate::stream::source::manager::{ApplyTierOutcome, TierResolution};
+
+    let Some(tier_name) = req.tier else {
+        return Err(AppError::bad_request("missing required field 'tier'"));
+    };
+
+    let resolved = match state
+        .stream_manager
+        .source_manager
+        .resolve_tier(&stream, &tier_name)
+        .await
+    {
+        TierResolution::Resolved(t) => t,
+        TierResolution::SourceNotFound => {
+            return Err(AppError::source_not_found(format!(
+                "Source not found: {stream}"
+            )));
+        }
+        TierResolution::TierNotFound => {
+            return Err(AppError::bad_request(format!(
+                "tier '{tier_name}' is not defined for stream: {stream}"
+            )));
+        }
+    };
+
+    let rebuilt = resolved.needs_rebuild();
+    match state
+        .stream_manager
+        .source_manager
+        .apply_source_tier(&stream, &resolved)
+        .await
+    {
+        ApplyTierOutcome::Applied => {
+            info!(
+                "Source quality tier applied: {} -> {}{} ({} bps)",
+                stream,
+                resolved.name,
+                if rebuilt { " (pipeline rebuilt)" } else { "" },
+                resolved.bitrate
+            );
+            Ok(Json(TierResponse {
+                stream_id: stream,
+                tier: resolved.name,
+                bitrate: resolved.bitrate,
+                rebuilt,
+            }))
+        }
+        ApplyTierOutcome::SourceNotFound => Err(AppError::source_not_found(format!(
+            "Source not found: {stream}"
+        ))),
+        ApplyTierOutcome::Unsupported => Err(AppError::source_bitrate_unsupported(format!(
+            "Applying tier '{}' to {stream} failed (the source is not running, \
+             or the pipeline rebuild failed and was rolled back)",
+            resolved.name
         ))),
     }
 }

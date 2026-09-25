@@ -32,6 +32,8 @@ pub mod source_router;
 pub mod manager;
 #[cfg(feature = "native-source")]
 pub mod native_source;
+#[cfg(feature = "source")]
+pub mod tier;
 
 #[cfg(feature = "source-rtsp")]
 pub use rtsp_source::RtspSource;
@@ -288,18 +290,27 @@ pub trait StreamSource: Send + Sync {
     /// Named quality tiers configured on the source (native sources only).
     /// Empty when the source defines no tiers.
     #[cfg(feature = "source")]
-    fn quality_tiers(&self) -> Vec<adaptive_bitrate::QualityTier> {
+    fn tiers(&self) -> Vec<tier::QualityTier> {
         Vec::new()
     }
 
-    /// Apply a full quality tier — resolution/framerate/bitrate — by
-    /// rebuilding the capture+encoder pipeline underneath the stream (the
-    /// RTP broadcast channel and subscriber sessions survive; expect a
-    /// sub-second frame gap).  Returns false when the source cannot
-    /// rebuild at runtime (non-native source, or the rebuild failed and
-    /// was rolled back).
+    /// The last tier applied through the admin API, when the source tracks
+    /// it (native sources only).  `None` means the configured base
+    /// profile.
     #[cfg(feature = "source")]
-    async fn apply_quality_tier(&mut self, _tier: &adaptive_bitrate::QualityTier) -> bool {
+    fn active_tier(&self) -> Option<String> {
+        None
+    }
+
+    /// Apply a quality tier (source-level re-provisioning).  Bitrate-only
+    /// tiers retune the running encoder in place; a tier carrying
+    /// geometry rebuilds the capture+encoder pipeline underneath the
+    /// stream (the RTP broadcast channel and subscriber sessions survive;
+    /// expect a sub-second frame gap).  Returns false when the source
+    /// cannot apply the tier (non-native source, or a rebuild that failed
+    /// and was rolled back).
+    #[cfg(feature = "source")]
+    async fn apply_tier(&mut self, _tier: &tier::QualityTier) -> bool {
         false
     }
 }

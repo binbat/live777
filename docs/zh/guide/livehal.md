@@ -163,21 +163,21 @@ min_bitrate = 500_000      # 下限(默认:max(bitrate / 8, 300_000))
 
 ### 手动切换码率与质量档位
 
-`POST /api/sources/:streamId/bitrate` 可随时手动调整编码器码率(见
+这是两个独立的功能。**码率端点**驱动的是编码器本身:
+`POST /api/sources/:streamId/bitrate` 可随时手动调整码率(见
 [HTTP API 文档](./live777-api.md))。在自适应流上,控制器会让位于手动值,
 直到 `DELETE /api/sources/:streamId/bitrate` 清除覆盖;在固定码率的
 源上,手动值会一直保持到 `DELETE`(会把编码器调回配置码率)、下一次
 `POST` 或源重启。对同一路径发起
-`GET` 可以查询驱动方式(`adaptive` / `manual` / `fixed`)、当前码率和
-已配置的档位。
+`GET` 可以查询驱动方式(`adaptive` / `manual` / `fixed`)和当前码率。
 
-可以在*源*层级声明命名质量档位:
+**质量档位**是源级功能 —— 命名的几何+码率预设,通过
+`POST /api/sources/:streamId/tier` 应用:
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # 上限
+bitrate = 4_000_000        # 上限(也是 AIMD 的最高档)
 adaptive_bitrate = true
-# 声明了档位时,min_bitrate 默认取最低档
 
 # 纯码率档:原地调运行中的编码器,无缝切换
 [[stream.pi-cam.sources.tiers]]
@@ -194,19 +194,22 @@ height = 480
 fps = 15
 ```
 
-声明之后一次请求即可切档:`POST {"tier": "mid"}`。档位放在
-`capture`/`encoder` 同级(而不是 encoder 块内),因为一个质量档位横跨
-两个块:`bitrate` 调编码器,而 `width`/`height`/`fps` 要改采集配置
-(livehal 没有 scaler 环节 —— 采集尺寸就是编码器输入尺寸,帧率也是
-采集侧属性)。纯码率档原地无缝切换;携带几何参数的档位会在流的
-下方重建管线 —— RTP 会话保持存活,订阅者只会看到短暂定格和一次
-带内 SPS/PPS 变更。`width`/`height` 必须成对设置且不能超过采集
-尺寸,`fps` 不能超过 `capture.fps`,`bitrate` 不能超过
+档位放在 `capture`/`encoder` 同级(而不是 encoder 块内),因为一个
+质量档位横跨两个块:`bitrate` 调编码器,而 `width`/`height`/`fps`
+要改采集配置(livehal 没有 scaler 环节 —— 采集尺寸就是编码器输入
+尺寸,帧率也是采集侧属性)。纯码率档原地无缝切换;携带几何参数的
+档位会在流的下方重建管线 —— RTP 会话保持存活,订阅者只会看到
+短暂定格和一次带内 SPS/PPS 变更。`width`/`height` 必须成对设置且
+不能超过采集尺寸,`fps` 不能超过 `capture.fps`,`bitrate` 不能超过
 `encoder.bitrate`。
 
-重建失败(例如摄像头拒绝新尺寸)会回滚到之前的配置;档位的字段
-总是叠加在配置的采集参数上:未设置的字段回落到配置值,因此混合
-阶梯(纯码率档与几何档并存)语义是明确的。
+应用档位*不会*挂起自适应控制器:档位的码率成为 AIMD 的新上限,
+它会在档内继续跟随网络状况调节(要把码率钉死在某值,用上面的裸
+码率覆盖)。重建失败(例如摄像头拒绝新尺寸)会回滚到之前的配置;
+档位的字段总是叠加在配置的采集参数上:未设置的字段回落到配置值,
+因此混合阶梯(纯码率档与几何档并存)语义是明确的。同一机制日后
+还可以扩展到切换源的*类型*(例如从摄像头切到 RTSP 地址)——档位
+描述的是源配置,而不是编码器内部。
 
 ### 后端命名
 

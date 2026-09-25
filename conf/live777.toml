@@ -120,10 +120,12 @@ ice_udp_addrs = ["auto"]
 # clock_rate = 90000
 #
 # Named quality tiers, switchable at runtime via
-# POST /api/sources/pi-cam/bitrate {"tier": "mid"} or the WebUI.
+# POST /api/sources/pi-cam/tier {"tier": "mid"} or the WebUI.
 # Bitrate-only tiers retune the running encoder seamlessly; a tier that
 # also sets width/height/fps switches the whole ladder rung by rebuilding
-# the capture+encoder pipeline (brief frame gap; downscale/downclock only):
+# the capture+encoder pipeline (brief frame gap; downscale/downclock only).
+# The tier's bitrate becomes the AIMD's new ceiling — it keeps following
+# network conditions within the rung:
 # [[stream.pi-cam.sources.tiers]]
 # name = "mid"
 # bitrate = 600000

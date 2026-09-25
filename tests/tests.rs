@@ -181,41 +181,41 @@ async fn test_liveion_source_bitrate_api() {
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
     let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/sources/webcam/bitrate");
+    let bitrate_url = format!("http://{addr}/api/sources/webcam/bitrate");
+    let tier_url = format!("http://{addr}/api/sources/webcam/tier");
 
-    // Malformed requests are rejected before any source lookup: bitrate =
-    // 0, both fields set, neither field set.
-    for body in [
-        serde_json::json!({ "bitrate": 0 }),
-        serde_json::json!({ "bitrate": 1_000_000, "tier": "low" }),
-        serde_json::json!({}),
-    ] {
-        let res = client.post(&url).json(&body).send().await.unwrap();
+    // Malformed bitrate requests are rejected before any source lookup:
+    // zero value, missing required field.
+    for body in [serde_json::json!({ "bitrate": 0 }), serde_json::json!({})] {
+        let res = client.post(&bitrate_url).json(&body).send().await.unwrap();
         assert_eq!(http::StatusCode::BAD_REQUEST, res.status(), "body: {body}");
     }
 
-    // No source registered for the stream: state query, manual set (raw
-    // and by tier), and override clear all report 404.
-    let res = client.get(&url).send().await.unwrap();
+    // No source registered for the stream: bitrate state query, manual
+    // set, override clear, tier state query, and tier apply all report 404.
+    let res = client.get(&bitrate_url).send().await.unwrap();
     assert_eq!(http::StatusCode::NOT_FOUND, res.status());
 
     let res = client
-        .post(&url)
+        .post(&bitrate_url)
         .json(&serde_json::json!({ "bitrate": 1_000_000 }))
         .send()
         .await
         .unwrap();
     assert_eq!(http::StatusCode::NOT_FOUND, res.status());
 
+    let res = client.delete(&bitrate_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = client.get(&tier_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
     let res = client
-        .post(&url)
+        .post(&tier_url)
         .json(&serde_json::json!({ "tier": "low" }))
         .send()
         .await
         .unwrap();
-    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
-
-    let res = client.delete(&url).send().await.unwrap();
     assert_eq!(http::StatusCode::NOT_FOUND, res.status());
 }
 

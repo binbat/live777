@@ -9,8 +9,11 @@ import { computed, ref, useTemplateRef } from "vue";
 
 import {
     type SourceBitrateStatus,
+    type SourceTierStatus,
+    applySourceTier,
     clearSourceBitrate,
     getSourceBitrate,
+    getSourceTier,
     setSourceBitrate,
 } from "../api";
 import { formatBitrate } from "../utils";
@@ -19,6 +22,7 @@ const dialogEl = useTemplateRef<HTMLDialogElement>("dialogEl");
 
 const streamId = ref("");
 const status = ref<SourceBitrateStatus | null>(null);
+const tierStatus = ref<SourceTierStatus | null>(null);
 const loading = ref(false);
 const busy = ref(false);
 const noSource = ref(false);
@@ -34,6 +38,7 @@ const MODE_LABELS: Record<string, string> = {
 const show = (id: string) => {
     streamId.value = id;
     status.value = null;
+    tierStatus.value = null;
     noSource.value = false;
     errorMessage.value = "";
     manualInput.value = "";
@@ -60,8 +65,11 @@ const refresh = async () => {
     noSource.value = false;
     try {
         status.value = await getSourceBitrate(streamId.value);
+        // Tiers are optional: a source can exist without defining any.
+        tierStatus.value = await getSourceTier(streamId.value).catch(() => null);
     } catch (error: unknown) {
         status.value = null;
+        tierStatus.value = null;
         if ((error as { status?: number })?.status === 404) {
             noSource.value = true;
         } else {
@@ -85,7 +93,7 @@ const runAction = async (action: () => Promise<unknown>) => {
     }
 };
 
-const handleSelectTier = (tier: string) => runAction(() => setSourceBitrate(streamId.value, { tier }));
+const handleSelectTier = (tier: string) => runAction(() => applySourceTier(streamId.value, tier));
 
 const manualBitrate = computed(() => {
     const value = Number(manualInput.value);
@@ -98,7 +106,7 @@ const handleApplyManual = () => {
         errorMessage.value = "Bitrate must be a positive integer (bps)";
         return;
     }
-    void runAction(() => setSourceBitrate(streamId.value, { bitrate }));
+    void runAction(() => setSourceBitrate(streamId.value, bitrate));
 };
 
 const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.value));
@@ -130,14 +138,14 @@ const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.va
                         (override: {{ formatBitrate(status.manual_bitrate) }})
                     </span>
                 </div>
-                <div v-if="status.tiers.length > 0" class="form-control">
+                <div v-if="tierStatus && tierStatus.tiers.length > 0" class="form-control">
                     <label class="label px-0">Quality tiers:</label>
                     <div class="flex flex-wrap gap-1">
                         <button
-                            v-for="tier in status.tiers"
+                            v-for="tier in tierStatus.tiers"
                             :key="tier.name"
                             class="btn btn-sm"
-                            :class="{ 'btn-info': status.active_tier === tier.name, 'btn-disabled': busy }"
+                            :class="{ 'btn-info': tierStatus.active_tier === tier.name, 'btn-disabled': busy }"
                             :disabled="busy"
                             @click="handleSelectTier(tier.name)"
                         >{{ tier.name }}<template v-if="tier.width && tier.height"> · {{ tier.width }}×{{ tier.height }}<template v-if="tier.fps">@{{ tier.fps }}</template></template> · {{ formatBitrate(tier.bitrate) }}</button>

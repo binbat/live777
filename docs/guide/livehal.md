@@ -178,23 +178,23 @@ disables itself.
 
 ### Manual bitrate override & quality tiers
 
-`POST /api/sources/:streamId/bitrate` retunes the encoder by hand at any
-time (see the [HTTP API guide](./live777-api.md#get-source-bitrate-state)).
-On an adaptive stream the controller suspends in favour of the manual
-value until `DELETE /api/sources/:streamId/bitrate` clears the override;
-on a fixed-bitrate source the manual value holds until a `DELETE` (which
+These are two separate features.  The **bitrate endpoint** drives the
+encoder itself: `POST /api/sources/:streamId/bitrate` retunes it by hand
+at any time (see the [HTTP API guide](./live777-api.md#source)).  On an
+adaptive stream the controller suspends in favour of the manual value
+until `DELETE /api/sources/:streamId/bitrate` clears the override; on a
+fixed-bitrate source the manual value holds until a `DELETE` (which
 retunes the encoder back to the configured bitrate), the next `POST`, or
 a source restart.  `GET` on the same path reports the drive mode
-(`adaptive` / `manual` / `fixed`), the current bitrate, and the
-configured tiers.
+(`adaptive` / `manual` / `fixed`) and the current bitrate.
 
-Named quality tiers can be declared at *source* level:
+**Quality tiers** are a source-level feature — named geometry+bitrate
+presets applied with `POST /api/sources/:streamId/tier`:
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # ceiling
+bitrate = 4_000_000        # ceiling (and the AIMD's top rung)
 adaptive_bitrate = true
-# min_bitrate defaults to the lowest tier when tiers are declared
 
 # Bitrate-only tier: retunes the running encoder, seamless.
 [[stream.pi-cam.sources.tiers]]
@@ -212,11 +212,10 @@ height = 480
 fps = 15
 ```
 
-A tier is then one request away: `POST {"tier": "mid"}`.  Tiers sit next
-to `capture`/`encoder` (not inside the encoder block) because a quality
-tier spans both blocks: `bitrate` retunes the encoder, while
-`width`/`height`/`fps` reconfigure the capture (livehal has no scaler
-stage — capture size is encoder input size — and framerate is a
+Tiers sit next to `capture`/`encoder` (not inside the encoder block)
+because a quality tier spans both blocks: `bitrate` retunes the encoder,
+while `width`/`height`/`fps` reconfigure the capture (livehal has no
+scaler stage — capture size is encoder input size — and framerate is a
 capture-side property).  A bitrate-only tier switches seamlessly in
 place; a tier carrying any geometry rebuilds the pipeline underneath
 the stream — the RTP session survives, subscribers just see a brief
@@ -224,11 +223,17 @@ freeze and an in-band SPS/PPS change.  `width`/`height` must be set
 together and must not exceed the capture size, `fps` must not exceed
 `capture.fps`, and `bitrate` must not exceed `encoder.bitrate`.
 
-A failed rebuild (e.g. the camera rejects the new size) rolls back to
-the previous configuration, and the tier's fields are always overlaid
-on the configured capture: unset fields restore the configured values,
-so a mixed ladder (bitrate-only and geometry tiers side by side) is
-well-defined.
+Applying a tier does *not* suspend the adaptive controller: the tier's
+bitrate becomes the AIMD's new ceiling, so it keeps following network
+conditions within the rung (to pin the encoder at a value, use the raw
+bitrate override above).  A failed rebuild (e.g. the camera rejects the
+new size) rolls back to the previous configuration, and the tier's
+fields are always overlaid on the configured capture: unset fields
+restore the configured values, so a mixed ladder (bitrate-only and
+geometry tiers side by side) is well-defined.  The same mechanism can
+later grow to switch source *types* entirely (e.g. from the camera to
+an RTSP URL) — tiers describe source configuration, not encoder
+internals.
 
 ### Backend naming
 

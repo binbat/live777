@@ -81,7 +81,10 @@ pub struct NativeEncodedSource {
     stream_id: String,
     params: livehal::NativeSourceParams,
     adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
-    tiers: Vec<super::adaptive_bitrate::QualityTier>,
+    tiers: Vec<super::tier::QualityTier>,
+    /// The tier last applied through the admin API (`None` = the
+    /// configured base profile).
+    active_tier: Option<String>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -105,7 +108,7 @@ impl NativeEncodedSource {
         stream_id: String,
         params: livehal::NativeSourceParams,
         adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
-        tiers: Vec<super::adaptive_bitrate::QualityTier>,
+        tiers: Vec<super::tier::QualityTier>,
     ) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
@@ -115,6 +118,7 @@ impl NativeEncodedSource {
             params,
             adaptive,
             tiers,
+            active_tier: None,
             state: Arc::new(std::sync::RwLock::new(StreamSourceState::Initializing)),
             rtp_tx,
             state_tx,
@@ -439,8 +443,17 @@ impl NativeEncodedSource {
     }
 
     /// Named quality tiers from the source config.
-    pub fn quality_tiers(&self) -> Vec<super::adaptive_bitrate::QualityTier> {
+    pub fn tiers(&self) -> Vec<super::tier::QualityTier> {
         self.tiers.clone()
+    }
+
+    /// The tier last applied through the admin API (`None` = base config).
+    pub fn active_tier(&self) -> Option<String> {
+        self.active_tier.clone()
+    }
+
+    pub fn set_active_tier(&mut self, name: Option<String>) {
+        self.active_tier = name;
     }
 
     /// Retune the running encoder (adaptive bitrate control, issue #409).

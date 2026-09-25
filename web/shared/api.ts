@@ -147,35 +147,22 @@ export async function stopRecording(streamId: string): Promise<boolean> {
 }
 
 const sourceBitrateUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/bitrate`;
+const sourceTierUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/tier`;
 
 export type SourceBitrateMode = 'adaptive' | 'manual' | 'fixed';
-
-export interface SourceBitrateTier {
-    name: string;
-    bitrate: number;
-    width?: number;
-    height?: number;
-    fps?: number;
-}
 
 export interface SourceBitrateStatus {
     stream_id: string;
     mode: SourceBitrateMode;
     bitrate: number | null;
     manual_bitrate: number | null;
-    active_tier: string | null;
     adaptive: boolean;
-    tiers: SourceBitrateTier[];
 }
-
-export type SetSourceBitrateRequest = { tier: string } | { bitrate: number };
 
 export interface SetSourceBitrateResult {
     stream_id: string;
     bitrate: number;
-    tier: string | null;
     adaptive_suspended: boolean;
-    rebuilt: boolean;
 }
 
 export interface ClearSourceBitrateResult {
@@ -189,12 +176,41 @@ export function getSourceBitrate(streamId: string) {
     return w.url(sourceBitrateUrl(streamId)).get().json<SourceBitrateStatus>();
 }
 
-export function setSourceBitrate(streamId: string, params: SetSourceBitrateRequest) {
-    return w.url(sourceBitrateUrl(streamId)).post(params).json<SetSourceBitrateResult>();
+export function setSourceBitrate(streamId: string, bitrate: number) {
+    return w.url(sourceBitrateUrl(streamId)).post({ bitrate }).json<SetSourceBitrateResult>();
 }
 
 export function clearSourceBitrate(streamId: string) {
     return w.url(sourceBitrateUrl(streamId)).delete().json<ClearSourceBitrateResult>();
+}
+
+export interface SourceTier {
+    name: string;
+    bitrate: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+}
+
+export interface SourceTierStatus {
+    stream_id: string;
+    active_tier: string | null;
+    tiers: SourceTier[];
+}
+
+export interface ApplySourceTierResult {
+    stream_id: string;
+    tier: string;
+    bitrate: number;
+    rebuilt: boolean;
+}
+
+export function getSourceTier(streamId: string) {
+    return w.url(sourceTierUrl(streamId)).get().json<SourceTierStatus>();
+}
+
+export function applySourceTier(streamId: string, tier: string) {
+    return w.url(sourceTierUrl(streamId)).post({ tier }).json<ApplySourceTierResult>();
 }
 
 export interface ServerInfo {

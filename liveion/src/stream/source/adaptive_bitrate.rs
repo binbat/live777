@@ -58,30 +58,6 @@ pub struct AdaptiveBitrateConfig {
     pub min: u32,
 }
 
-/// A named quality tier from the source config, switchable through the
-/// admin API.  Bitrate-only tiers retune the running encoder in place;
-/// tiers carrying `width`/`height`/`fps` switch the whole ladder rung by
-/// rebuilding the capture+encoder pipeline underneath the stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QualityTier {
-    pub name: String,
-    pub bitrate: u32,
-    /// Tier capture width; `None` keeps the configured capture size.
-    pub width: Option<u32>,
-    /// Tier capture height; `None` keeps the configured capture size.
-    pub height: Option<u32>,
-    /// Tier capture framerate; `None` keeps the configured rate.
-    pub fps: Option<u32>,
-}
-
-impl QualityTier {
-    /// Whether applying this tier needs a pipeline rebuild (it carries
-    /// geometry) rather than an in-place encoder retune.
-    pub fn needs_rebuild(&self) -> bool {
-        self.width.is_some() || self.height.is_some() || self.fps.is_some()
-    }
-}
-
 impl AdaptiveBitrateConfig {
     /// `min` defaults to `max(target / 8, 300 kbps)` and never exceeds the
     /// target.
@@ -98,15 +74,17 @@ enum Decision {
 }
 
 /// Shared manual/auto coordination state for one stream's bitrate control
-/// (issue #409).  Created next to the source bridge when adaptive bitrate
-/// is enabled; the controller task and the admin bitrate API both hold a
-/// handle.
+/// (issue #409).  Created next to the source bridge; the controller task
+/// and the admin bitrate/tier APIs both hold a handle.
 ///
 /// A manual set (`POST /api/sources/{stream}/bitrate`) applies the bitrate
 /// directly and records it here; the controller then suspends its AIMD
 /// decisions until [`BitrateControl::clear_manual`] resumes adaptive mode.
-/// External changes bump `generation`, so the controller — ticking at 1 Hz
-/// — can never miss a set/clear, not even one shorter than its tick.
+/// A tier apply (`POST /api/sources/{stream}/tier`) instead moves the rung
+/// ceiling: the AIMD keeps running but may no longer climb above the
+/// tier's bitrate.  External changes bump `generation`, so the controller
+/// — ticking at 1 Hz — can never miss a set/clear, not even one shorter
+/// than its tick.
 #[derive(Debug)]
 pub struct BitrateControl {
     /// Manual override bitrate; `0` means adaptive mode.
@@ -117,6 +95,9 @@ pub struct BitrateControl {
     /// re-seeds its AIMD from `current` whenever this advances, so a
     /// manual set/clear between two ticks still takes effect.
     generation: AtomicU64,
+    /// Rung ceiling: the most the AIMD may climb to.  Starts at the
+    /// configured target; a tier apply moves it to the tier's bitrate.
+    rung_target: AtomicU32,
 }
 
 impl BitrateControl {
@@ -125,6 +106,7 @@ impl BitrateControl {
             manual: AtomicU32::new(0),
             current: AtomicU32::new(target),
             generation: AtomicU64::new(0),
+            rung_target: AtomicU32::new(target),
         }
     }
 
@@ -152,7 +134,23 @@ impl BitrateControl {
         self.current.load(Ordering::Relaxed)
     }
 
-    /// External-change counter; advances on every manual set/clear.
+    /// The ceiling the AIMD currently modulates under.
+    pub fn rung_target(&self) -> u32 {
+        self.rung_target.load(Ordering::Relaxed)
+    }
+
+    /// Tier apply (external, source-level): adopt the tier's bitrate as
+    /// both the current rate and the new rung ceiling, and bump the
+    /// generation so the controller re-seeds.  Unlike a manual override
+    /// the AIMD is not suspended — it keeps modulating within the rung.
+    pub fn apply_tier(&self, bps: u32) {
+        self.rung_target.store(bps, Ordering::Relaxed);
+        self.current.store(bps, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// External-change counter; advances on every manual set/clear and
+    /// tier apply.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
@@ -270,6 +268,16 @@ pub(crate) fn spawn(
                     stream_id
                 );
                 return;
+            }
+
+            // Rung bounds: a tier apply may have moved the ceiling, so the
+            // AIMD keeps modulating within the current rung and never
+            // climbs above the tier's bitrate.  The floor never exceeds
+            // the ceiling.
+            let rung_target = control.rung_target();
+            if aimd.cfg.target != rung_target {
+                aimd.cfg.target = rung_target;
+                aimd.cfg.min = config.min.min(rung_target);
             }
 
             // Manual override (admin bitrate API): suspend all automatic
