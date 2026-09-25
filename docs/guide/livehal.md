@@ -176,20 +176,14 @@ their decoder primes.  Runtime retuning currently works on the `rkmpp` and
 `v4l2-m2m` backends; other backends log a warning and the controller
 disables itself.
 
-### Manual bitrate override & quality tiers
+### Bitrate telemetry & quality tiers
 
-These are two separate features.  The **bitrate endpoint** drives the
-encoder itself: `POST /api/sources/:streamId/bitrate` retunes it by hand
-at any time (see the [HTTP API guide](./live777-api.md#source)).  On an
-adaptive stream the controller suspends in favour of the manual value
-until `DELETE /api/sources/:streamId/bitrate` clears the override; on a
-fixed-bitrate source the manual value holds until a `DELETE` (which
-retunes the encoder back to the configured bitrate), the next `POST`, or
-a source restart.  `GET` on the same path reports the drive mode
-(`adaptive` / `manual` / `fixed`) and the current bitrate.
-
-**Quality tiers** are a source-level feature — named geometry+bitrate
-presets applied with `POST /api/sources/:streamId/tier`:
+`GET /api/sources/:streamId/bitrate` reports how the source's encoder
+bitrate is currently driven — `adaptive` (the AIMD controller above) or
+`fixed` — plus the current rate (see the [HTTP API
+guide](./live777-api.md#source)).  Control goes through **quality
+tiers**, a source-level feature — named geometry+bitrate presets
+applied with `POST /api/sources/:streamId/tier`:
 
 ```toml
 [stream.pi-cam.sources.encoder]
@@ -232,9 +226,8 @@ rung.
 
 Applying a tier does *not* suspend the adaptive controller: the tier's
 bitrate becomes the AIMD's new ceiling, so it keeps following network
-conditions within the rung (to pin the encoder at a value, use the raw
-bitrate override above).  A failed rebuild (e.g. the camera rejects the
-new size) rolls back to the previous configuration, and the tier's
+conditions within the rung.  A failed rebuild (e.g. the camera rejects
+the new size) rolls back to the previous configuration, and the tier's
 fields are always overlaid on the configured capture: unset fields
 restore the configured values, so a mixed ladder (bitrate-only and
 geometry tiers side by side) is well-defined.  The same mechanism can

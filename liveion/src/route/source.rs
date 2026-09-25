@@ -15,22 +15,6 @@ pub struct CreateSourceRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SetBitrateRequest {
-    /// Target encoder bitrate in bits per second (required).
-    #[serde(default)]
-    pub bitrate: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BitrateResponse {
-    pub stream_id: String,
-    pub bitrate: u32,
-    /// True when the stream's adaptive-bitrate controller suspended itself
-    /// in favour of this manual override (`DELETE` resumes it).
-    pub adaptive_suspended: bool,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct SetTierRequest {
     /// Name of a configured quality tier to switch to (required).
     #[serde(default)]
@@ -86,13 +70,11 @@ pub struct SourceTierResponse {
 #[derive(Debug, Serialize)]
 pub struct SourceBitrateResponse {
     pub stream_id: String,
-    /// How the encoder bitrate is driven: `adaptive` (AIMD controller),
-    /// `manual` (override holds), or `fixed` (configured value).
+    /// How the encoder bitrate is driven: `adaptive` (AIMD controller) or
+    /// `fixed` (configured value, or the last applied tier's).
     pub mode: String,
     /// Current encoder bitrate, when the source reports one.
     pub bitrate: Option<u32>,
-    /// Active manual override bitrate.
-    pub manual_bitrate: Option<u32>,
     /// Whether the source opted into adaptive bitrate.
     pub adaptive: bool,
 }
@@ -129,12 +111,7 @@ pub fn route() -> Router<AppState> {
                 .delete(delete_source),
         )
         .route("/api/sources/{stream}/state", get(get_source_state))
-        .route(
-            "/api/sources/{stream}/bitrate",
-            get(get_source_bitrate)
-                .post(set_source_bitrate)
-                .delete(clear_manual_bitrate),
-        )
+        .route("/api/sources/{stream}/bitrate", get(get_source_bitrate))
         .route(
             "/api/sources/{stream}/tier",
             get(get_source_tier).post(apply_source_tier),
@@ -327,110 +304,8 @@ async fn get_source_bitrate(
         stream_id: stream,
         mode: info.mode.as_str().to_string(),
         bitrate: info.current,
-        manual_bitrate: info.manual,
         adaptive: info.adaptive,
     }))
-}
-
-/// Manually retune the stream source's encoder bitrate (issue #409) with
-/// a raw `bitrate` value.
-///
-/// Takes effect immediately.  On a stream with `encoder.adaptive_bitrate`
-/// enabled the AIMD controller suspends in favour of the manual value;
-/// `DELETE` on the same path clears the override and resumes adaptive
-/// control.
-#[cfg(feature = "source")]
-async fn set_source_bitrate(
-    State(state): State<AppState>,
-    Path(stream): Path<String>,
-    Json(req): Json<SetBitrateRequest>,
-) -> Result<Json<BitrateResponse>> {
-    use crate::error::AppError;
-    use crate::stream::source::manager::SetBitrateOutcome;
-
-    let Some(bps) = req.bitrate else {
-        return Err(AppError::bad_request("missing required field 'bitrate'"));
-    };
-    if bps == 0 {
-        return Err(AppError::bad_request("bitrate must be non-zero"));
-    }
-
-    match state
-        .stream_manager
-        .source_manager
-        .set_source_bitrate(&stream, bps)
-        .await
-    {
-        SetBitrateOutcome::Applied { adaptive_suspended } => {
-            info!(
-                "Source bitrate manually set: {} -> {} bps (adaptive suspended: {})",
-                stream, bps, adaptive_suspended
-            );
-            Ok(Json(BitrateResponse {
-                stream_id: stream,
-                bitrate: bps,
-                adaptive_suspended,
-            }))
-        }
-        SetBitrateOutcome::SourceNotFound => Err(AppError::source_not_found(format!(
-            "Source not found: {stream}"
-        ))),
-        SetBitrateOutcome::AboveCeiling(ceiling) => Err(AppError::bad_request(format!(
-            "bitrate {bps} exceeds the configured ceiling (encoder.bitrate) of {ceiling}"
-        ))),
-        SetBitrateOutcome::Unsupported => Err(AppError::source_bitrate_unsupported(format!(
-            "Source encoder of {stream} does not support runtime bitrate retuning \
-             (or the source is not running)"
-        ))),
-    }
-}
-
-/// Clear a manual bitrate override.  The adaptive (AIMD) controller, when
-/// enabled, resumes from the held value; a fixed-bitrate source is retuned
-/// back to its configured bitrate.
-#[cfg(feature = "source")]
-async fn clear_manual_bitrate(
-    State(state): State<AppState>,
-    Path(stream): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    use crate::error::AppError;
-    use crate::stream::source::manager::ClearBitrateOutcome;
-
-    match state
-        .stream_manager
-        .source_manager
-        .clear_manual_bitrate(&stream)
-        .await
-    {
-        Some(ClearBitrateOutcome::Cleared { bitrate, adaptive }) => {
-            info!(
-                "Source bitrate manual override cleared: {} (now {} bps, mode {})",
-                stream,
-                bitrate,
-                if adaptive { "adaptive" } else { "fixed" }
-            );
-            Ok(Json(serde_json::json!({
-                "message": if adaptive {
-                    "Manual override cleared, adaptive bitrate control resumed"
-                } else {
-                    "Manual bitrate override cleared, configured bitrate restored"
-                },
-                "stream_id": stream,
-                "bitrate": bitrate,
-                "mode": if adaptive { "adaptive" } else { "fixed" },
-            })))
-        }
-        Some(ClearBitrateOutcome::RestoreFailed) => {
-            Err(AppError::source_bitrate_unsupported(format!(
-                "Restoring the configured bitrate for {stream} failed; \
-                 the manual override is still in effect"
-            )))
-        }
-        None => Err(AppError::source_not_found(format!(
-            "No bitrate state for stream: {stream} \
-             (no source, or the source is not a native encoder source)"
-        ))),
-    }
 }
 
 /// Query the stream source's quality-tier state: the configured tiers

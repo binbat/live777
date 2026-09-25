@@ -269,23 +269,21 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   WHEP subscriber RTCP feedback (sampled by
   `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
   support (`EncoderBackend::setBitrate` in livehal — rkmpp and v4l2-m2m
-  today). Two admin features sit on top, deliberately separate:
-  `GET`/`POST`/`DELETE /api/sources/{stream}/bitrate` drives the encoder
-  itself (drive-mode state and manual raw-bitrate overrides — a manual
-  set suspends the AIMD, `DELETE` clears it), while
-  `GET`/`POST /api/sources/{stream}/tier` is a source-level ladder
-  (`stream/source/tier.rs`): bitrate-only tiers retune in place, and a
-  tier carrying `width`/`height`/`fps` switches the whole rung by
-  rebuilding the capture+encoder pipeline
+  today). Two admin surfaces sit on top, deliberately separate:
+  `GET /api/sources/{stream}/bitrate` is read-only encoder telemetry
+  (drive mode `adaptive`/`fixed` plus the current rate), while
+  `GET`/`POST /api/sources/{stream}/tier` is the control surface — a
+  source-level ladder (`stream/source/tier.rs`): bitrate-only tiers
+  retune in place, and a tier carrying `width`/`height`/`fps` switches
+  the whole rung by rebuilding the capture+encoder pipeline
   (`NativeEncodedSource::reconfigure` — the RTP broadcast channels
   survive, so subscribers stay attached across the sub-second gap; a
   failed rebuild rolls back to the previous params). A per-stream
   `BitrateControl` (created for every native source in `create_bridge`)
-  coordinates these with the controller: a tier apply moves the AIMD's
-  rung ceiling and resume seed without suspending it, a manual override
-  suspends it, and an external-change generation counter guarantees the
-  controller re-seeds even for set/clear cycles shorter than its 1 s
-  tick.
+  coordinates tier applies with the controller: the tier's bitrate
+  becomes the AIMD's rung ceiling and resume seed without suspending
+  it, and an external-change generation counter guarantees the
+  controller re-seeds even for applies shorter than its 1 s tick.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

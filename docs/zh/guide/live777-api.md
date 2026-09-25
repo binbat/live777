@@ -216,9 +216,9 @@ Request:
 
 ## 媒体源
 
-码率相关端点驱动的是*编码器*（仅限原生采集/编码源，见
-[livehal 指南](./livehal.md)）：码率由什么控制、以及手动覆盖。档位
-端点则是独立的源级功能：用命名的几何+码率预设重新配置源。
+码率端点是只读的*编码器*遥测（仅限原生采集/编码源，见
+[livehal 指南](./livehal.md)）：该源码率当前的驱动方式。档位端点是
+控制面：用命名的几何+码率预设重新配置源。
 
 ### 查询源码率状态
 
@@ -233,60 +233,15 @@ Response: [200]
   "stream_id": "pi-cam",
   "mode": "adaptive",
   "bitrate": 2000000,
-  "manual_bitrate": null,
   "adaptive": true
 }
 ```
 
-- `mode`: `adaptive`（AIMD 控制器驱动）、`manual`（手动覆盖生效中）、
-  `fixed`（按配置值运行）。
+- `mode`: `adaptive`（AIMD 控制器驱动）或 `fixed`（按配置值或最近
+  应用的档位运行）。
 - `bitrate`: 当前编码器码率；源处于 standby 时为配置值（非原生源为 `null`）。
-- `manual_bitrate`: 生效中的手动覆盖值。
 
-该流没有媒体源时返回 [404]。
-
-### 手动设置源编码器码率
-
-`POST` `/api/sources/:streamId/bitrate`
-
-手动调整该流媒体源的编码器码率，立即生效：
-
-```json
-{ "bitrate": 1500000 }
-```
-
-Response: [200]
-
-```json
-{ "stream_id": "pi-cam", "bitrate": 1500000, "adaptive_suspended": true }
-```
-
-- [400] `bitrate` 缺失或为 0，或超过源的 `encoder.bitrate` 上限。
-- [404] 该流没有媒体源。
-- [409] 该源的编码器后端不支持运行时调整码率（或源未在运行）。
-
-在开启了 `adaptive_bitrate = true` 的流上，AIMD 控制器会让位于手动
-设置的值（`adaptive_suspended: true`）；对同一路径发起 `DELETE`
-即可清除覆盖。对于固定码率的源，手动值会一直保持到 `DELETE`
-（会把编码器调回配置码率）、下一次 `POST` 或源重启。
-
-### 清除手动码率覆盖
-
-`DELETE` `/api/sources/:streamId/bitrate`
-
-清除手动覆盖。自适应（AIMD）控制器（如已开启）从当前值恢复调节；
-固定码率的源会被调回配置的码率。
-
-Response: [200]
-
-```json
-{ "message": "Manual override cleared, adaptive bitrate control resumed", "stream_id": "pi-cam", "bitrate": 1500000, "mode": "adaptive" }
-```
-
-`bitrate` 是控制器恢复时采用的基准码率，或固定源恢复后的配置码率。
-当该流没有码率状态（没有媒体源，或非原生源）时返回 [404]；当固定
-源恢复配置码率失败时返回 [409]，此时手动覆盖保持生效，使上报状态
-与编码器实际状态一致。
+该流没有媒体源时返回 [404]；`GET` 以外的方法返回 [405]。
 
 ### 查询源质量档位
 

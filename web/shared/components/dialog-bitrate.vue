@@ -11,7 +11,6 @@ import {
     type SourceBitrateStatus,
     type SourceTierStatus,
     applySourceTier,
-    clearSourceBitrate,
     getSourceBitrate,
     getSourceTier,
 } from "../api";
@@ -29,7 +28,6 @@ const errorMessage = ref("");
 
 const MODE_LABELS: Record<string, string> = {
     adaptive: "Adaptive",
-    manual: "Manual",
     fixed: "Fixed",
 };
 
@@ -91,8 +89,6 @@ const runAction = async (action: () => Promise<unknown>) => {
 };
 
 const handleSelectTier = (tier: string) => runAction(() => applySourceTier(streamId.value, tier));
-
-const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.value));
 </script>
 
 <template>
@@ -111,15 +107,11 @@ const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.va
                         class="badge"
                         :class="{
                             'badge-info': status.mode === 'adaptive',
-                            'badge-warning': status.mode === 'manual',
                             'badge-ghost': status.mode === 'fixed',
                         }"
                     >{{ MODE_LABELS[status.mode] ?? status.mode }}</span>
                     <span v-if="status.bitrate !== null" class="font-mono">{{ formatBitrate(status.bitrate) }}</span>
                     <span v-else class="opacity-70">bitrate unknown</span>
-                    <span v-if="status.manual_bitrate !== null" class="opacity-70">
-                        (override: {{ formatBitrate(status.manual_bitrate) }})
-                    </span>
                 </div>
                 <div v-if="tierStatus && tierStatus.tiers.length > 0" class="form-control">
                     <label class="label px-0">Quality tiers:</label>
@@ -133,14 +125,6 @@ const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.va
                             @click="handleSelectTier(tier.name)"
                         >{{ tier.name }}<template v-if="tier.width && tier.height"> · {{ tier.width }}×{{ tier.height }}<template v-if="tier.fps">@{{ tier.fps }}</template></template> · {{ formatBitrate(tier.bitrate) }}</button>
                     </div>
-                </div>
-                <div v-if="status.manual_bitrate !== null" class="pt-2">
-                    <button
-                        class="btn btn-sm btn-warning"
-                        :class="{ 'btn-disabled': busy }"
-                        :disabled="busy"
-                        @click="handleClearOverride"
-                    >{{ status.adaptive ? "Resume adaptive control" : "Clear manual override" }}</button>
                 </div>
             </template>
             <div v-if="errorMessage" class="alert alert-error my-2">

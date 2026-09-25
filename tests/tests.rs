@@ -184,27 +184,21 @@ async fn test_liveion_source_bitrate_api() {
     let bitrate_url = format!("http://{addr}/api/sources/webcam/bitrate");
     let tier_url = format!("http://{addr}/api/sources/webcam/tier");
 
-    // Malformed bitrate requests are rejected before any source lookup:
-    // zero value, missing required field.
-    for body in [serde_json::json!({ "bitrate": 0 }), serde_json::json!({})] {
-        let res = client.post(&bitrate_url).json(&body).send().await.unwrap();
-        assert_eq!(http::StatusCode::BAD_REQUEST, res.status(), "body: {body}");
-    }
-
-    // No source registered for the stream: bitrate state query, manual
-    // set, override clear, tier state query, and tier apply all report 404.
-    let res = client.get(&bitrate_url).send().await.unwrap();
-    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
-
+    // The bitrate endpoint is read-only telemetry: writes are rejected
+    // with 405 regardless of the stream.
     let res = client
         .post(&bitrate_url)
         .json(&serde_json::json!({ "bitrate": 1_000_000 }))
         .send()
         .await
         .unwrap();
-    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
-
+    assert_eq!(http::StatusCode::METHOD_NOT_ALLOWED, res.status());
     let res = client.delete(&bitrate_url).send().await.unwrap();
+    assert_eq!(http::StatusCode::METHOD_NOT_ALLOWED, res.status());
+
+    // No source registered for the stream: bitrate state query, tier
+    // state query, and tier apply all report 404.
+    let res = client.get(&bitrate_url).send().await.unwrap();
     assert_eq!(http::StatusCode::NOT_FOUND, res.status());
 
     let res = client.get(&tier_url).send().await.unwrap();

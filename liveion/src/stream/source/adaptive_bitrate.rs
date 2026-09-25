@@ -73,27 +73,22 @@ enum Decision {
     Set(u32),
 }
 
-/// Shared manual/auto coordination state for one stream's bitrate control
-/// (issue #409).  Created next to the source bridge; the controller task
-/// and the admin bitrate/tier APIs both hold a handle.
+/// Shared tier/controller coordination state for one stream's bitrate
+/// control (issue #409).  Created next to the source bridge; the
+/// controller task and the admin tier API both hold a handle.
 ///
-/// A manual set (`POST /api/sources/{stream}/bitrate`) applies the bitrate
-/// directly and records it here; the controller then suspends its AIMD
-/// decisions until [`BitrateControl::clear_manual`] resumes adaptive mode.
-/// A tier apply (`POST /api/sources/{stream}/tier`) instead moves the rung
-/// ceiling: the AIMD keeps running but may no longer climb above the
-/// tier's bitrate.  External changes bump `generation`, so the controller
-/// — ticking at 1 Hz — can never miss a set/clear, not even one shorter
-/// than its tick.
+/// A tier apply (`POST /api/sources/{stream}/tier`) moves the rung
+/// ceiling and re-seeds the current rate; the AIMD keeps running but
+/// may no longer climb above the tier's bitrate.  The apply bumps
+/// `generation`, so the controller — ticking at 1 Hz — can never miss
+/// it, not even one shorter than its tick.
 #[derive(Debug)]
 pub struct BitrateControl {
-    /// Manual override bitrate; `0` means adaptive mode.
-    manual: AtomicU32,
-    /// Last bitrate applied to the encoder, by the controller or manually.
+    /// Last bitrate applied to the encoder.
     current: AtomicU32,
-    /// Bumped by every external (admin API) change.  The controller
-    /// re-seeds its AIMD from `current` whenever this advances, so a
-    /// manual set/clear between two ticks still takes effect.
+    /// Bumped by every external (tier apply) change.  The controller
+    /// re-seeds its AIMD from `current` whenever this advances, so an
+    /// apply between two ticks still takes effect.
     generation: AtomicU64,
     /// Rung ceiling: the most the AIMD may climb to.  Starts at the
     /// configured target; a tier apply moves it to the tier's bitrate.
@@ -103,30 +98,10 @@ pub struct BitrateControl {
 impl BitrateControl {
     pub fn new(target: u32) -> Self {
         Self {
-            manual: AtomicU32::new(0),
             current: AtomicU32::new(target),
             generation: AtomicU64::new(0),
             rung_target: AtomicU32::new(target),
         }
-    }
-
-    /// The active manual override, or `None` in adaptive mode.
-    pub fn manual(&self) -> Option<u32> {
-        match self.manual.load(Ordering::Relaxed) {
-            0 => None,
-            bps => Some(bps),
-        }
-    }
-
-    pub fn set_manual(&self, bps: u32) {
-        self.current.store(bps, Ordering::Relaxed);
-        self.manual.store(bps, Ordering::Relaxed);
-        self.generation.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn clear_manual(&self) {
-        self.manual.store(0, Ordering::Relaxed);
-        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Last bitrate applied to the encoder.
@@ -141,16 +116,15 @@ impl BitrateControl {
 
     /// Tier apply (external, source-level): adopt the tier's bitrate as
     /// both the current rate and the new rung ceiling, and bump the
-    /// generation so the controller re-seeds.  Unlike a manual override
-    /// the AIMD is not suspended — it keeps modulating within the rung.
+    /// generation so the controller re-seeds.  The AIMD is not
+    /// suspended — it keeps modulating within the rung.
     pub fn apply_tier(&self, bps: u32) {
         self.rung_target.store(bps, Ordering::Relaxed);
         self.current.store(bps, Ordering::Relaxed);
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// External-change counter; advances on every manual set/clear and
-    /// tier apply.
+    /// External-change counter; advances on every tier apply.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
@@ -280,20 +254,12 @@ pub(crate) fn spawn(
                 aimd.cfg.min = config.min.min(rung_target);
             }
 
-            // Manual override (admin bitrate API): suspend all automatic
-            // decisions.  The generation check re-seeds the AIMD once per
-            // external change rather than every tick, and — crucially —
-            // also catches a set/clear cycle that fits between two ticks:
-            // resuming adaptive mode then starts from the externally
-            // applied value, not a stale trajectory.
+            // Tier applies re-seed the AIMD once per external change
+            // rather than every tick, and — crucially — the generation
+            // check also catches an apply that fits between two ticks:
+            // decisions then resume from the externally applied value,
+            // not a stale trajectory.
             let generation = control.generation();
-            if let Some(manual_bps) = control.manual() {
-                if generation != seen_generation {
-                    aimd.sync(manual_bps, Instant::now());
-                    seen_generation = generation;
-                }
-                continue;
-            }
             if generation != seen_generation {
                 aimd.sync(control.current(), Instant::now());
                 seen_generation = generation;
@@ -320,12 +286,12 @@ pub(crate) fn spawn(
 
             if let Decision::Set(bps) = aimd.on_window(worst, Instant::now()) {
                 let source_guard = source.lock().await;
-                // Re-check under the source lock — the same lock a manual
-                // set is applied under — so an override that landed while
-                // subscriber stats were sampled is not overwritten by this
-                // stale decision.  The next tick re-seeds the AIMD from the
-                // manual value.
-                if control.manual().is_some() {
+                // Re-check under the source lock — the same lock a tier
+                // apply is taken under — so an apply that landed while
+                // subscriber stats were sampled is not overwritten by
+                // this stale decision.  The next tick re-seeds the AIMD
+                // from the tier's value.
+                if control.generation() != seen_generation {
                     continue;
                 }
                 let applied = source_guard.set_bitrate(bps).await;
@@ -486,20 +452,14 @@ mod tests {
     }
 
     #[test]
-    fn bitrate_control_manual_flag_roundtrip() {
+    fn bitrate_control_tier_apply_moves_rung_and_current() {
         let c = BitrateControl::new(2_000_000);
-        assert_eq!(c.manual(), None);
         assert_eq!(c.current(), 2_000_000);
+        assert_eq!(c.rung_target(), 2_000_000);
 
-        c.set_manual(800_000);
-        assert_eq!(c.manual(), Some(800_000));
+        c.apply_tier(800_000);
         assert_eq!(c.current(), 800_000);
-
-        c.clear_manual();
-        assert_eq!(c.manual(), None);
-        // Clearing the override keeps the manual value as the current rate
-        // until the controller applies its next decision.
-        assert_eq!(c.current(), 800_000);
+        assert_eq!(c.rung_target(), 800_000);
     }
 
     #[test]
@@ -511,13 +471,13 @@ mod tests {
         c.note_applied(1_500_000);
         assert_eq!(c.generation(), g0);
 
-        c.set_manual(800_000);
+        c.apply_tier(800_000);
         let g1 = c.generation();
         assert!(g1 > g0);
 
-        // Even a set+clear faster than the controller tick advances the
-        // generation twice, so the resume-from-manual sync cannot be lost.
-        c.clear_manual();
+        // Even applies faster than the controller tick advance the
+        // generation, so the re-seed cannot be lost.
+        c.apply_tier(1_000_000);
         assert!(c.generation() > g1);
     }
 
