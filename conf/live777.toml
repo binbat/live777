@@ -108,16 +108,16 @@ ice_udp_addrs = ["auto"]
 # backend = "v4l2-m2m"
 # codec = "h264"
 # bitrate = 2000000
-# profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
-# level = "4.0"               # required when profile is a name; 1080p needs >= 4.0
+# or a 6-digit hex profile-level-id like "420028"
+# profile = "baseline"
+# required when profile is a name; 1080p needs >= 4.0
+# level = "4.0"
 # gop = 60
-# adaptive = false              # AIMD is ON by default (floor: lowest tier,
-#                               # else max(bitrate / 8, 300000)) — it lowers
-#                               # the running encoder only while WHEP
-#                               # subscribers report congestion.  Set false
-#                               # for a strictly fixed rate, or
-#                               # adaptive = { min_bitrate = 150000 } for a
-#                               # custom floor.
+# AIMD is ON by default (floor: lowest tier, else max(bitrate / 8, 300000))
+# — it lowers the running encoder only while WHEP subscribers report
+# congestion.  Set false for a strictly fixed rate, or
+# adaptive = { min_bitrate = 150000 } for a custom floor.
+# adaptive = false
 # [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
@@ -182,12 +182,14 @@ ice_udp_addrs = ["auto"]
 # width = 640
 # height = 480
 # fps = 30
-# pixel_format = "yuyv"          # use "uyvy" for packed UYVY422 devices
+# use "uyvy" for packed UYVY422 devices
+# pixel_format = "yuyv"
 # [stream.usb-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
 # bitrate = 1000000
-# profile = "42001f"          # 6-digit hex profile-level-id
+# 6-digit hex profile-level-id
+# profile = "42001f"
 # gop = 60
 # [stream.usb-cam.sources.output]
 # payload_type = 96
@@ -218,7 +220,8 @@ ice_udp_addrs = ["auto"]
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
-# auto_streams = ["*"] # Record all streams
+# Record all streams
+# auto_streams = ["*"]
 # Optional path for recorder index file (index.json)
 # index_path = "./storage/index.json"
 # Maximum duration in seconds before Live777 restarts a recording (0 disables auto-rotation)
