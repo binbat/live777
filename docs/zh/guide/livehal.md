@@ -175,9 +175,8 @@ bitrate = 4_000_000           # 上限 —— 控制器只从这里往下调
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # 上限(也是 AIMD 的最高档)
-[stream.pi-cam.sources.encoder.adaptive]
-min_bitrate = 300_000      # 段存在即启用 AIMD
+bitrate = 4_000_000        # AIMD 的启动上限
+adaptive = { min_bitrate = 300_000 }  # 可选;AIMD 默认开启
 
 # 纯编码器档:原地调运行中的编码器,无缝切换
 [[stream.pi-cam.sources.tiers]]

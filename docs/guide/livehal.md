@@ -195,9 +195,8 @@ the parameters to change; anything left out keeps the configured value:
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # ceiling (and the AIMD's top rung)
-[stream.pi-cam.sources.encoder.adaptive]
-min_bitrate = 300_000      # section presence enables the AIMD
+bitrate = 4_000_000        # the AIMD's ceiling at boot
+adaptive = { min_bitrate = 300_000 }  # optional; the AIMD is on by default
 
 # Encoder-only tier: retunes the running encoder, seamless.
 [[stream.pi-cam.sources.tiers]]
