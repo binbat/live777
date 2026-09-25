@@ -1,6 +1,8 @@
 type StatsNerds = {
     bytesReceived: number;
     bytesSent: number;
+    bytesReceivedPerSecond?: number;
+    bytesSentPerSecond?: number;
     currentRoundTripTime: number;
     vcodec?: string;
     acodec?: string;

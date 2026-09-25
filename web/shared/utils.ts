@@ -64,11 +64,14 @@ export const nextSeqId = (prefix: string, existingIds: string[]) => {
     return newId;
 };
 
-/** Bits per second → human-readable rate, e.g. `850 Kb/s`, `2.4 Mb/s`. */
+/** Bits per second → human-readable byte rate, e.g. `106 KB/s`, `1.2 MB/s`. */
 export const formatBitrate = (bps: number): string => {
-    if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mb/s`;
-    if (bps >= 1_000) return `${Math.round(bps / 1_000)} Kb/s`;
-    return `${bps} b/s`;
+    const bytesPerSecond = bps / 8;
+    if (bytesPerSecond >= 1_000_000)
+        return `${(bytesPerSecond / 1_000_000).toFixed(1)} MB/s`;
+    if (bytesPerSecond >= 1_000)
+        return `${Math.round(bytesPerSecond / 1_000)} KB/s`;
+    return `${Math.round(bytesPerSecond)} B/s`;
 };
 
 /** Byte count → human-readable size, e.g. `512 KB`, `1.5 GB`. */
