@@ -453,7 +453,7 @@ const handleCancelStop = () => {
 </script>
 
 <template>
-    <div class="flex items-center gap-2 px-4 h-12">
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2">
         <span class="font-bold text-lg">Streams</span>
         <div aria-label="Badge" class="badge badge-ghost font-bold mr-auto">{{ streamsData.length }}</div>
         <span
@@ -488,115 +488,117 @@ const handleCancelStop = () => {
         </button>
     </div>
 
-    <table class="table overflow-x-auto">
-        <thead>
-            <tr>
-                <th><span>ID</span></th>
-                <td><span>Publisher</span></td>
-                <td><span>Subscriber</span></td>
-                <td><span>In</span></td>
-                <td><span>Out</span></td>
-                <td><span>Cascade</span></td>
-                <td><span>Creation Time</span></td>
-                <td><span>Operation</span></td>
-            </tr>
-        </thead>
-        <tbody>
-            <tr v-for="i in streamsData" :key="i.id">
-                <th>
-                    <span>
-                        {{ i.id }}
-                        <div
-                            v-if="i.onDemand && countActiveSessions(i.publish.sessions) > 0"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-info ml-2"
-                        >on-demand</div>
-                        <div
-                            v-else-if="i.onDemand"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-ghost ml-2"
-                        >standby</div>
-                        <div
-                            v-if="!i.onDemand && i.provisioned"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-ghost ml-2"
-                        >config</div>
-                    </span>
-                </th>
-                <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
-                <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
-                <td>
-                    <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
-                        {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
-                    </span>
-                </td>
-                <td>
-                    <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
-                        {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
-                    </span>
-                </td>
-                <td>
-                    <span>
-                        {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
-                    </span>
-                </td>
-                <td><span>{{ formatTime(i.createdAt) }}</span></td>
-                <td>
-                    <div class="flex gap-1">
-                        <button
-                            class="btn btn-sm"
-                            :class="{ 'btn-info': previewStreams.includes(i.id) }"
-                            @click="handlePreview(i.id)"
-                        >Preview</button>
-                        <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
-                        <button
-                            v-if="features.source && sourceStreams.has(i.id)"
-                            class="btn btn-sm"
-                            @click="handleViewSource(i.id)"
-                        >Source</button>
-                        <div
-                            v-if="showCascade || features.player || features.debugger"
-                            class="dropdown dropdown-end"
-                        >
-                            <button tabindex="0" class="btn btn-sm">More</button>
-                            <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
-                                <li v-if="showCascade">
-                                    <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
-                                </li>
-                                <li v-if="features.player">
-                                    <a @click="handleOpenPlayerPage(i.id)">Player</a>
-                                </li>
-                                <li v-if="features.debugger">
-                                    <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
-                                </li>
-                            </ul>
-                        </div>
-                        <button
-                            v-if="recordingAvailable"
-                            class="btn btn-sm"
-                            :class="recordingStates[i.id] ? 'btn-success' : 'btn-info'"
-                            @click="openRecordDialog(i.id)"
-                        >{{ recordingStates[i.id] ? "Recording" : "Record" }}</button>
-                        <slot name="extra-actions" :stream="i" />
-                        <!-- disabled buttons don't fire mouse events in
-                             some browsers, so the tooltip lives on the
-                             wrapper -->
-                        <span :title="i.provisioned ? 'Configured streams cannot be deleted' : undefined">
-                            <button
-                                class="btn btn-sm btn-error"
-                                :class="{ 'btn-disabled': i.provisioned }"
-                                :disabled="i.provisioned"
-                                @click="handleDestroyStream(i.id)"
-                            >Destroy</button>
+    <div class="overflow-x-auto">
+        <table class="table whitespace-nowrap">
+            <thead>
+                <tr>
+                    <th><span>ID</span></th>
+                    <td><span>Publisher</span></td>
+                    <td><span>Subscriber</span></td>
+                    <td><span>In</span></td>
+                    <td><span>Out</span></td>
+                    <td><span>Cascade</span></td>
+                    <td><span>Creation Time</span></td>
+                    <td><span>Operation</span></td>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="i in streamsData" :key="i.id">
+                    <th class="whitespace-normal">
+                        <span>
+                            {{ i.id }}
+                            <div
+                                v-if="i.onDemand && countActiveSessions(i.publish.sessions) > 0"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-info ml-2"
+                            >on-demand</div>
+                            <div
+                                v-else-if="i.onDemand"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-ghost ml-2"
+                            >standby</div>
+                            <div
+                                v-if="!i.onDemand && i.provisioned"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-ghost ml-2"
+                            >config</div>
                         </span>
-                    </div>
-                </td>
-            </tr>
-            <tr v-if="streamsData.length === 0">
-                <td colspan="8" class="text-center">N/A</td>
-            </tr>
-        </tbody>
-    </table>
+                    </th>
+                    <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
+                    <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
+                    <td>
+                        <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                            {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
+                        </span>
+                    </td>
+                    <td>
+                        <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                            {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
+                        </span>
+                    </td>
+                    <td>
+                        <span>
+                            {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
+                        </span>
+                    </td>
+                    <td><span>{{ formatTime(i.createdAt) }}</span></td>
+                    <td>
+                        <div class="flex flex-nowrap gap-1">
+                            <button
+                                class="btn btn-sm"
+                                :class="{ 'btn-info': previewStreams.includes(i.id) }"
+                                @click="handlePreview(i.id)"
+                            >Preview</button>
+                            <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
+                            <button
+                                v-if="features.source && sourceStreams.has(i.id)"
+                                class="btn btn-sm"
+                                @click="handleViewSource(i.id)"
+                            >Source</button>
+                            <div
+                                v-if="showCascade || features.player || features.debugger"
+                                class="dropdown dropdown-end"
+                            >
+                                <button tabindex="0" class="btn btn-sm">More</button>
+                                <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
+                                    <li v-if="showCascade">
+                                        <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
+                                    </li>
+                                    <li v-if="features.player">
+                                        <a @click="handleOpenPlayerPage(i.id)">Player</a>
+                                    </li>
+                                    <li v-if="features.debugger">
+                                        <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
+                                    </li>
+                                </ul>
+                            </div>
+                            <button
+                                v-if="recordingAvailable"
+                                class="btn btn-sm"
+                                :class="recordingStates[i.id] ? 'btn-success' : 'btn-info'"
+                                @click="openRecordDialog(i.id)"
+                            >{{ recordingStates[i.id] ? "Recording" : "Record" }}</button>
+                            <slot name="extra-actions" :stream="i" />
+                            <!-- disabled buttons don't fire mouse events in
+                                 some browsers, so the tooltip lives on the
+                                 wrapper -->
+                            <span :title="i.provisioned ? 'Configured streams cannot be deleted' : undefined">
+                                <button
+                                    class="btn btn-sm btn-error"
+                                    :class="{ 'btn-disabled': i.provisioned }"
+                                    :disabled="i.provisioned"
+                                    @click="handleDestroyStream(i.id)"
+                                >Destroy</button>
+                            </span>
+                        </div>
+                    </td>
+                </tr>
+                <tr v-if="streamsData.length === 0">
+                    <td colspan="8" class="text-center">N/A</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
 
     <div v-if="recordingAvailable && recordDialogOpen" class="modal modal-open">
         <div class="modal-box">

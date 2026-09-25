@@ -37,12 +37,12 @@ const handleKickClient = async (streamId: string, clientId: string) => {
 
 <template>
     <dialog ref="dialogEl" aria-label="Modal" aria-hidden="true" class="modal">
-        <div class="modal-box min-w-md max-w-[unset] w-[unset]">
+        <div class="modal-box sm:min-w-md sm:max-w-[unset] sm:w-[unset]">
             <div class="w-full text-xl mb-2">
                 <h3 class="font-bold">Clients of {{ id }}</h3>
             </div>
-            <div>
-                <table class="table">
+            <div class="overflow-x-auto">
+                <table class="table whitespace-nowrap">
                     <thead>
                         <tr>
                             <th><span>ID</span></th>
