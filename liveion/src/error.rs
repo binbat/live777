@@ -17,8 +17,8 @@ pub enum AppError {
     /// No media source is registered for the requested stream.
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     SourceNotFound(String),
-    /// The stream's encoder rejected a runtime bitrate change (fixed-bitrate
-    /// backend or pipeline not running).
+    /// The source could not apply the request at runtime (encoder backend
+    /// cannot retune, pipeline not running, or a tier rebuild failed).
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     SourceBitrateUnsupported(String),
     /// The request itself is malformed (semantically); maps to 400.
