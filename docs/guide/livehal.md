@@ -155,23 +155,29 @@ clock_rate = 90000
 
 ### Adaptive bitrate (experimental)
 
-With `adaptive_bitrate = true` in the encoder section, the running encoder's
-target bitrate is driven by WHEP subscriber RTCP feedback (issue #409):
-TWCC loss (falling back to Receiver Report `fraction_lost`) is sampled once
-per second, and an AIMD controller retunes the encoder at runtime.
+Adaptive bitrate is **on by default** for native encoder sources — the
+running encoder's target bitrate is driven by WHEP subscriber RTCP
+feedback (issue #409): TWCC loss (falling back to Receiver Report
+`fraction_lost`) is sampled once per second, and an AIMD controller
+retunes the encoder at runtime.  No config key is needed; the two
+optional forms are an opt-out and a custom floor:
 
 ```toml
 [stream.pi-cam.sources.encoder]
-bitrate = 4_000_000        # ceiling — the controller only lowers from here
-adaptive_bitrate = true
-min_bitrate = 500_000      # floor (default: max(bitrate / 8, 300_000))
+bitrate = 4_000_000           # ceiling — the controller only lowers from here
+# adaptive = false            # strictly fixed rate (no AIMD)
+# adaptive = { min_bitrate = 500_000 }
+                              # custom floor (default: lowest tier when
+                              # tiers are declared, else
+                              # max(bitrate / 8, 300_000))
 ```
 
 Semantics: loss above 5 % for two consecutive windows cuts the bitrate by
 15 %; a sustained 10 s clean window adds 5 % of the target back.  With
 several subscribers the worst link wins — the shared encoder is lowered for
 everyone, so a single weak subscriber penalizes the whole stream (simulcast
-would be the real fix).  Subscribers younger than 5 s are ignored while
+would be the real fix; if that is unacceptable for your stream, use
+`adaptive = false`).  Subscribers younger than 5 s are ignored while
 their decoder primes.  Runtime retuning currently works on the `rkmpp` and
 `v4l2-m2m` backends; other backends log a warning and the controller
 disables itself.

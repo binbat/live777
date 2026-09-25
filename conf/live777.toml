@@ -111,11 +111,13 @@ ice_udp_addrs = ["auto"]
 # profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
 # level = "4.0"               # required when profile is a name; 1080p needs >= 4.0
 # gop = 60
-# [stream.pi-cam.sources.encoder.adaptive]
-# min_bitrate = 150000        # section presence enables the AIMD: it lowers
-#                             # the running encoder while WHEP subscribers
-#                             # report congestion (rkmpp/v4l2-m2m); floor
-#                             # default: max(bitrate / 8, 300000)
+# adaptive = false              # AIMD is ON by default (floor: lowest tier,
+#                               # else max(bitrate / 8, 300000)) — it lowers
+#                               # the running encoder only while WHEP
+#                               # subscribers report congestion.  Set false
+#                               # for a strictly fixed rate, or
+#                               # adaptive = { min_bitrate = 150000 } for a
+#                               # custom floor.
 # [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000

@@ -263,8 +263,11 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   opt out with `strategy.override_publisher = false` (global or per-stream),
   restoring the 409; cascade-pull publishers are never displaced and always
   conflict (409), since their supervisor would reconnect and fight.
-  Source encoder bitrate control (issue #409): with
-  `encoder.adaptive_bitrate = true` an AIMD controller
+  Source encoder bitrate control (issue #409): adaptive bitrate is on by
+  default for native encoder sources (`adaptive = false` opts out,
+  `adaptive = { min_bitrate = … }` sets a custom floor; the default floor
+  is the lowest tier's bitrate when tiers are declared, else
+  `max(bitrate / 8, 300k)`).  The AIMD controller
   (`stream/source/adaptive_bitrate.rs`) retunes the running encoder from
   WHEP subscriber RTCP feedback (sampled by
   `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend

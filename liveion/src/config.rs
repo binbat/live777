@@ -274,8 +274,7 @@ mod tests {
             bitrate = 4000000
             profile = "640028"
             gop = 60
-            [sources.encoder.adaptive]
-            min_bitrate = 300000
+            adaptive = { min_bitrate = 300000 }
 
             [[sources.tiers]]
             name = "low"

@@ -48,9 +48,25 @@ impl NativeSource {
                 fps: t.capture.fps,
             })
             .collect();
-        let adaptive = spec.encoder.adaptive.as_ref().map(|a| {
-            super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, a.min_bitrate)
-        });
+
+        // Adaptive bitrate is on unless explicitly switched off.  The
+        // floor defaults to the lowest rung when tiers are declared (the
+        // ladder bottom is the natural floor), else the generic
+        // `max(target / 8, 300 kbps)` inside AdaptiveBitrateConfig::new.
+        use super::source_config::AdaptiveConfig;
+        let floor = tiers.iter().map(|t| t.bitrate).min();
+        let adaptive = match spec.encoder.adaptive {
+            Some(AdaptiveConfig::Switch(false)) => None,
+            Some(AdaptiveConfig::Knobs { min_bitrate }) => {
+                Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                    spec.encoder.bitrate,
+                    min_bitrate.or(floor),
+                ))
+            }
+            Some(AdaptiveConfig::Switch(true)) | None => Some(
+                super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, floor),
+            ),
+        };
         Ok(Self {
             inner: NativeEncodedSource::new(
                 spec.stream_id.clone(),

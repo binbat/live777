@@ -82,24 +82,37 @@ pub struct EncoderSpec {
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
-    /// RTCP-feedback-driven adaptive bitrate (issue #409): the section's
-    /// presence enables it.  `bitrate` above becomes the ceiling — the
-    /// controller lowers the running encoder's target while subscribers
-    /// report congestion and ramps it back up when the links stay clean.
-    /// Only effective with encoder backends that support runtime retuning
-    /// (currently `rkmpp` and `v4l2-m2m`).
+    /// Adaptive bitrate (issue #409) — **on by default, no key needed**.
+    /// The controller lowers the running encoder's target while WHEP
+    /// subscribers report congestion and ramps it back up when the links
+    /// stay clean; a clean link is never touched, so a fixed-looking rate
+    /// is just an AIMD that never triggers.  Effective only with encoder
+    /// backends that support runtime retuning (currently `rkmpp` and
+    /// `v4l2-m2m`; others log a warning and disable it).
+    ///
+    /// Three self-describing forms:
+    /// - absent: enabled; the floor is the lowest tier's bitrate when
+    ///   tiers are declared, else `max(bitrate / 8, 300_000)`.
+    /// - `adaptive = false`: strictly fixed rate (no AIMD).
+    /// - `adaptive = { min_bitrate = 150000 }`: enabled, custom floor.
     #[serde(default)]
-    pub adaptive: Option<AdaptiveSpec>,
+    pub adaptive: Option<AdaptiveConfig>,
 }
 
-/// Adaptive-bitrate knobs: presence of the `[...sources.encoder.adaptive]`
-/// section enables the AIMD controller.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AdaptiveSpec {
-    /// Adaptive floor in bits per second
-    /// (default: `max(encoder.bitrate / 8, 300_000)`).
-    #[serde(default)]
-    pub min_bitrate: Option<u32>,
+/// The `adaptive` encoder key — see [`EncoderSpec::adaptive`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AdaptiveConfig {
+    /// Plain switch: `adaptive = false` disables; `adaptive = true` is
+    /// the same as omitting the key.
+    Switch(bool),
+    /// Knobs: `adaptive = { min_bitrate = 150000 }`.
+    Knobs {
+        /// Adaptive floor in bits per second (default: lowest tier, else
+        /// `max(bitrate / 8, 300_000)`).
+        #[serde(default)]
+        min_bitrate: Option<u32>,
+    },
 }
 
 fn default_gop() -> u32 {
@@ -327,9 +340,10 @@ impl SourceSpec {
         if self.encoder.gop == 0 {
             anyhow::bail!("encoder.gop must be non-zero");
         }
-        if let Some(adaptive) = &self.encoder.adaptive
-            && let Some(min) = adaptive.min_bitrate
-            && min > self.encoder.bitrate
+        if let Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(min),
+        }) = &self.encoder.adaptive
+            && *min > self.encoder.bitrate
         {
             anyhow::bail!("encoder.adaptive.min_bitrate must not exceed encoder.bitrate");
         }
@@ -1041,6 +1055,75 @@ mod tests {
         t.capture.fps = Some(0);
         spec.tiers = vec![t];
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_adaptive_key_forms() {
+        let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
+        // Off is valid.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Switch(false));
+        assert!(spec.validate().is_ok());
+        // A floor above the ceiling is rejected.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(5_000_000),
+        });
+        assert!(spec.validate().is_err());
+        // A sane custom floor is fine.
+        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(300_000),
+        });
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_toml_forms() {
+        // Untagged key: bool switch, inline knobs, and absent all parse.
+        #[derive(Deserialize)]
+        struct W {
+            encoder: EncoderSpec,
+        }
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            adaptive = false
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            w.encoder.adaptive,
+            Some(AdaptiveConfig::Switch(false))
+        ));
+
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            adaptive = { min_bitrate = 150000 }
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            w.encoder.adaptive,
+            Some(AdaptiveConfig::Knobs {
+                min_bitrate: Some(150_000)
+            })
+        ));
+
+        let w: W = toml::from_str(
+            r#"
+            backend = "rkmpp"
+            codec = "h264"
+            bitrate = 4000000
+            profile = "640028"
+            "#,
+        )
+        .unwrap();
+        assert!(w.encoder.adaptive.is_none());
     }
 
     // --- pixel_format / codec mapping tests ---
