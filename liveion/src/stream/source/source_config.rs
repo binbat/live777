@@ -901,7 +901,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_tier_resolution_downscale_ok() {
         let mut spec = rkmpp_spec(); // capture 1920x1080@30
         let mut t = tier("low", 600_000);
