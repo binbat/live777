@@ -100,14 +100,14 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
-# width = 1280
-# height = 720
+# width = 1296
+# height = 972
 # fps = 30
 # pixel_format = "yuv420"
 # [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
-# bitrate = 1500000
+# bitrate = 2000000
 # profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
 # level = "4.0"               # required when profile is a name; 1080p needs >= 4.0
 # gop = 60
@@ -126,8 +126,12 @@ ice_udp_addrs = ["auto"]
 # the AIMD's new ceiling — it keeps following network conditions within
 # the rung.
 #
-# Encoder throughput on a Pi Zero 2 W is ~21 fps at 1080p and ~60 fps at
-# 480p — every rung below stays inside that budget:
+# The 1296x972 boot is the OV5647's native 2x2-binned mode — full field
+# of view and better low-light SNR than a 720p crop, at an encode cost
+# indistinguishable from 720p30 (~33.4 vs ~33.3 ms measured, both
+# realtime with zero headroom).  Encoder throughput on a Pi Zero 2 W is
+# ~21 fps at 1080p and ~60 fps at 480p — every rung below stays inside
+# that budget:
 # - std/maxres trade fps for pixels,
 # - lowlatency trades pixels for fps (60 fps exists only at 640x480 on
 #   the OV5647: its 16:9 sibling 1280x720@60 overruns the encoder, and
@@ -136,9 +140,9 @@ ice_udp_addrs = ["auto"]
 #
 # [[stream.pi-cam.sources.tiers]]
 # name = "std"
-# bitrate = 1500000
-# width = 1280
-# height = 720
+# bitrate = 2000000
+# width = 1296
+# height = 972
 # fps = 30
 # [[stream.pi-cam.sources.tiers]]
 # name = "maxres"
