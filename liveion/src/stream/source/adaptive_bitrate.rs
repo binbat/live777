@@ -22,7 +22,7 @@
 //!   debounce/recovery clocks reset so a (re)joining subscriber does not
 //!   inherit stale state.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -90,12 +90,18 @@ enum Decision {
 /// A manual set (`POST /api/sources/{stream}/bitrate`) applies the bitrate
 /// directly and records it here; the controller then suspends its AIMD
 /// decisions until [`BitrateControl::clear_manual`] resumes adaptive mode.
+/// External changes bump `generation`, so the controller — ticking at 1 Hz
+/// — can never miss a set/clear, not even one shorter than its tick.
 #[derive(Debug)]
 pub struct BitrateControl {
     /// Manual override bitrate; `0` means adaptive mode.
     manual: AtomicU32,
     /// Last bitrate applied to the encoder, by the controller or manually.
     current: AtomicU32,
+    /// Bumped by every external (admin API) change.  The controller
+    /// re-seeds its AIMD from `current` whenever this advances, so a
+    /// manual set/clear between two ticks still takes effect.
+    generation: AtomicU64,
 }
 
 impl BitrateControl {
@@ -103,6 +109,7 @@ impl BitrateControl {
         Self {
             manual: AtomicU32::new(0),
             current: AtomicU32::new(target),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -117,15 +124,22 @@ impl BitrateControl {
     pub fn set_manual(&self, bps: u32) {
         self.current.store(bps, Ordering::Relaxed);
         self.manual.store(bps, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn clear_manual(&self) {
         self.manual.store(0, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Last bitrate applied to the encoder.
     pub fn current(&self) -> u32 {
         self.current.load(Ordering::Relaxed)
+    }
+
+    /// External-change counter; advances on every manual set/clear.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     pub(crate) fn note_applied(&self, bps: u32) {
@@ -226,6 +240,7 @@ pub(crate) fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut aimd = Aimd::new(config);
+        let mut seen_generation = control.generation();
         let mut ticker = tokio::time::interval(TICK);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         info!(
@@ -243,11 +258,22 @@ pub(crate) fn spawn(
             }
 
             // Manual override (admin bitrate API): suspend all automatic
-            // decisions and keep the AIMD seeded with the manual value so
-            // resuming adaptive mode starts from it, not a stale value.
+            // decisions.  The generation check re-seeds the AIMD once per
+            // external change rather than every tick, and — crucially —
+            // also catches a set/clear cycle that fits between two ticks:
+            // resuming adaptive mode then starts from the externally
+            // applied value, not a stale trajectory.
+            let generation = control.generation();
             if let Some(manual_bps) = control.manual() {
-                aimd.sync(manual_bps, Instant::now());
+                if generation != seen_generation {
+                    aimd.sync(manual_bps, Instant::now());
+                    seen_generation = generation;
+                }
                 continue;
+            }
+            if generation != seen_generation {
+                aimd.sync(control.current(), Instant::now());
+                seen_generation = generation;
             }
 
             let mut worst: Option<f32> = None;
@@ -451,6 +477,25 @@ mod tests {
         // Clearing the override keeps the manual value as the current rate
         // until the controller applies its next decision.
         assert_eq!(c.current(), 800_000);
+    }
+
+    #[test]
+    fn generation_advances_on_external_changes() {
+        let c = BitrateControl::new(2_000_000);
+        let g0 = c.generation();
+
+        // The controller's own applies do not count as external changes.
+        c.note_applied(1_500_000);
+        assert_eq!(c.generation(), g0);
+
+        c.set_manual(800_000);
+        let g1 = c.generation();
+        assert!(g1 > g0);
+
+        // Even a set+clear faster than the controller tick advances the
+        // generation twice, so the resume-from-manual sync cannot be lost.
+        c.clear_manual();
+        assert!(c.generation() > g1);
     }
 
     #[test]
