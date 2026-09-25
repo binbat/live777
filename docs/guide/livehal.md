@@ -182,52 +182,52 @@ disables itself.
 bitrate is currently driven — `adaptive` (the AIMD controller above) or
 `fixed` — plus the current rate (see the [HTTP API
 guide](./live777-api.md#source)).  Control goes through **quality
-tiers**, a source-level feature — named geometry+bitrate presets
-applied with `POST /api/sources/:streamId/tier`:
+tiers**: named presets of source parameters, applied with
+`POST /api/sources/:streamId/tier`.  A tier is a partial overlay on the
+source's own structure — optional `capture` and `encoder` blocks holding
+the parameters to change; anything left out keeps the configured value:
 
 ```toml
 [stream.pi-cam.sources.encoder]
 bitrate = 4_000_000        # ceiling (and the AIMD's top rung)
-adaptive_bitrate = true
+[stream.pi-cam.sources.encoder.adaptive]
+min_bitrate = 300_000      # section presence enables the AIMD
 
-# Bitrate-only tier: retunes the running encoder, seamless.
+# Encoder-only tier: retunes the running encoder, seamless.
 [[stream.pi-cam.sources.tiers]]
 name = "mid"
-bitrate = 2_000_000
+encoder = { bitrate = 2_000_000 }
 
-# Ladder rung: resolution + framerate + bitrate, applied by rebuilding
+# Ladder rung: capture geometry + encoder budget, applied by rebuilding
 # the capture+encoder pipeline (sub-second frame gap, subscribers stay
-# connected; geometry may only downscale/downclock the capture).
+# connected).  encoder.bitrate omitted here — derived from 640x480x15
+# at ~0.07 bpp (~645 kbps).
 [[stream.pi-cam.sources.tiers]]
 name = "low"
-bitrate = 600_000
-width = 640
-height = 480
-fps = 15
+capture = { width = 640, height = 480, fps = 15 }
 ```
 
 Tiers sit next to `capture`/`encoder` (not inside the encoder block)
-because a quality tier spans both blocks: `bitrate` retunes the encoder,
-while `width`/`height`/`fps` reconfigure the capture (livehal has no
-scaler stage — capture size is encoder input size — and framerate is a
-capture-side property).  A bitrate-only tier switches seamlessly in
-place; a tier carrying any geometry rebuilds the pipeline underneath
-the stream — the RTP session survives, subscribers just see a brief
-freeze and an in-band SPS/PPS change.  `width`/`height` must be set
-together and may be any size the sensor supports — including above the
-boot profile, so the ladder top need not be the boot config (a 972p30
-boot with a 1080p20 max-quality rung); `fps` may likewise be any rate
-the sensor supports (a low-latency rung can trade resolution for
-framerate, e.g. a 480p60 tier on an OV5647 — unsupported modes are
-rejected at apply time and rolled back).  `bitrate` may likewise exceed
-the boot `encoder.bitrate` (only the encoder's signed-32-bit control
-range bounds it), so the ladder top can carry more bits than the boot
-rung — and it is *optional* for geometry tiers: when omitted it is
-derived from the effective `width`×`height`×`fps` at ~0.07 bits per
-pixel (floored at 50 kbps), which is where hand-tuned ladders usually
-land anyway; set it explicitly for content that needs more or fewer
-bits, or to offer premium/economy rungs at the same geometry.  A
-bitrate-only tier (no geometry) still requires an explicit `bitrate`.
+because a rung spans both blocks: the `encoder` overlay retunes the
+encoder, while the `capture` overlay reconfigures the capture (livehal
+has no scaler stage — capture size is encoder input size — and framerate
+is a capture-side property).  An encoder-only tier switches seamlessly
+in place; a tier touching capture geometry rebuilds the pipeline
+underneath the stream — the RTP session survives, subscribers just see a
+brief freeze and an in-band SPS/PPS change.  `capture.width`/`height`
+must be set together and may be any size the sensor supports — including
+above the boot profile, so the ladder top need not be the boot config (a
+972p30 boot with a 1080p20 max-quality rung); `capture.fps` may likewise
+be any rate the sensor supports (a low-latency rung can trade resolution
+for framerate, e.g. a 480p60 tier on an OV5647 — unsupported modes are
+rejected at apply time and rolled back).  `encoder.bitrate` may likewise
+exceed the boot `encoder.bitrate` (only the encoder's signed-32-bit
+control range bounds it), so the ladder top can carry more bits than the
+boot rung — and it is *optional*: when omitted it is derived from the
+tier's effective geometry at ~0.07 bits per pixel (floored at 50 kbps),
+which is where hand-tuned ladders usually land anyway; set it explicitly
+for content that needs more or fewer bits, or to offer premium/economy
+rungs at the same geometry.  An empty tier (nothing set) is rejected.
 
 Applying a tier does *not* suspend the adaptive controller: the tier's
 bitrate becomes the AIMD's new ceiling, so it keeps following network

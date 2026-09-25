@@ -36,23 +36,20 @@ impl NativeSource {
                 name: t.name.clone(),
                 // Unset fields overlay on the configured capture — the
                 // derivation sees the tier's effective geometry.
-                bitrate: t.bitrate.unwrap_or_else(|| {
+                bitrate: t.encoder.bitrate.unwrap_or_else(|| {
                     super::source_config::TierSpec::derived_bitrate(
-                        t.width.unwrap_or(spec.capture.width),
-                        t.height.unwrap_or(spec.capture.height),
-                        t.fps.unwrap_or(spec.capture.fps),
+                        t.capture.width.unwrap_or(spec.capture.width),
+                        t.capture.height.unwrap_or(spec.capture.height),
+                        t.capture.fps.unwrap_or(spec.capture.fps),
                     )
                 }),
-                width: t.width,
-                height: t.height,
-                fps: t.fps,
+                width: t.capture.width,
+                height: t.capture.height,
+                fps: t.capture.fps,
             })
             .collect();
-        let adaptive = spec.encoder.adaptive_bitrate.then(|| {
-            super::adaptive_bitrate::AdaptiveBitrateConfig::new(
-                spec.encoder.bitrate,
-                spec.encoder.min_bitrate,
-            )
+        let adaptive = spec.encoder.adaptive.as_ref().map(|a| {
+            super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, a.min_bitrate)
         });
         Ok(Self {
             inner: NativeEncodedSource::new(

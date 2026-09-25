@@ -274,14 +274,15 @@ mod tests {
             bitrate = 4000000
             profile = "640028"
             gop = 60
-            adaptive_bitrate = true
+            [sources.encoder.adaptive]
+            min_bitrate = 300000
 
             [[sources.tiers]]
             name = "low"
-            bitrate = 600000
+            encoder = { bitrate = 600000 }
             [[sources.tiers]]
             name = "mid"
-            bitrate = 2000000
+            capture = { width = 1280, height = 720, fps = 15 }
             "#,
         )
         .unwrap();
@@ -289,14 +290,16 @@ mod tests {
         let source = entry.sources.first().unwrap();
         assert_eq!(source.tiers.len(), 2);
         assert_eq!(source.tiers[0].name, "low");
-        assert_eq!(source.tiers[0].bitrate, Some(600_000));
+        assert_eq!(source.tiers[0].encoder.bitrate, Some(600_000));
         assert_eq!(source.tiers[1].name, "mid");
+        assert_eq!(source.tiers[1].capture.width, Some(1280));
 
         // The spec built from this config must pass validation and carry
         // the tiers through.
         let spec = source.to_spec("cam").unwrap();
         assert!(spec.validate().is_ok());
         assert_eq!(spec.tiers.len(), 2);
+        assert!(spec.encoder.adaptive.is_some());
     }
 }
 
