@@ -19,6 +19,15 @@ const formatBytes = (bytes: number): string => {
     return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 };
 
+const formatBytesRate = (bytesPerSecond?: number): string => {
+    if (bytesPerSecond === undefined) return "-";
+    if (bytesPerSecond >= 1_000_000)
+        return `${(bytesPerSecond / 1_000_000).toFixed(1)} MB/s`;
+    if (bytesPerSecond >= 1_000)
+        return `${Math.round(bytesPerSecond / 1_000)} KB/s`;
+    return `${Math.round(bytesPerSecond)} B/s`;
+};
+
 const convertSecondsToMilliseconds = (seconds: number): number => {
     return seconds ? Math.round(seconds * 1000) : 0;
 };
@@ -36,6 +45,12 @@ const convertSecondsToMilliseconds = (seconds: number): number => {
 
         <dt>Sent:</dt>
         <dd>{{ formatBytes(stats.bytesSent) }}</dd>
+
+        <dt>Download Speed:</dt>
+        <dd>{{ formatBytesRate(stats.bytesReceivedPerSecond) }}</dd>
+
+        <dt>Upload Speed:</dt>
+        <dd>{{ formatBytesRate(stats.bytesSentPerSecond) }}</dd>
 
         <dt>Round Trip Time:</dt>
         <dd>{{ convertSecondsToMilliseconds(stats.currentRoundTripTime) }}ms</dd>

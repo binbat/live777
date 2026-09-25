@@ -89,6 +89,42 @@ export async function collectVideoRtpFps(
     return { fps, samples };
 }
 
+type TransportSample = {
+    bytesReceived: number;
+    bytesSent: number;
+    timestamp: number;
+};
+
+const previousTransportSamples = new WeakMap<
+    RTCPeerConnection,
+    TransportSample
+>();
+
+function calculateBytesPerSecond(
+    peerConnection: RTCPeerConnection,
+    sample: TransportSample,
+): { bytesReceivedPerSecond?: number; bytesSentPerSecond?: number } {
+    const previousSample = previousTransportSamples.get(peerConnection);
+    previousTransportSamples.set(peerConnection, sample);
+    if (!previousSample || sample.timestamp <= previousSample.timestamp) {
+        return {};
+    }
+
+    const timeDeltaSeconds =
+        (sample.timestamp - previousSample.timestamp) / 1000;
+    return {
+        bytesReceivedPerSecond: Math.max(
+            0,
+            (sample.bytesReceived - previousSample.bytesReceived) /
+                timeDeltaSeconds,
+        ),
+        bytesSentPerSecond: Math.max(
+            0,
+            (sample.bytesSent - previousSample.bytesSent) / timeDeltaSeconds,
+        ),
+    };
+}
+
 export async function collectWebRtcStats(
     peerConnection: RTCPeerConnection,
 ): Promise<StatsNerds> {
@@ -103,6 +139,14 @@ export async function collectWebRtcStats(
         if (report.type === "transport") {
             statsNerds.bytesReceived = report.bytesReceived ?? 0;
             statsNerds.bytesSent = report.bytesSent ?? 0;
+            Object.assign(
+                statsNerds,
+                calculateBytesPerSecond(peerConnection, {
+                    bytesReceived: statsNerds.bytesReceived,
+                    bytesSent: statsNerds.bytesSent,
+                    timestamp: report.timestamp,
+                }),
+            );
         } else if (report.type === "codec") {
             const [kind, codec] = report.mimeType.toLowerCase().split("/");
             if (kind === "video") {
