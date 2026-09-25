@@ -428,6 +428,8 @@ carries the check.
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
+  `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
+  (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.
 
 ## Useful Local Recipes (justfile)
 

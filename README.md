@@ -15,6 +15,10 @@
   <a href="https://live777.pages.dev/zh/guide/what-is-live777">
     <b>中文文档</b>
   </a>
+  |
+  <a href="https://live777.pages.dev/llms.txt">
+    <b>llms.txt</b> (for AI)
+  </a>
 
   <br/>
   <br/>

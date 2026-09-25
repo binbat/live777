@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress';
+import llmstxt from 'vitepress-plugin-llms';
 
 import { en } from './en';
 import { zh } from './zh';
@@ -12,6 +13,16 @@ export default defineConfig({
     lastUpdated: true,
     cleanUrls: true,
     metaChunk: true,
+
+    vite: {
+        plugins: [
+            // LLMs read English docs only; the zh locale is excluded
+            llmstxt({
+                domain: 'https://live777.pages.dev',
+                ignoreFiles: ['zh/**'],
+            }),
+        ],
+    },
 
     head: [
         ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
