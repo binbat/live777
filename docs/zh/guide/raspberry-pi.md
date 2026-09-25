@@ -22,7 +22,7 @@ cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
 
 压缩包内含 `live777` 二进制、`live777.toml` 配置模板和 `live777.service` systemd 单元。
 
-如果你选的 Release 没有 `-rpi` 资产（原生构建是在 `v0.9.0` 之后加入的），改为从源码构建——见 [livehal](./livehal.md#构建)，或用 `just rpi-cross-build` 交叉编译。
+如果你选的 Release 没有 `-rpi` 资产（原生构建是在 `v0.9.0` 之后加入的），改为从源码构建——见 [livehal](./livehal.md#build)，或用 `just rpi-cross-build` 交叉编译。
 
 ## 第二步：配置摄像头源
 
@@ -79,7 +79,7 @@ encoder = { bitrate = 150000 }
 ```
 
 自适应码率默认开启：AIMD 控制器跟随 WHEP 订阅者的 RTCP 反馈实时调整编码器，当前档位码率为上限、最低档为下限。语义详见
-[livehal](./livehal.md#自适应码率-实验性)。
+[livehal](./livehal.md#adaptive-bitrate)。
 
 ## 第三步：运行
 
@@ -118,4 +118,4 @@ curl http://<树莓派IP>:7777/api/sources/pi-cam/bitrate
 - **CPU 约 100%、帧率低、延迟持续累积**——你在软编码（ffmpeg/`libx264` 管线）。换用上面的 `native-rpi` 构建；硬件编码只占*一个*核心的约 20–65%（随分辨率变化）。
 - **摄像头被占用 / 黑图**——有别的进程占用传感器（`rpicam-hello`、motion 等）。用 `rpicam-hello --timeout 1` 检查。
 - **实际帧率低于配置值**——传感器模式会钳制帧率；各模式上限和 60 fps 参考配置见
-  [livehal — 树莓派说明](./livehal.md#树莓派说明)。
+  [livehal — 树莓派说明](./livehal.md#raspberry-pi-notes)。

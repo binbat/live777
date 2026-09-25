@@ -22,7 +22,7 @@ live777 --config live777.toml
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
 
-## ARM 开发板（树莓派 / RK3588 / RDK X5）
+## ARM 开发板（树莓派 / RK3588 / RDK X5） {#arm-boards}
 
 `v0.9.0` 之后的 Release 会发布内置**硬件采集 + 编码管线**（见 [livehal](/zh/guide/livehal)）的原生构建——摄像头推流不需要 ffmpeg 或任何辅助进程：
 

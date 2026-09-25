@@ -10,6 +10,15 @@ Live777 can record published streams as fragmented MP4 segments to the local fil
 
 An embedded WebUI, admin and session REST APIs, and Prometheus metrics are built in, making the server easy to operate and observe in production.
 
+For camera streaming on ARM boards, the built-in **livehal** native pipeline captures and hardware-encodes video inside the server process — no ffmpeg or other helper processes, and no CPU-heavy software encoding. Adaptive bitrate and runtime quality-tier switching are built in. Currently supported devices:
+
+- **Raspberry Pi** — libcamera capture + V4L2 M2M encoder (verified on Zero 2 W with the OV5647 camera)
+- **Rockchip RK3588 / RV1126B** — V4L2 capture + RKMPP encoder, with DMA-BUF zero-copy
+- **Horizon RDK X5** — V4L2 capture + RDK hardware encoder
+- **Generic Linux V4L2 boards** — USB/CSI cameras + V4L2 M2M encoder
+
+See the [Raspberry Pi deployment guide](./raspberry-pi.md) and the [livehal](./livehal.md) reference.
+
 ## What is SFU Server ?
 
 ![webrtc-mesh-mcu-sfu](/webrtc-mesh-mcu-sfu.excalidraw.svg)

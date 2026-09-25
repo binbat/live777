@@ -8,6 +8,15 @@ Live777 可以将发布的流录制为分片 MP4（fMP4）片段，保存到本�
 
 Live777 内置嵌入式 WebUI、管理与会话 REST API 以及 Prometheus 指标，便于在生产环境中运维和观测。
 
+面向 ARM 开发板的摄像头推流，内置的 **livehal** 原生管线在服务器进程内完成硬件采集与编码——不需要 ffmpeg 或其他辅助进程，也不占用 CPU 做软件编码，并自带自适应码率和运行时质量档位切换。目前支持的设备：
+
+- **树莓派（Raspberry Pi）**——libcamera 采集 + V4L2 M2M 编码器（已在 Zero 2 W + OV5647 摄像头上验证）
+- **瑞芯微 RK3588 / RV1126B**——V4L2 采集 + RKMPP 编码器，支持 DMA-BUF 零拷贝
+- **地平线 RDK X5**——V4L2 采集 + RDK 硬件编码器
+- **通用 Linux V4L2 开发板**——USB/CSI 摄像头 + V4L2 M2M 编码器
+
+参见[树莓派部署指南](./raspberry-pi.md)和 [livehal](./livehal.md) 参考文档。
+
 ## 什么是 SFU Server ?
 
 ![webrtc-mesh-mcu-sfu](/webrtc-mesh-mcu-sfu.excalidraw.svg)

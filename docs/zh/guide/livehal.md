@@ -58,7 +58,7 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 DataChannel <-> UDP 通道。每个 stream 同时只能运行**一个**源——源注册表以流名为键，
 因此请为每个流只配置一个源。
 
-### 预注册流与按需源（on-demand）
+### 预注册流与按需源（on-demand） {#provisioned-streams}
 
 每个 `[stream.<name>]` 条目都是"预注册"（provisioned）的：流在启动时即注册，
 即使空闲也始终出现在 API 和 Dashboard 中，不受自动回收策略影响
@@ -142,7 +142,7 @@ clock_rate = 90000
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 
-### 自适应码率(实验性)
+### 自适应码率(实验性) {#adaptive-bitrate}
 
 原生编码源**默认开启**自适应码率 —— 运行中的编码器目标码率由
 WHEP 订阅端的 RTCP 反馈驱动(issue #409):每秒采样一次丢包(优先 TWCC,
@@ -293,12 +293,12 @@ cargo build --bin live777 --release \
   --no-default-features --features native-rkmpp,webui
 ```
 
-## 构建
+## 构建 {#build}
 
 ::: tip 预编译二进制
 通常不需要自己编译：`v0.9.0` 之后的 Release 会发布原生构建（树莓派用
 `live777-<版本>-aarch64-unknown-linux-gnu-rpi.tar.gz`，RK3588/RV1126B 用
-`-rkmpp.tar.gz`）。见[安装部署](./installation.md#arm-开发板-树莓派-rk3588-rdk-x5)和
+`-rkmpp.tar.gz`）。见[安装部署](./installation.md#arm-boards)和
 [树莓派部署指南](./raspberry-pi.md)。只有需要未发布的改动、或 RDK X5
 （无预编译资产，需要 `RDK_SYSROOT`）时才从源码构建。
 :::
@@ -503,7 +503,7 @@ clock_rate = 90000
 
 零拷贝路径需要**两侧都**设 `prefer_dmabuf`；任一侧未设置（或驱动无法导出/导入缓冲区）都会回退 CPU 拷贝路径。输入必须是 NV12。
 
-## 树莓派说明
+## 树莓派说明 {#raspberry-pi-notes}
 
 已在 Raspberry Pi Zero 2 W（Debian 13）+ OV5647（v1 摄像头）上实测验证。
 

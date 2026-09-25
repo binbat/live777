@@ -183,7 +183,7 @@ live777 无法直接驱动的设备做按需激活：真正需要媒体时由 ho
 
 > 内置替代方案：配置的源（`[[stream.<name>.sources]]`）支持 `on_demand = true`，
 > 可随订阅者有无自动启停摄像头或 RTSP 拉流——无需编写脚本。参见
-> [livehal — 预注册流与按需源](./livehal#预注册流与按需源on-demand)。
+> [livehal — 预注册流与按需源](./livehal#provisioned-streams)。
 
 > 哪些事件代表"有人在看"？对**预注册**流（任何 `[stream.<name>]` 条目），
 > `stream-created` 在启动时触发一次，无法用于电源控制——请改用
