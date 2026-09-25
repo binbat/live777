@@ -231,14 +231,14 @@ const handleVideoResize = () => {
 
 <template>
     <dialog ref="dialogEl" aria-label="Modal" aria-hidden="false" class="modal">
-        <div class="modal-box min-w-md max-w-[unset] w-[unset]">
+        <div class="modal-box sm:min-w-md sm:max-w-[unset] sm:w-[unset]">
             <div class="w-full text-xl mb-6">
                 <h3 class="font-bold">Web Stream {{ streamId }} {{ videoResolution }}</h3>
             </div>
             <div>
                 <video
                     ref="videoEl"
-                    class="block mx-auto min-w-[28rem] max-w-[90vw] max-h-[70vh]"
+                    class="block mx-auto sm:min-w-[28rem] max-w-[90vw] max-h-[70vh]"
                     controls
                     autoplay
                     @resize="handleVideoResize"

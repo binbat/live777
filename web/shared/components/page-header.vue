@@ -76,7 +76,7 @@ const showNavigation = computed(() => !!props.onNavigate && tools.value.recordin
                     :src="Logo"
                     class="h-8 transition-[filter] duration-200 ease-in-out group-hover:drop-shadow-[0_0_1em_#1991e8aa]"
                 />
-                <span class="text-xl font-bold">Live777</span>
+                <span class="text-xl font-bold hidden sm:inline">Live777</span>
             </div>
 
             <!-- Navigation Tabs -->
@@ -88,8 +88,8 @@ const showNavigation = computed(() => !!props.onNavigate && tools.value.recordin
                         :class="{ 'tab-active': currentView === 'streams' }"
                         @click="onNavigate?.('streams')"
                     >
-                        <Monitor class="w-4 h-4 mr-2" />
-                        Streams
+                        <Monitor class="w-4 h-4 sm:mr-2" />
+                        <span class="hidden sm:inline">Streams</span>
                     </a>
                     <a
                         v-if="tools.recordings"
@@ -98,15 +98,15 @@ const showNavigation = computed(() => !!props.onNavigate && tools.value.recordin
                         :class="{ 'tab-active': currentView === 'recordings' }"
                         @click="onNavigate?.('recordings')"
                     >
-                        <Calendar class="w-4 h-4 mr-2" />
-                        Recordings
+                        <Calendar class="w-4 h-4 sm:mr-2" />
+                        <span class="hidden sm:inline">Recordings</span>
                     </a>
                 </div>
             </div>
 
             <div v-if="visibleItems.length > 0" role="listbox" class="dropdown dropdown-end">
-                <label tabindex="1" class="btn btn-ghost gap-2">
-                    Tools
+                <label tabindex="1" class="btn btn-ghost gap-2 flex-nowrap">
+                    <span class="whitespace-nowrap">Tools</span>
                     <ChevronDownIcon class="size-4 stroke-current" />
                 </label>
                 <ul tabindex="0" role="menu" class="dropdown-content menu p-2 shadow rounded-box bg-base-300 mt-4 z-10">

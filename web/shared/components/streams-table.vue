@@ -21,6 +21,8 @@ export interface StreamTableProps {
 <script setup lang="ts">
 import {
     computed,
+    onMounted,
+    onUnmounted,
     ref,
     toValue,
     useTemplateRef,
@@ -366,6 +368,35 @@ const handleOpenDebuggerPage = (id: string) => {
     window.open(url);
 };
 
+// The "More" menu teleports to <body>: the table scrolls horizontally
+// inside an overflow-x-auto wrapper on mobile, which would clip an
+// in-cell dropdown (overflow-x: auto forces overflow-y clipping too).
+const moreMenu = ref<{ id: string; top: number; right: number; openedAt: number } | null>(null);
+const toggleMoreMenu = (id: string, event: MouseEvent) => {
+    if (moreMenu.value?.id === id) {
+        moreMenu.value = null;
+        return;
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    moreMenu.value = {
+        id,
+        top: rect.bottom + 4,
+        right: Math.max(8, window.innerWidth - rect.right),
+        openedAt: Date.now(),
+    };
+};
+const closeMoreMenu = () => {
+    moreMenu.value = null;
+};
+// scroll events from a scroll-into-view (e.g. touch tap) can arrive
+// right after the click that opened the menu; ignore those
+const passiveCloseMoreMenu = () => {
+    if (moreMenu.value && Date.now() - moreMenu.value.openedAt < 300) return;
+    moreMenu.value = null;
+};
+onMounted(() => window.addEventListener("resize", passiveCloseMoreMenu));
+onUnmounted(() => window.removeEventListener("resize", passiveCloseMoreMenu));
+
 // Media statistics (issue #252): sum of all streams' rates and
 // cumulative bytes. Liveman marks merged cluster snapshots as node-work
 // totals because cascade hops are counted on each relay node.
@@ -453,7 +484,7 @@ const handleCancelStop = () => {
 </script>
 
 <template>
-    <div class="flex items-center gap-2 px-4 h-12">
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2">
         <span class="font-bold text-lg">Streams</span>
         <div aria-label="Badge" class="badge badge-ghost font-bold mr-auto">{{ streamsData.length }}</div>
         <span
@@ -488,115 +519,105 @@ const handleCancelStop = () => {
         </button>
     </div>
 
-    <table class="table overflow-x-auto">
-        <thead>
-            <tr>
-                <th><span>ID</span></th>
-                <td><span>Publisher</span></td>
-                <td><span>Subscriber</span></td>
-                <td><span>In</span></td>
-                <td><span>Out</span></td>
-                <td><span>Cascade</span></td>
-                <td><span>Creation Time</span></td>
-                <td><span>Operation</span></td>
-            </tr>
-        </thead>
-        <tbody>
-            <tr v-for="i in streamsData" :key="i.id">
-                <th>
-                    <span>
-                        {{ i.id }}
-                        <div
-                            v-if="i.onDemand && countActiveSessions(i.publish.sessions) > 0"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-info ml-2"
-                        >on-demand</div>
-                        <div
-                            v-else-if="i.onDemand"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-ghost ml-2"
-                        >standby</div>
-                        <div
-                            v-if="!i.onDemand && i.provisioned"
-                            aria-label="Badge"
-                            class="badge badge-sm badge-ghost ml-2"
-                        >config</div>
-                    </span>
-                </th>
-                <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
-                <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
-                <td>
-                    <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
-                        {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
-                    </span>
-                </td>
-                <td>
-                    <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
-                        {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
-                    </span>
-                </td>
-                <td>
-                    <span>
-                        {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
-                    </span>
-                </td>
-                <td><span>{{ formatTime(i.createdAt) }}</span></td>
-                <td>
-                    <div class="flex gap-1">
-                        <button
-                            class="btn btn-sm"
-                            :class="{ 'btn-info': previewStreams.includes(i.id) }"
-                            @click="handlePreview(i.id)"
-                        >Preview</button>
-                        <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
-                        <button
-                            v-if="features.source && sourceStreams.has(i.id)"
-                            class="btn btn-sm"
-                            @click="handleViewSource(i.id)"
-                        >Source</button>
-                        <div
-                            v-if="showCascade || features.player || features.debugger"
-                            class="dropdown dropdown-end"
-                        >
-                            <button tabindex="0" class="btn btn-sm">More</button>
-                            <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
-                                <li v-if="showCascade">
-                                    <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
-                                </li>
-                                <li v-if="features.player">
-                                    <a @click="handleOpenPlayerPage(i.id)">Player</a>
-                                </li>
-                                <li v-if="features.debugger">
-                                    <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
-                                </li>
-                            </ul>
-                        </div>
-                        <button
-                            v-if="recordingAvailable"
-                            class="btn btn-sm"
-                            :class="recordingStates[i.id] ? 'btn-success' : 'btn-info'"
-                            @click="openRecordDialog(i.id)"
-                        >{{ recordingStates[i.id] ? "Recording" : "Record" }}</button>
-                        <slot name="extra-actions" :stream="i" />
-                        <!-- disabled buttons don't fire mouse events in
-                             some browsers, so the tooltip lives on the
-                             wrapper -->
-                        <span :title="i.provisioned ? 'Configured streams cannot be deleted' : undefined">
-                            <button
-                                class="btn btn-sm btn-error"
-                                :class="{ 'btn-disabled': i.provisioned }"
-                                :disabled="i.provisioned"
-                                @click="handleDestroyStream(i.id)"
-                            >Destroy</button>
+    <div class="overflow-x-auto" @scroll.passive="passiveCloseMoreMenu">
+        <table class="table whitespace-nowrap">
+            <thead>
+                <tr>
+                    <th><span>ID</span></th>
+                    <td><span>Publisher</span></td>
+                    <td><span>Subscriber</span></td>
+                    <td><span>In</span></td>
+                    <td><span>Out</span></td>
+                    <td><span>Cascade</span></td>
+                    <td><span>Creation Time</span></td>
+                    <td><span>Operation</span></td>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="i in streamsData" :key="i.id">
+                    <th class="whitespace-normal">
+                        <span>
+                            {{ i.id }}
+                            <div
+                                v-if="i.onDemand && countActiveSessions(i.publish.sessions) > 0"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-info ml-2"
+                            >on-demand</div>
+                            <div
+                                v-else-if="i.onDemand"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-ghost ml-2"
+                            >standby</div>
+                            <div
+                                v-if="!i.onDemand && i.provisioned"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-ghost ml-2"
+                            >config</div>
                         </span>
-                    </div>
-                </td>
-            </tr>
-            <tr v-if="streamsData.length === 0">
-                <td colspan="8" class="text-center">N/A</td>
-            </tr>
-        </tbody>
-    </table>
+                    </th>
+                    <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
+                    <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
+                    <td>
+                        <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                            {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
+                        </span>
+                    </td>
+                    <td>
+                        <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                            {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
+                        </span>
+                    </td>
+                    <td>
+                        <span>
+                            {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
+                        </span>
+                    </td>
+                    <td><span>{{ formatTime(i.createdAt) }}</span></td>
+                    <td>
+                        <div class="flex flex-nowrap gap-1">
+                            <button
+                                class="btn btn-sm"
+                                :class="{ 'btn-info': previewStreams.includes(i.id) }"
+                                @click="handlePreview(i.id)"
+                            >Preview</button>
+                            <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
+                            <button
+                                v-if="features.source && sourceStreams.has(i.id)"
+                                class="btn btn-sm"
+                                @click="handleViewSource(i.id)"
+                            >Source</button>
+                            <button
+                                v-if="showCascade || features.player || features.debugger"
+                                class="btn btn-sm"
+                                @click="toggleMoreMenu(i.id, $event)"
+                            >More</button>
+                            <button
+                                v-if="recordingAvailable"
+                                class="btn btn-sm"
+                                :class="recordingStates[i.id] ? 'btn-success' : 'btn-info'"
+                                @click="openRecordDialog(i.id)"
+                            >{{ recordingStates[i.id] ? "Recording" : "Record" }}</button>
+                            <slot name="extra-actions" :stream="i" />
+                            <!-- disabled buttons don't fire mouse events in
+                                 some browsers, so the tooltip lives on the
+                                 wrapper -->
+                            <span :title="i.provisioned ? 'Configured streams cannot be deleted' : undefined">
+                                <button
+                                    class="btn btn-sm btn-error"
+                                    :class="{ 'btn-disabled': i.provisioned }"
+                                    :disabled="i.provisioned"
+                                    @click="handleDestroyStream(i.id)"
+                                >Destroy</button>
+                            </span>
+                        </div>
+                    </td>
+                </tr>
+                <tr v-if="streamsData.length === 0">
+                    <td colspan="8" class="text-center">N/A</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
 
     <div v-if="recordingAvailable && recordDialogOpen" class="modal modal-open">
         <div class="modal-box">
@@ -688,4 +709,24 @@ const handleCancelStop = () => {
         :get-whip-url="getWhipUrl"
         @stop="handleWebStreamStop(s)"
     />
+
+    <Teleport to="body">
+        <template v-if="moreMenu">
+            <div class="fixed inset-0 z-40" @click="closeMoreMenu" />
+            <ul
+                class="menu fixed z-50 bg-base-100 rounded-box w-40 p-2 shadow"
+                :style="{ top: `${moreMenu.top}px`, right: `${moreMenu.right}px` }"
+            >
+                <li v-if="showCascade">
+                    <a @click="handleCascadePushStream(moreMenu.id); closeMoreMenu()">Cascade Push</a>
+                </li>
+                <li v-if="features.player">
+                    <a @click="handleOpenPlayerPage(moreMenu.id); closeMoreMenu()">Player</a>
+                </li>
+                <li v-if="features.debugger">
+                    <a @click="handleOpenDebuggerPage(moreMenu.id); closeMoreMenu()">Debugger</a>
+                </li>
+            </ul>
+        </template>
+    </Teleport>
 </template>
