@@ -2,6 +2,10 @@
 
 我们有 [whipinto](/guide/whipinto) 和 [whepfrom](/guide/whepfrom) 来把 `rtp` <-> `whip`/`whep` 进行转换
 
+::: warning 树莓派和其他 ARM 开发板
+本页所有示例都是 CPU 软件编码（`libx264`、`libvpx` 等）。在树莓派、RK3588 这类开发板上会占满 CPU——请改用[原生硬件管线构建](/zh/guide/raspberry-pi)。如果确实必须用 ffmpeg，至少使用开发板的硬件编码器（如 Raspberry Pi OS 上的 `-c:v h264_v4l2m2m -b:v 1M`）而不是 `libx264`。
+:::
+
 例如:
 
 ```

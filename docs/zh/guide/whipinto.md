@@ -2,6 +2,10 @@
 
 `RTP`/`RTSP` to `WHIP` tool
 
+::: warning 要在树莓派 / ARM 开发板上推摄像头？
+不要在这些开发板上把 `whipinto` 和软编码的 ffmpeg 搭配使用——CPU 撑不住。`native-rpi` / `native-rkmpp` 的 `live777` 构建在进程内用硬件完成采集和编码，见[树莓派部署指南](/zh/guide/raspberry-pi)。`whipinto` 适用于已经编码好的源（网络摄像头、RTP/RTSP 流、文件、合成测试源）。
+:::
+
 这个工具应该有三种模式：
 - `rtp`
 - `rtsp as client`

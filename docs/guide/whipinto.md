@@ -2,6 +2,15 @@
 
 `RTP`/`RTSP` to `WHIP` tool
 
+::: warning Streaming a camera from a Raspberry Pi / ARM board?
+Do not pair `whipinto` with a software-encoding ffmpeg on these boards —
+the CPU cannot keep up. The `native-rpi` / `native-rkmpp` `live777` builds
+capture and encode in hardware, in-process; see the
+[Raspberry Pi deployment guide](/guide/raspberry-pi). `whipinto` is for
+sources that are already encoded (IP cameras, RTP/RTSP feeds, files,
+synthetic test sources).
+:::
+
 This tool has three working mode:
 - `rtp`
 - `rtsp as client`

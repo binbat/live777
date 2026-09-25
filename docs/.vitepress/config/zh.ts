@@ -47,6 +47,7 @@ export const zh: LocaleConfig = {
                         text: '例子',
                         collapsed: false,
                         items: [
+                            { text: '树莓派', link: 'raspberry-pi' },
                             { text: 'OBS Studio', link: 'obs-studio' },
                             { text: 'FFmpeg', link: 'ffmpeg' },
                             { text: 'Gstreamer', link: 'gstreamer' },

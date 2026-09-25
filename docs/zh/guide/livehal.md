@@ -295,6 +295,14 @@ cargo build --bin live777 --release \
 
 ## 构建
 
+::: tip 预编译二进制
+通常不需要自己编译：`v0.9.0` 之后的 Release 会发布原生构建（树莓派用
+`live777-<版本>-aarch64-unknown-linux-gnu-rpi.tar.gz`，RK3588/RV1126B 用
+`-rkmpp.tar.gz`）。见[安装部署](./installation.md#arm-开发板-树莓派-rk3588-rdk-x5)和
+[树莓派部署指南](./raspberry-pi.md)。只有需要未发布的改动、或 RDK X5
+（无预编译资产，需要 `RDK_SYSROOT`）时才从源码构建。
+:::
+
 ### 前置要求
 
 - CMake ≥ 3.16

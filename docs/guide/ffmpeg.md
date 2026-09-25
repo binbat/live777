@@ -2,6 +2,14 @@
 
 We have tools [whipinto](/guide/whipinto) and [whepfrom](/guide/whepfrom) for support `rtp` <-> `whip`/`whep` convert
 
+::: warning Raspberry Pi and other ARM boards
+Every example on this page encodes video in software (`libx264`, `libvpx`,
+...) on the CPU. On a Raspberry Pi, RK3588 or similar board this saturates
+the CPU — use the [native hardware-pipeline build](/guide/raspberry-pi)
+instead. If ffmpeg is unavoidable, use the board's hardware encoder (e.g.
+`-c:v h264_v4l2m2m -b:v 1M` on Raspberry Pi OS) instead of `libx264`.
+:::
+
 For Example:
 
 ```

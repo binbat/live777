@@ -47,6 +47,7 @@ export const en: LocaleConfig = {
                         text: 'Example',
                         collapsed: false,
                         items: [
+                            { text: 'Raspberry Pi', link: 'raspberry-pi' },
                             { text: 'OBS Studio', link: 'obs-studio' },
                             { text: 'FFmpeg', link: 'ffmpeg' },
                             { text: 'Gstreamer', link: 'gstreamer' },

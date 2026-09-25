@@ -327,6 +327,16 @@ cargo build --bin live777 --release \
 
 ## Build
 
+::: tip Prebuilt binaries
+You usually do not need to compile anything: releases after `v0.9.0`
+publish native builds (`live777-<version>-aarch64-unknown-linux-gnu-rpi.tar.gz`
+for Raspberry Pi, `-rkmpp.tar.gz` for RK3588/RV1126B). See
+[Installation](./installation.md#arm-boards-raspberry-pi-rk3588-rdk-x5) and
+the [Raspberry Pi deployment guide](./raspberry-pi.md). Build from source
+only for unreleased changes or RDK X5 (no prebuilt asset; requires
+`RDK_SYSROOT`).
+:::
+
 ### Prerequisites
 
 - CMake ≥ 3.16
