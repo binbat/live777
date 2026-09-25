@@ -34,7 +34,15 @@ impl NativeSource {
             .iter()
             .map(|t| super::tier::QualityTier {
                 name: t.name.clone(),
-                bitrate: t.bitrate,
+                // Unset fields overlay on the configured capture — the
+                // derivation sees the tier's effective geometry.
+                bitrate: t.bitrate.unwrap_or_else(|| {
+                    super::source_config::TierSpec::derived_bitrate(
+                        t.width.unwrap_or(spec.capture.width),
+                        t.height.unwrap_or(spec.capture.height),
+                        t.fps.unwrap_or(spec.capture.fps),
+                    )
+                }),
                 width: t.width,
                 height: t.height,
                 fps: t.fps,

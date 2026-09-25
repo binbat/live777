@@ -289,7 +289,7 @@ mod tests {
         let source = entry.sources.first().unwrap();
         assert_eq!(source.tiers.len(), 2);
         assert_eq!(source.tiers[0].name, "low");
-        assert_eq!(source.tiers[0].bitrate, 600_000);
+        assert_eq!(source.tiers[0].bitrate, Some(600_000));
         assert_eq!(source.tiers[1].name, "mid");
 
         // The spec built from this config must pass validation and carry

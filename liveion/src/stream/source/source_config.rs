@@ -124,10 +124,17 @@ pub struct OutputSpec {
 pub struct TierSpec {
     /// Unique tier name within the source, referenced by the admin API.
     pub name: String,
-    /// Tier bitrate in bits per second; bounded only by the encoder's
-    /// signed-32-bit control channel, so a rung may exceed the boot
-    /// `encoder.bitrate`.
-    pub bitrate: u32,
+    /// Tier bitrate in bits per second — the AIMD's ceiling in this rung.
+    /// Optional when geometry is set: it is then derived from
+    /// `width`×`height`×`fps` at ~0.07 bits per pixel (see
+    /// [`TierSpec::derived_bitrate`]), which covers the common case;
+    /// set it explicitly to tune for content (e.g. sports) or to offer
+    /// premium/economy rungs at the same geometry.  Required for
+    /// bitrate-only tiers (nothing to derive from).  Bounded only by the
+    /// encoder's signed-32-bit control channel, so a rung may exceed the
+    /// boot `encoder.bitrate`.
+    #[serde(default)]
+    pub bitrate: Option<u32>,
     /// Tier capture width (must pair with `height`; any size the sensor
     /// supports, including above the boot profile — e.g. a 972p30 boot
     /// with a 1080p20 max-quality rung).
@@ -142,6 +149,14 @@ pub struct TierSpec {
     /// camera cannot do is rejected at apply time and rolled back.
     #[serde(default)]
     pub fps: Option<u32>,
+}
+
+impl TierSpec {
+    /// Geometry-derived default bitrate: ~0.07 bits per pixel per frame
+    /// (where the hand-tuned OV5647 ladder lands), floored at 50 kbps.
+    pub fn derived_bitrate(width: u32, height: u32, fps: u32) -> u32 {
+        ((width as u64 * height as u64 * fps as u64 * 7 / 100) as u32).max(50_000)
+    }
 }
 
 fn default_payload_type() -> u8 {
@@ -289,7 +304,6 @@ impl SourceSpec {
         }
 
         let mut tier_names = std::collections::HashSet::new();
-        let mut tier_bitrates = std::collections::HashSet::new();
         for tier in &self.tiers {
             if tier.name.trim().is_empty() {
                 anyhow::bail!("tiers.name cannot be empty");
@@ -297,28 +311,21 @@ impl SourceSpec {
             if !tier_names.insert(tier.name.as_str()) {
                 anyhow::bail!("duplicate tier name '{}'", tier.name);
             }
-            if tier.bitrate == 0 {
-                anyhow::bail!("tier '{}': bitrate must be non-zero", tier.name);
-            }
-            // Duplicate bitrates would make `active_tier` (matched by value)
-            // silently ambiguous.
-            if !tier_bitrates.insert(tier.bitrate) {
-                anyhow::bail!(
-                    "tier '{}': bitrate {} is already used by another tier",
-                    tier.name,
-                    tier.bitrate
-                );
-            }
-            // The only upper bound is the encoder control channel (a
-            // signed 32-bit value): a rung may legitimately exceed the
-            // boot encoder.bitrate — the ladder top need not be the boot
-            // profile (2M boot with a 3M max-quality rung).
-            if tier.bitrate > i32::MAX as u32 {
-                anyhow::bail!(
-                    "tier '{}': bitrate {} exceeds the encoder control range",
-                    tier.name,
-                    tier.bitrate
-                );
+            if let Some(bps) = tier.bitrate {
+                if bps == 0 {
+                    anyhow::bail!("tier '{}': bitrate must be non-zero", tier.name);
+                }
+                // The only upper bound is the encoder control channel (a
+                // signed 32-bit value): a rung may legitimately exceed the
+                // boot encoder.bitrate — the ladder top need not be the boot
+                // profile (2M boot with a 3M max-quality rung).
+                if bps > i32::MAX as u32 {
+                    anyhow::bail!(
+                        "tier '{}': bitrate {} exceeds the encoder control range",
+                        tier.name,
+                        tier.bitrate.unwrap_or_default()
+                    );
+                }
             }
             // Geometry fields turn the tier into a ladder rung that
             // rebuilds the pipeline: dimensions must pair up and be
@@ -344,6 +351,19 @@ impl SourceSpec {
                 && fps == 0
             {
                 anyhow::bail!("tier '{}': fps must be non-zero", tier.name);
+            }
+            // Bitrate is required only when there is nothing to derive it
+            // from (a bitrate-only tier).
+            if tier.bitrate.is_none()
+                && tier.width.is_none()
+                && tier.height.is_none()
+                && tier.fps.is_none()
+            {
+                anyhow::bail!(
+                    "tier '{}': bitrate is required for bitrate-only tiers \
+                     (or set width/height/fps and let it be derived)",
+                    tier.name
+                );
             }
         }
 
@@ -846,7 +866,7 @@ mod tests {
     fn tier(name: &str, bitrate: u32) -> TierSpec {
         TierSpec {
             name: name.into(),
-            bitrate,
+            bitrate: Some(bitrate),
             width: None,
             height: None,
             fps: None,
@@ -875,10 +895,41 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_duplicate_bitrate_rejected() {
+    fn test_tier_duplicate_bitrate_allowed() {
+        // Same bitrate on two rungs is fine — the active tier is tracked
+        // by name, not matched by value.
         let mut spec = rkmpp_spec();
         spec.tiers = vec![tier("low", 600_000), tier("mid", 600_000)];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_bitrate_optional_with_geometry() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.bitrate = None;
+        t.width = Some(640);
+        t.height = Some(480);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_bitrate_required_without_geometry() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("bare", 600_000);
+        t.bitrate = None;
+        spec.tiers = vec![t];
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_derived_bitrate() {
+        // ~0.07 bpp, floored at 50 kbps.
+        assert_eq!(TierSpec::derived_bitrate(640, 480, 30), 645_120);
+        assert_eq!(TierSpec::derived_bitrate(1920, 1080, 20), 2_903_040);
+        assert_eq!(TierSpec::derived_bitrate(320, 240, 10), 53_760);
+        assert_eq!(TierSpec::derived_bitrate(1, 1, 1), 50_000);
     }
 
     #[test]

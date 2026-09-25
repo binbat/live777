@@ -222,7 +222,12 @@ framerate, e.g. a 480p60 tier on an OV5647 — unsupported modes are
 rejected at apply time and rolled back).  `bitrate` may likewise exceed
 the boot `encoder.bitrate` (only the encoder's signed-32-bit control
 range bounds it), so the ladder top can carry more bits than the boot
-rung.
+rung — and it is *optional* for geometry tiers: when omitted it is
+derived from the effective `width`×`height`×`fps` at ~0.07 bits per
+pixel (floored at 50 kbps), which is where hand-tuned ladders usually
+land anyway; set it explicitly for content that needs more or fewer
+bits, or to offer premium/economy rungs at the same geometry.  A
+bitrate-only tier (no geometry) still requires an explicit `bitrate`.
 
 Applying a tier does *not* suspend the adaptive controller: the tier's
 bitrate becomes the AIMD's new ceiling, so it keeps following network
