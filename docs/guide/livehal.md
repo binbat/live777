@@ -220,11 +220,15 @@ capture-side property).  A bitrate-only tier switches seamlessly in
 place; a tier carrying any geometry rebuilds the pipeline underneath
 the stream — the RTP session survives, subscribers just see a brief
 freeze and an in-band SPS/PPS change.  `width`/`height` must be set
-together and must not exceed the capture size, `fps` may be any rate the
-sensor supports (a low-latency rung can trade resolution for framerate,
-e.g. 1080p30 base with a 480p60 tier on an OV5647 — an unsupported mode
-is rejected at apply time and rolled back), and `bitrate` must not
-exceed `encoder.bitrate`.
+together and may be any size the sensor supports — including above the
+boot profile, so the ladder top need not be the boot config (a 972p30
+boot with a 1080p20 max-quality rung); `fps` may likewise be any rate
+the sensor supports (a low-latency rung can trade resolution for
+framerate, e.g. a 480p60 tier on an OV5647 — unsupported modes are
+rejected at apply time and rolled back).  `bitrate` may likewise exceed
+the boot `encoder.bitrate` (only the encoder's signed-32-bit control
+range bounds it), so the ladder top can carry more bits than the boot
+rung.
 
 Applying a tier does *not* suspend the adaptive controller: the tier's
 bitrate becomes the AIMD's new ceiling, so it keeps following network

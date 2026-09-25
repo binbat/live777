@@ -124,12 +124,16 @@ pub struct OutputSpec {
 pub struct TierSpec {
     /// Unique tier name within the source, referenced by the admin API.
     pub name: String,
-    /// Tier bitrate in bits per second; must not exceed `encoder.bitrate`.
+    /// Tier bitrate in bits per second; bounded only by the encoder's
+    /// signed-32-bit control channel, so a rung may exceed the boot
+    /// `encoder.bitrate`.
     pub bitrate: u32,
-    /// Tier capture width (must pair with `height`, downscale only).
+    /// Tier capture width (must pair with `height`; any size the sensor
+    /// supports, including above the boot profile — e.g. a 972p30 boot
+    /// with a 1080p20 max-quality rung).
     #[serde(default)]
     pub width: Option<u32>,
-    /// Tier capture height (must pair with `width`, downscale only).
+    /// Tier capture height (must pair with `width`; see `width`).
     #[serde(default)]
     pub height: Option<u32>,
     /// Tier capture framerate.  May exceed `capture.fps` when the sensor
@@ -305,35 +309,30 @@ impl SourceSpec {
                     tier.bitrate
                 );
             }
-            if tier.bitrate > self.encoder.bitrate {
+            // The only upper bound is the encoder control channel (a
+            // signed 32-bit value): a rung may legitimately exceed the
+            // boot encoder.bitrate — the ladder top need not be the boot
+            // profile (2M boot with a 3M max-quality rung).
+            if tier.bitrate > i32::MAX as u32 {
                 anyhow::bail!(
-                    "tier '{}': bitrate {} exceeds encoder.bitrate {} (the ceiling)",
+                    "tier '{}': bitrate {} exceeds the encoder control range",
                     tier.name,
-                    tier.bitrate,
-                    self.encoder.bitrate
+                    tier.bitrate
                 );
             }
             // Geometry fields turn the tier into a ladder rung that
-            // rebuilds the pipeline: dimensions must pair up and only
-            // downscale / downclock the configured capture.
+            // rebuilds the pipeline: dimensions must pair up and be
+            // non-zero.  There is deliberately no bound against the
+            // configured capture — a rung may exceed the boot profile
+            // (e.g. a 972p30 boot with a 1080p20 max-quality rung) or
+            // trade resolution for framerate (1080p30 base, 480p60
+            // rung).  Sensor/ISP capability is enforced at apply time:
+            // a mode the camera rejects rolls the pipeline back.
             match (tier.width, tier.height) {
                 (Some(0), _) | (_, Some(0)) => {
                     anyhow::bail!("tier '{}': width/height must be non-zero", tier.name);
                 }
-                (Some(w), Some(h)) => {
-                    if w > self.capture.width || h > self.capture.height {
-                        anyhow::bail!(
-                            "tier '{}': {}x{} exceeds capture size {}x{} \
-                             (tiers can only downscale; livehal has no scaler stage)",
-                            tier.name,
-                            w,
-                            h,
-                            self.capture.width,
-                            self.capture.height
-                        );
-                    }
-                }
-                (None, None) => {}
+                (Some(_), Some(_)) | (None, None) => {}
                 _ => {
                     anyhow::bail!(
                         "tier '{}': width and height must be set together",
@@ -341,14 +340,10 @@ impl SourceSpec {
                     );
                 }
             }
-            if let Some(fps) = tier.fps {
-                if fps == 0 {
-                    anyhow::bail!("tier '{}': fps must be non-zero", tier.name);
-                }
-                // No upper bound check here: a low-latency rung may trade
-                // resolution for framerate (e.g. 1080p30 base, 480p60
-                // rung).  Sensor capability is enforced at apply time —
-                // a mode the camera rejects rolls the pipeline back.
+            if let Some(fps) = tier.fps
+                && fps == 0
+            {
+                anyhow::bail!("tier '{}': fps must be non-zero", tier.name);
             }
         }
 
@@ -894,9 +889,13 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_above_ceiling_rejected() {
+    fn test_tier_bitrate_above_boot_allowed() {
+        // A rung may exceed the boot encoder.bitrate (2M boot + 3M max
+        // rung); the only bound is the encoder's signed-32-bit control.
         let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
         spec.tiers = vec![tier("ultra", 5_000_000)];
+        assert!(spec.validate().is_ok());
+        spec.tiers = vec![tier("overflow", i32::MAX as u32 + 1)];
         assert!(spec.validate().is_err());
     }
 
@@ -931,13 +930,15 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_upscale_rejected() {
+    fn test_tier_above_boot_profile_allowed() {
+        // A rung may exceed the boot capture profile: the ladder top need
+        // not be the boot config (972p30 boot + 1080p20 maxres rung).
         let mut spec = rkmpp_spec(); // capture 1920x1080
-        let mut t = tier("ultra", 600_000);
-        t.width = Some(2560);
-        t.height = Some(1440);
+        let mut t = tier("big", 600_000);
+        t.width = Some(2592);
+        t.height = Some(1944);
         spec.tiers = vec![t];
-        assert!(spec.validate().is_err());
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

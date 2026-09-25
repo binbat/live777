@@ -100,16 +100,16 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
-# width = 1920
-# height = 1080
+# width = 1296
+# height = 972
 # fps = 30
 # pixel_format = "yuv420"
 # [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
-# bitrate = 4000000
+# bitrate = 2000000
 # profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
-# level = "4.0"               # required when profile is a name; 1080p30 needs >= 4.0
+# level = "4.0"               # required when profile is a name; 1080p needs >= 4.0
 # gop = 60
 # adaptive_bitrate = true     # AIMD: lower the running encoder while WHEP
 #                             # subscribers report congestion (rkmpp/v4l2-m2m)
@@ -126,19 +126,25 @@ ice_udp_addrs = ["auto"]
 # becomes the AIMD's new ceiling — it keeps following network conditions
 # within the rung.
 #
-# Max-quality rung — back to the full 1080p30 base profile:
+# Encoder throughput on a Pi Zero 2 W is ~21 fps at 1080p and ~60 fps at
+# 480p — the ladder below stays inside those budgets: the 972p30 boot
+# profile runs realtime with zero headroom, maxres trades fps for pixels,
+# lowlatency trades pixels for fps.
+#
+# Max-quality rung — 1080p at 20 fps, the rate the encoder can actually
+# sustain (1080p30 overdrives it to ~21 fps with queueing latency):
 # [[stream.pi-cam.sources.tiers]]
 # name = "maxres"
-# bitrate = 4000000
+# bitrate = 3000000
 # width = 1920
 # height = 1080
-# fps = 30
+# fps = 20
 # Plain resolution+bitrate steps down:
 # [[stream.pi-cam.sources.tiers]]
 # name = "mid"
-# bitrate = 2000000
-# width = 1296
-# height = 972
+# bitrate = 1500000
+# width = 1280
+# height = 720
 # fps = 30
 # [[stream.pi-cam.sources.tiers]]
 # name = "low"
@@ -153,8 +159,9 @@ ice_udp_addrs = ["auto"]
 # width = 320
 # height = 240
 # fps = 15
-# 60 fps low-latency rung — OV5647 does 60 fps at 640x480; the smaller
-# frame cuts encode and decode latency end to end:
+# 60 fps low-latency rung — OV5647 does 60 fps at 640x480 (the sensor
+# even reaches 90, but the encoder's ~60 fps ceiling at 480p makes that
+# pointless here); the smaller frame cuts encode and decode latency:
 # [[stream.pi-cam.sources.tiers]]
 # name = "lowlatency"
 # bitrate = 1000000
@@ -162,7 +169,7 @@ ice_udp_addrs = ["auto"]
 # height = 480
 # fps = 60
 # Note: the OV5647's full 2592x1944 mode is capture-only territory —
-# the bcm2835 H.264 encoder tops out at 1080p, so 1080p30 is the top
+# the bcm2835 H.264 encoder tops out at 1080p, so 1080p20 is the top
 # rung here.
 #
 # Raspberry Pi USB camera:
