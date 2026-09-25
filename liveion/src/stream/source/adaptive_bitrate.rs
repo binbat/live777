@@ -128,7 +128,7 @@ impl BitrateControl {
         self.current.load(Ordering::Relaxed)
     }
 
-    fn note_applied(&self, bps: u32) {
+    pub(crate) fn note_applied(&self, bps: u32) {
         self.current.store(bps, Ordering::Relaxed);
     }
 }

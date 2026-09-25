@@ -373,6 +373,9 @@ async fn set_source_bitrate(
         SetBitrateOutcome::SourceNotFound => Err(AppError::source_not_found(format!(
             "Source not found: {stream}"
         ))),
+        SetBitrateOutcome::AboveCeiling(ceiling) => Err(AppError::bad_request(format!(
+            "bitrate {bps} exceeds the configured ceiling (encoder.bitrate) of {ceiling}"
+        ))),
         SetBitrateOutcome::Unsupported => Err(AppError::source_bitrate_unsupported(format!(
             "Source encoder of {stream} does not support runtime bitrate retuning \
              (or the source is not running)"
@@ -381,41 +384,49 @@ async fn set_source_bitrate(
 }
 
 /// Clear a manual bitrate override.  The adaptive (AIMD) controller, when
-/// enabled, resumes from the held value; a fixed-bitrate source simply
-/// drops the override marker.
+/// enabled, resumes from the held value; a fixed-bitrate source is retuned
+/// back to its configured bitrate.
 #[cfg(feature = "source")]
 async fn clear_manual_bitrate(
     State(state): State<AppState>,
     Path(stream): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     use crate::error::AppError;
+    use crate::stream::source::manager::ClearBitrateOutcome;
 
-    if let Some((bitrate, adaptive)) = state
+    match state
         .stream_manager
         .source_manager
         .clear_manual_bitrate(&stream)
         .await
     {
-        info!(
-            "Source bitrate manual override cleared: {} (now {} bps, mode {})",
-            stream,
-            bitrate,
-            if adaptive { "adaptive" } else { "fixed" }
-        );
-        Ok(Json(serde_json::json!({
-            "message": if adaptive {
-                "Manual override cleared, adaptive bitrate control resumed"
-            } else {
-                "Manual bitrate override cleared"
-            },
-            "stream_id": stream,
-            "bitrate": bitrate,
-            "mode": if adaptive { "adaptive" } else { "fixed" },
-        })))
-    } else {
-        Err(AppError::source_not_found(format!(
+        Some(ClearBitrateOutcome::Cleared { bitrate, adaptive }) => {
+            info!(
+                "Source bitrate manual override cleared: {} (now {} bps, mode {})",
+                stream,
+                bitrate,
+                if adaptive { "adaptive" } else { "fixed" }
+            );
+            Ok(Json(serde_json::json!({
+                "message": if adaptive {
+                    "Manual override cleared, adaptive bitrate control resumed"
+                } else {
+                    "Manual bitrate override cleared, configured bitrate restored"
+                },
+                "stream_id": stream,
+                "bitrate": bitrate,
+                "mode": if adaptive { "adaptive" } else { "fixed" },
+            })))
+        }
+        Some(ClearBitrateOutcome::RestoreFailed) => {
+            Err(AppError::source_bitrate_unsupported(format!(
+                "Restoring the configured bitrate for {stream} failed; \
+                 the manual override is still in effect"
+            )))
+        }
+        None => Err(AppError::source_not_found(format!(
             "No bitrate state for stream: {stream} \
              (no source, or the source is not a native encoder source)"
-        )))
+        ))),
     }
 }

@@ -166,7 +166,8 @@ min_bitrate = 500_000      # 下限(默认:max(bitrate / 8, 300_000))
 `POST /api/sources/:streamId/bitrate` 可随时手动调整编码器码率(见
 [HTTP API 文档](./live777-api.md))。在自适应流上,控制器会让位于手动值,
 直到 `DELETE /api/sources/:streamId/bitrate` 清除覆盖;在固定码率的
-源上,手动值会一直保持到下一次 `POST` 或源重启。对同一路径发起
+源上,手动值会一直保持到 `DELETE`(会把编码器调回配置码率)、下一次
+`POST` 或源重启。对同一路径发起
 `GET` 可以查询驱动方式(`adaptive` / `manual` / `fixed`)、当前码率和
 已配置的档位。
 

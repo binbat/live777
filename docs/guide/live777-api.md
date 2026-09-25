@@ -242,7 +242,8 @@ Response: [200]
 
 - `mode`: `adaptive` (AIMD controller), `manual` (override holds), or
   `fixed` (configured value).
-- `bitrate`: current encoder bitrate (`null` for non-native sources).
+- `bitrate`: current encoder bitrate; the configured value while the source
+  is in standby (`null` for non-native sources).
 - `manual_bitrate`: the active manual override, if any.
 - `active_tier`: the tier whose bitrate equals the manual override, if any.
 - `tiers`: the quality tiers configured on the source.
@@ -267,8 +268,9 @@ Response: [200]
 { "stream_id": "pi-cam", "bitrate": 1500000, "tier": "mid", "adaptive_suspended": true }
 ```
 
-- [400] `bitrate` is zero, both fields are set, neither is set, or the
-  named tier is not defined for the stream.
+- [400] `bitrate` is zero, both fields are set, neither is set, the named
+  tier is not defined for the stream, or `bitrate` exceeds the source's
+  `encoder.bitrate` ceiling.
 - [404] the stream has no source.
 - [409] the source's encoder backend cannot retune at runtime (or the
   source is not running).
@@ -276,15 +278,16 @@ Response: [200]
 On a stream with `adaptive_bitrate = true` the AIMD controller suspends in
 favour of the manual value (`adaptive_suspended: true`); a `DELETE` on the
 same path clears the override. On a fixed-bitrate source the manual value
-simply holds until the next `POST` or a source restart.
+holds until a `DELETE` (which retunes the encoder back to the configured
+bitrate), the next `POST`, or a source restart.
 
 ### Clear Manual Bitrate Override
 
 `DELETE` `/api/sources/:streamId/bitrate`
 
 Clears a manual override. The adaptive (AIMD) controller, when enabled,
-resumes from the held value; a fixed-bitrate source simply drops the
-override marker.
+resumes from the held value; a fixed-bitrate source is retuned back to its
+configured bitrate.
 
 Response: [200]
 
@@ -292,8 +295,12 @@ Response: [200]
 { "message": "Manual override cleared, adaptive bitrate control resumed", "stream_id": "pi-cam", "bitrate": 1500000, "mode": "adaptive" }
 ```
 
-`bitrate` is the value the controller resumes from. Returns [404] when the
-stream has no bitrate state (no source, or a non-native source).
+`bitrate` is the value the controller resumes from, or the restored
+configured bitrate of a fixed source. Returns [404] when the stream has no
+bitrate state (no source, or a non-native source) and [409] when restoring
+the configured bitrate of a fixed source fails — in that case the manual
+override is left in effect so the reported state keeps matching the
+encoder.
 
 ## Recorder
 

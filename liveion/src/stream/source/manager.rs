@@ -30,9 +30,29 @@ pub enum SetBitrateOutcome {
     Applied { adaptive_suspended: bool },
     /// No source is registered for the stream.
     SourceNotFound,
+    /// The requested bitrate exceeds the ceiling: the configured
+    /// `encoder.bitrate` (carried here), or `i32::MAX` when the source has
+    /// no configured bitrate — the encoder control channel is a signed
+    /// 32-bit value, so larger requests cannot be represented.
+    AboveCeiling(u32),
     /// The source's encoder backend cannot retune at runtime (or the
     /// pipeline is not running).
     Unsupported,
+}
+
+/// Outcome of clearing a manual bitrate override (admin API).
+#[cfg(feature = "source")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearBitrateOutcome {
+    /// The override was cleared.  `bitrate` is what the encoder runs at
+    /// now: the held value an adaptive controller resumes from, or the
+    /// restored configured bitrate of a fixed source.  `adaptive` tells
+    /// whether an adaptive controller exists for the stream.
+    Cleared { bitrate: u32, adaptive: bool },
+    /// A fixed source's configured bitrate could not be restored (encoder
+    /// rejected the retune).  The manual override is left in effect so the
+    /// reported state keeps matching the encoder.
+    RestoreFailed,
 }
 
 /// Outcome of resolving a configured tier name (admin API).
@@ -59,7 +79,6 @@ pub enum BitrateMode {
 }
 
 impl BitrateMode {
-    #[cfg(feature = "source")]
     pub fn as_str(&self) -> &'static str {
         match self {
             BitrateMode::Adaptive => "adaptive",
@@ -94,8 +113,10 @@ pub struct SourceManager {
     #[cfg(feature = "source")]
     bridges: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SourceBridge>>>>>,
 
-    /// Per-stream manual/auto bitrate coordination, one entry per adaptive
-    /// controller (created in `create_bridge`, dropped with the bridge).
+    /// Per-stream manual/auto bitrate coordination: one entry per source
+    /// bridge with a known encoder bitrate (created in `create_bridge`,
+    /// removed in `remove_source`/`stop_all`).  Present for fixed-bitrate
+    /// sources too, not only adaptive ones.
     #[cfg(feature = "source")]
     bitrate_controls: Arc<RwLock<HashMap<String, Arc<super::adaptive_bitrate::BitrateControl>>>>,
 }
@@ -421,7 +442,7 @@ impl SourceManager {
     /// Apply a manual bitrate override to a stream's source encoder (admin
     /// API, issue #409).  A stream with an adaptive controller goes into
     /// manual mode — the controller suspends until
-    /// [`SourceManager::resume_adaptive_bitrate`].
+    /// [`SourceManager::clear_manual_bitrate`].
     #[cfg(feature = "source")]
     pub async fn set_source_bitrate(&self, stream_id: &str, bps: u32) -> SetBitrateOutcome {
         let source = {
@@ -438,6 +459,18 @@ impl SourceManager {
         // neither interleave with nor be overwritten by an in-flight AIMD
         // decision.
         let source_guard = source.lock().await;
+
+        // Config tiers are validated against the same ceiling; raw manual
+        // values must be too.  Without a configured bitrate the encoder
+        // control channel (a signed 32-bit value) is the only bound.
+        let ceiling = source_guard
+            .configured_bitrate()
+            .unwrap_or(i32::MAX as u32)
+            .min(i32::MAX as u32);
+        if bps > ceiling {
+            return SetBitrateOutcome::AboveCeiling(ceiling);
+        }
+
         if !source_guard.set_bitrate(bps).await {
             return SetBitrateOutcome::Unsupported;
         }
@@ -457,25 +490,49 @@ impl SourceManager {
         SetBitrateOutcome::Applied { adaptive_suspended }
     }
 
-    /// Clear a manual bitrate override, returning the bitrate afterwards
-    /// and whether the source has an adaptive controller (which then
-    /// resumes from that value).  `None` when the stream has no bitrate
-    /// state at all (no source, or a non-native source).
+    /// Clear a manual bitrate override.  An adaptive controller resumes
+    /// from the held value; a fixed source is retuned back to its
+    /// configured bitrate, so clearing restores configured behavior rather
+    /// than leaving the manual value running.  `None` when the stream has
+    /// no bitrate state at all (no source, or a non-native source).
     #[cfg(feature = "source")]
-    pub async fn clear_manual_bitrate(&self, stream_id: &str) -> Option<(u32, bool)> {
+    pub async fn clear_manual_bitrate(&self, stream_id: &str) -> Option<ClearBitrateOutcome> {
         let control = self.bitrate_controls.read().await.get(stream_id).cloned();
         let control = control?;
-        control.clear_manual();
 
         let source = {
             let sources = self.sources.read().await;
             sources.get(stream_id).cloned()
         };
-        let adaptive = match source {
-            Some(source) => source.lock().await.adaptive_bitrate_config().is_some(),
-            None => false,
+        let (adaptive, configured) = match &source {
+            Some(source) => {
+                let guard = source.lock().await;
+                (
+                    guard.adaptive_bitrate_config().is_some(),
+                    guard.configured_bitrate(),
+                )
+            }
+            None => (false, None),
         };
-        Some((control.current(), adaptive))
+
+        if !adaptive
+            && let (Some(manual), Some(source), Some(configured)) =
+                (control.manual(), &source, configured)
+            && manual != configured
+        {
+            if !source.lock().await.set_bitrate(configured).await {
+                // Keep the override: the encoder is still at the
+                // manual value, and the reported state must match.
+                return Some(ClearBitrateOutcome::RestoreFailed);
+            }
+            control.note_applied(configured);
+        }
+
+        control.clear_manual();
+        Some(ClearBitrateOutcome::Cleared {
+            bitrate: control.current(),
+            adaptive,
+        })
     }
 
     /// Resolve a configured tier name to its bitrate for a stream's source.
@@ -502,17 +559,20 @@ impl SourceManager {
             let sources = self.sources.read().await;
             sources.get(stream_id).cloned()
         }?;
-        let (tiers, adaptive) = {
+        let (tiers, adaptive, configured) = {
             let source_guard = source.lock().await;
             (
                 source_guard.bitrate_tiers(),
                 source_guard.adaptive_bitrate_config().is_some(),
+                source_guard.configured_bitrate(),
             )
         };
 
         let control = self.bitrate_controls.read().await.get(stream_id).cloned();
         let manual = control.as_ref().and_then(|c| c.manual());
-        let current = control.as_ref().map(|c| c.current());
+        // No control yet (source in standby, no bridge): report the
+        // configured bitrate, which is where the encoder will start.
+        let current = control.as_ref().map(|c| c.current()).or(configured);
         let active_tier = manual.and_then(|m| {
             tiers
                 .iter()
@@ -587,6 +647,10 @@ mod tests {
         tiers: Vec<super::super::adaptive_bitrate::BitrateTier>,
         #[cfg(feature = "source")]
         adaptive: bool,
+        #[cfg(feature = "source")]
+        configured: Option<u32>,
+        #[cfg(feature = "source")]
+        retune_ok: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl MockSource {
@@ -603,6 +667,10 @@ mod tests {
                 tiers: Vec::new(),
                 #[cfg(feature = "source")]
                 adaptive: false,
+                #[cfg(feature = "source")]
+                configured: None,
+                #[cfg(feature = "source")]
+                retune_ok: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             }
         }
     }
@@ -655,7 +723,12 @@ mod tests {
 
         #[cfg(feature = "source")]
         async fn set_bitrate(&self, _bps: u32) -> bool {
-            true
+            self.retune_ok.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        #[cfg(feature = "source")]
+        fn configured_bitrate(&self) -> Option<u32> {
+            self.configured
         }
     }
 
@@ -811,5 +884,109 @@ mod tests {
                 adaptive_suspended: false
             }
         );
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn set_source_bitrate_rejects_above_ceiling() {
+        let manager = SourceManager::new();
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        manager.add_source(Box::new(mock)).await.unwrap();
+
+        assert_eq!(
+            manager.set_source_bitrate("cam", 5_000_000).await,
+            super::SetBitrateOutcome::AboveCeiling(4_000_000)
+        );
+        // The ceiling itself is accepted.
+        assert_eq!(
+            manager.set_source_bitrate("cam", 4_000_000).await,
+            super::SetBitrateOutcome::Applied {
+                adaptive_suspended: false
+            }
+        );
+
+        // No configured bitrate: the only bound is the signed 32-bit
+        // encoder control channel.
+        manager
+            .add_source(Box::new(tiered_mock("noceiling")))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .set_source_bitrate("noceiling", i32::MAX as u32 + 1)
+                .await,
+            super::SetBitrateOutcome::AboveCeiling(i32::MAX as u32)
+        );
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn source_bitrate_info_falls_back_to_configured_bitrate() {
+        let manager = SourceManager::new();
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        manager.add_source(Box::new(mock)).await.unwrap();
+
+        // Standby (no bridge/control yet): report the configured value,
+        // which is where the encoder will start.
+        let info = manager.source_bitrate_info("cam").await.unwrap();
+        assert_eq!(info.current, Some(4_000_000));
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn clear_manual_bitrate_restores_configured_on_fixed_source() {
+        let manager = SourceManager::new();
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        manager.add_source(Box::new(mock)).await.unwrap();
+        manager.bitrate_controls.write().await.insert(
+            "cam".to_string(),
+            std::sync::Arc::new(super::super::adaptive_bitrate::BitrateControl::new(
+                4_000_000,
+            )),
+        );
+
+        manager.set_source_bitrate("cam", 1_000_000).await;
+
+        assert_eq!(
+            manager.clear_manual_bitrate("cam").await,
+            Some(super::ClearBitrateOutcome::Cleared {
+                bitrate: 4_000_000,
+                adaptive: false,
+            })
+        );
+        let control = manager.bitrate_controls.read().await;
+        assert_eq!(control["cam"].manual(), None);
+        assert_eq!(control["cam"].current(), 4_000_000);
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn clear_manual_bitrate_keeps_override_when_restore_fails() {
+        let manager = SourceManager::new();
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        let retune_ok = mock.retune_ok.clone();
+        manager.add_source(Box::new(mock)).await.unwrap();
+        manager.bitrate_controls.write().await.insert(
+            "cam".to_string(),
+            std::sync::Arc::new(super::super::adaptive_bitrate::BitrateControl::new(
+                4_000_000,
+            )),
+        );
+
+        manager.set_source_bitrate("cam", 1_000_000).await;
+
+        // The backend starts rejecting retunes: the clear must not pretend
+        // the encoder went back to the configured value.
+        retune_ok.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            manager.clear_manual_bitrate("cam").await,
+            Some(super::ClearBitrateOutcome::RestoreFailed)
+        );
+        let control = manager.bitrate_controls.read().await;
+        assert_eq!(control["cam"].manual(), Some(1_000_000));
     }
 }

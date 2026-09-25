@@ -182,7 +182,8 @@ disables itself.
 time (see the [HTTP API guide](./live777-api.md#get-source-bitrate-state)).
 On an adaptive stream the controller suspends in favour of the manual
 value until `DELETE /api/sources/:streamId/bitrate` clears the override;
-on a fixed-bitrate source the manual value holds until the next `POST` or
+on a fixed-bitrate source the manual value holds until a `DELETE` (which
+retunes the encoder back to the configured bitrate), the next `POST`, or
 a source restart.  `GET` on the same path reports the drive mode
 (`adaptive` / `manual` / `fixed`), the current bitrate, and the
 configured tiers.

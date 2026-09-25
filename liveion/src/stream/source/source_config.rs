@@ -282,6 +282,7 @@ impl SourceSpec {
         }
 
         let mut tier_names = std::collections::HashSet::new();
+        let mut tier_bitrates = std::collections::HashSet::new();
         for tier in &self.tiers {
             if tier.name.trim().is_empty() {
                 anyhow::bail!("tiers.name cannot be empty");
@@ -291,6 +292,15 @@ impl SourceSpec {
             }
             if tier.bitrate == 0 {
                 anyhow::bail!("tier '{}': bitrate must be non-zero", tier.name);
+            }
+            // Duplicate bitrates would make `active_tier` (matched by value)
+            // silently ambiguous.
+            if !tier_bitrates.insert(tier.bitrate) {
+                anyhow::bail!(
+                    "tier '{}': bitrate {} is already used by another tier",
+                    tier.name,
+                    tier.bitrate
+                );
             }
             if tier.bitrate > self.encoder.bitrate {
                 anyhow::bail!(
@@ -833,6 +843,13 @@ mod tests {
     fn test_tier_duplicate_name_rejected() {
         let mut spec = rkmpp_spec();
         spec.tiers = vec![tier("low", 600_000), tier("low", 800_000)];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_duplicate_bitrate_rejected() {
+        let mut spec = rkmpp_spec();
+        spec.tiers = vec![tier("low", 600_000), tier("mid", 600_000)];
         assert!(spec.validate().is_err());
     }
 
