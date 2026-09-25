@@ -242,7 +242,8 @@ Response: [200]
 - `bitrate`: 当前编码器码率；源处于 standby 时为配置值（非原生源为 `null`）。
 - `manual_bitrate`: 生效中的手动覆盖值。
 - `active_tier`: 手动值恰好等于某档时的档名。
-- `tiers`: 源上配置的质量档位。
+- `tiers`: 源上配置的质量档位；当档位是阶梯档时，每项还会携带
+  `width`/`height`/`fps`（见 [livehal 指南](./livehal.md)）。
 
 该流没有媒体源时返回 [404]。
 
@@ -250,8 +251,8 @@ Response: [200]
 
 `POST` `/api/sources/:streamId/bitrate`
 
-手动调整该流媒体源的编码器码率，立即生效。`bitrate` 和 `tier`
-两个字段必须且只能传一个：
+手动调整该流媒体源的编码器码率，或切换整个质量档位。立即生效。
+`bitrate` 和 `tier` 两个字段必须且只能传一个：
 
 ```json
 { "bitrate": 1500000 }
@@ -261,13 +262,19 @@ Response: [200]
 Response: [200]
 
 ```json
-{ "stream_id": "pi-cam", "bitrate": 1500000, "tier": "mid", "adaptive_suspended": true }
+{ "stream_id": "pi-cam", "bitrate": 1500000, "tier": "mid", "adaptive_suspended": true, "rebuilt": false }
 ```
+
+裸 `bitrate` 和纯码率档会原地调运行中的编码器；携带
+`width`/`height`/`fps` 的档位则重建采集+编码管线
+（`rebuilt: true`）：订阅者保持连接，但会观察到短暂断帧和一次
+带内 SPS/PPS 变更。
 
 - [400] `bitrate` 为 0、两个字段都传或都不传、档位名不存在，或
   `bitrate` 超过源的 `encoder.bitrate` 上限。
 - [404] 该流没有媒体源。
-- [409] 该源的编码器后端不支持运行时调整码率（或源未在运行）。
+- [409] 该源的编码器后端不支持运行时调整码率、几何档位的管线
+  重建失败（已回滚），或源未在运行。
 
 在开启了 `adaptive_bitrate = true` 的流上，AIMD 控制器会让位于手动
 设置的值（`adaptive_suspended: true`）；对同一路径发起 `DELETE`

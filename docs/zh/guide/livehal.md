@@ -179,22 +179,34 @@ bitrate = 4_000_000        # 上限
 adaptive_bitrate = true
 # 声明了档位时,min_bitrate 默认取最低档
 
-[[stream.pi-cam.sources.tiers]]
-name = "low"
-bitrate = 600_000
-
+# 纯码率档:原地调运行中的编码器,无缝切换
 [[stream.pi-cam.sources.tiers]]
 name = "mid"
 bitrate = 2_000_000
+
+# 阶梯档:分辨率 + 帧率 + 码率,通过重建采集+编码管线切换
+# (亚秒级断帧,订阅者保持连接;几何参数只能降分辨率/降帧率)
+[[stream.pi-cam.sources.tiers]]
+name = "low"
+bitrate = 600_000
+width = 640
+height = 480
+fps = 15
 ```
 
 声明之后一次请求即可切档:`POST {"tier": "mid"}`。档位放在
 `capture`/`encoder` 同级(而不是 encoder 块内),因为一个质量档位横跨
-两个块:`bitrate` 运行时调编码器,而分辨率档位还要改采集配置(livehal
-没有 scaler 环节 —— 采集尺寸就是编码器输入尺寸,帧率也是采集侧属性)。
-schema 里预留了档位级 `width`/`height`/`fps` 字段,但在编码器重建路径
-落地前会被校验拒绝;目前档位只是纯码率预设,且不能超过
+两个块:`bitrate` 调编码器,而 `width`/`height`/`fps` 要改采集配置
+(livehal 没有 scaler 环节 —— 采集尺寸就是编码器输入尺寸,帧率也是
+采集侧属性)。纯码率档原地无缝切换;携带几何参数的档位会在流的
+下方重建管线 —— RTP 会话保持存活,订阅者只会看到短暂定格和一次
+带内 SPS/PPS 变更。`width`/`height` 必须成对设置且不能超过采集
+尺寸,`fps` 不能超过 `capture.fps`,`bitrate` 不能超过
 `encoder.bitrate`。
+
+重建失败(例如摄像头拒绝新尺寸)会回滚到之前的配置;档位的字段
+总是叠加在配置的采集参数上:未设置的字段回落到配置值,因此混合
+阶梯(纯码率档与几何档并存)语义是明确的。
 
 ### 后端命名
 

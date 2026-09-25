@@ -269,12 +269,19 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   WHEP subscriber RTCP feedback (sampled by
   `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
   support (`EncoderBackend::setBitrate` in livehal — rkmpp and v4l2-m2m
-  today). Named quality tiers (`[[stream.<name>.sources.tiers]]`,
-  bitrate-only presets at source level) plus
-  `GET`/`POST`/`DELETE /api/sources/{stream}/bitrate` give manual tier
-  switching; a per-stream `BitrateControl` (created for every native
-  source in `create_bridge`) coordinates manual overrides with the
-  controller — manual sets suspend the AIMD, `DELETE` clears them.
+  today). Named quality tiers (`[[stream.<name>.sources.tiers]]`) plus
+  `GET`/`POST`/`DELETE /api/sources/{stream}/bitrate` give manual
+  switching: bitrate-only tiers retune the running encoder in place,
+  while a tier carrying `width`/`height`/`fps` switches the whole ladder
+  rung by rebuilding the capture+encoder pipeline
+  (`NativeEncodedSource::reconfigure` — the RTP broadcast channels
+  survive, so subscribers stay attached across the sub-second gap; a
+  failed rebuild rolls back to the previous params). A per-stream
+  `BitrateControl` (created for every native source in `create_bridge`)
+  coordinates manual overrides with the controller — manual sets suspend
+  the AIMD, `DELETE` clears them; an external-change generation counter
+  on it guarantees the controller re-seeds even for set/clear cycles
+  shorter than its 1 s tick.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

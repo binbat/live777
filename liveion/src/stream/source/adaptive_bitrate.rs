@@ -58,13 +58,28 @@ pub struct AdaptiveBitrateConfig {
     pub min: u32,
 }
 
-/// A named bitrate preset (quality tier) from the source config, switchable
-/// through the admin API.  Bitrate-only today; resolution/framerate tiers
-/// are reserved in the config schema for the encoder-rebuild path.
+/// A named quality tier from the source config, switchable through the
+/// admin API.  Bitrate-only tiers retune the running encoder in place;
+/// tiers carrying `width`/`height`/`fps` switch the whole ladder rung by
+/// rebuilding the capture+encoder pipeline underneath the stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BitrateTier {
+pub struct QualityTier {
     pub name: String,
     pub bitrate: u32,
+    /// Tier capture width; `None` keeps the configured capture size.
+    pub width: Option<u32>,
+    /// Tier capture height; `None` keeps the configured capture size.
+    pub height: Option<u32>,
+    /// Tier capture framerate; `None` keeps the configured rate.
+    pub fps: Option<u32>,
+}
+
+impl QualityTier {
+    /// Whether applying this tier needs a pipeline rebuild (it carries
+    /// geometry) rather than an in-place encoder retune.
+    pub fn needs_rebuild(&self) -> bool {
+        self.width.is_some() || self.height.is_some() || self.fps.is_some()
+    }
 }
 
 impl AdaptiveBitrateConfig {

@@ -153,6 +153,9 @@ export type SourceBitrateMode = 'adaptive' | 'manual' | 'fixed';
 export interface SourceBitrateTier {
     name: string;
     bitrate: number;
+    width?: number;
+    height?: number;
+    fps?: number;
 }
 
 export interface SourceBitrateStatus {
@@ -172,6 +175,7 @@ export interface SetSourceBitrateResult {
     bitrate: number;
     tier: string | null;
     adaptive_suspended: boolean;
+    rebuilt: boolean;
 }
 
 export interface ClearSourceBitrateResult {

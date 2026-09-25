@@ -110,29 +110,29 @@ pub struct OutputSpec {
     pub clock_rate: u32,
 }
 
-/// A named quality tier — a bitrate preset the stream can be switched to
+/// A named quality tier — a ladder rung the stream can be switched to
 /// through the admin API (`POST /api/sources/{stream}/bitrate`).
 ///
 /// Tiers sit at *source* level (sibling of `capture`/`encoder`) because a
-/// tier spans both blocks: `bitrate` retunes the encoder at runtime, while
-/// the reserved `width`/`height`/`fps` fields would also reconfigure the
-/// capture (livehal has no scaler stage — capture size is encoder input
-/// size, and framerate is a capture-side property).  Validation rejects
-/// the reserved fields until the encoder-rebuild path lands; today tiers
-/// are bitrate-only presets.
+/// tier spans both blocks: `bitrate` retunes the encoder, while
+/// `width`/`height`/`fps` reconfigure the capture (livehal has no scaler
+/// stage — capture size is encoder input size, and framerate is a
+/// capture-side property).  A tier that carries any geometry switches by
+/// rebuilding the capture+encoder pipeline (sub-second frame gap);
+/// a bitrate-only tier retunes the running encoder seamlessly.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TierSpec {
     /// Unique tier name within the source, referenced by the admin API.
     pub name: String,
     /// Tier bitrate in bits per second; must not exceed `encoder.bitrate`.
     pub bitrate: u32,
-    /// Reserved: tier capture width (needs the encoder rebuild path).
+    /// Tier capture width (must pair with `height`, downscale only).
     #[serde(default)]
     pub width: Option<u32>,
-    /// Reserved: tier capture height (needs the encoder rebuild path).
+    /// Tier capture height (must pair with `width`, downscale only).
     #[serde(default)]
     pub height: Option<u32>,
-    /// Reserved: tier capture framerate (needs the encoder rebuild path).
+    /// Tier capture framerate (must not exceed `capture.fps`).
     #[serde(default)]
     pub fps: Option<u32>,
 }
@@ -310,12 +310,46 @@ impl SourceSpec {
                     self.encoder.bitrate
                 );
             }
-            if tier.width.is_some() || tier.height.is_some() || tier.fps.is_some() {
-                anyhow::bail!(
-                    "tier '{}': width/height/fps tiers need the encoder rebuild path, \
-                     which is not supported yet; use bitrate-only tiers",
-                    tier.name
-                );
+            // Geometry fields turn the tier into a ladder rung that
+            // rebuilds the pipeline: dimensions must pair up and only
+            // downscale / downclock the configured capture.
+            match (tier.width, tier.height) {
+                (Some(0), _) | (_, Some(0)) => {
+                    anyhow::bail!("tier '{}': width/height must be non-zero", tier.name);
+                }
+                (Some(w), Some(h)) => {
+                    if w > self.capture.width || h > self.capture.height {
+                        anyhow::bail!(
+                            "tier '{}': {}x{} exceeds capture size {}x{} \
+                             (tiers can only downscale; livehal has no scaler stage)",
+                            tier.name,
+                            w,
+                            h,
+                            self.capture.width,
+                            self.capture.height
+                        );
+                    }
+                }
+                (None, None) => {}
+                _ => {
+                    anyhow::bail!(
+                        "tier '{}': width and height must be set together",
+                        tier.name
+                    );
+                }
+            }
+            if let Some(fps) = tier.fps {
+                if fps == 0 {
+                    anyhow::bail!("tier '{}': fps must be non-zero", tier.name);
+                }
+                if fps > self.capture.fps {
+                    anyhow::bail!(
+                        "tier '{}': fps {} exceeds capture fps {}",
+                        tier.name,
+                        fps,
+                        self.capture.fps
+                    );
+                }
             }
         }
 
@@ -868,11 +902,60 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_resolution_fields_rejected_for_now() {
-        let mut spec = rkmpp_spec();
+    #[test]
+    fn test_tier_resolution_downscale_ok() {
+        let mut spec = rkmpp_spec(); // capture 1920x1080@30
         let mut t = tier("low", 600_000);
         t.width = Some(1280);
         t.height = Some(720);
+        t.fps = Some(15);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tier_width_without_height_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.width = Some(1280);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_zero_dimension_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.width = Some(0);
+        t.height = Some(720);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_upscale_rejected() {
+        let mut spec = rkmpp_spec(); // capture 1920x1080
+        let mut t = tier("ultra", 600_000);
+        t.width = Some(2560);
+        t.height = Some(1440);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_fps_above_capture_rejected() {
+        let mut spec = rkmpp_spec(); // capture fps 30
+        let mut t = tier("low", 600_000);
+        t.fps = Some(60);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_tier_zero_fps_rejected() {
+        let mut spec = rkmpp_spec();
+        let mut t = tier("low", 600_000);
+        t.fps = Some(0);
         spec.tiers = vec![t];
         assert!(spec.validate().is_err());
     }

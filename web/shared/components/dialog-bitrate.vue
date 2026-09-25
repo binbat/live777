@@ -140,7 +140,7 @@ const handleClearOverride = () => runAction(() => clearSourceBitrate(streamId.va
                             :class="{ 'btn-info': status.active_tier === tier.name, 'btn-disabled': busy }"
                             :disabled="busy"
                             @click="handleSelectTier(tier.name)"
-                        >{{ tier.name }} · {{ formatBitrate(tier.bitrate) }}</button>
+                        >{{ tier.name }}<template v-if="tier.width && tier.height"> · {{ tier.width }}×{{ tier.height }}<template v-if="tier.fps">@{{ tier.fps }}</template></template> · {{ formatBitrate(tier.bitrate) }}</button>
                     </div>
                 </div>
                 <div class="form-control">

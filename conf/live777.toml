@@ -119,14 +119,20 @@ ice_udp_addrs = ["auto"]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Named quality tiers (bitrate presets), switchable at runtime via
-# POST /api/sources/pi-cam/bitrate {"tier": "mid"} or the WebUI:
-# [[stream.pi-cam.sources.tiers]]
-# name = "low"
-# bitrate = 300000
+# Named quality tiers, switchable at runtime via
+# POST /api/sources/pi-cam/bitrate {"tier": "mid"} or the WebUI.
+# Bitrate-only tiers retune the running encoder seamlessly; a tier that
+# also sets width/height/fps switches the whole ladder rung by rebuilding
+# the capture+encoder pipeline (brief frame gap; downscale/downclock only):
 # [[stream.pi-cam.sources.tiers]]
 # name = "mid"
 # bitrate = 600000
+# [[stream.pi-cam.sources.tiers]]
+# name = "low"
+# bitrate = 300000
+# width = 640
+# height = 480
+# fps = 15
 #
 # Raspberry Pi USB camera:
 #   cargo build --bin live777 --release --no-default-features --features native-rpi,webui

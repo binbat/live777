@@ -196,24 +196,39 @@ bitrate = 4_000_000        # ceiling
 adaptive_bitrate = true
 # min_bitrate defaults to the lowest tier when tiers are declared
 
-[[stream.pi-cam.sources.tiers]]
-name = "low"
-bitrate = 600_000
-
+# Bitrate-only tier: retunes the running encoder, seamless.
 [[stream.pi-cam.sources.tiers]]
 name = "mid"
 bitrate = 2_000_000
+
+# Ladder rung: resolution + framerate + bitrate, applied by rebuilding
+# the capture+encoder pipeline (sub-second frame gap, subscribers stay
+# connected; geometry may only downscale/downclock the capture).
+[[stream.pi-cam.sources.tiers]]
+name = "low"
+bitrate = 600_000
+width = 640
+height = 480
+fps = 15
 ```
 
 A tier is then one request away: `POST {"tier": "mid"}`.  Tiers sit next
 to `capture`/`encoder` (not inside the encoder block) because a quality
-tier spans both blocks: `bitrate` retunes the encoder at runtime, while a
-resolution tier would also reconfigure the capture (livehal has no scaler
+tier spans both blocks: `bitrate` retunes the encoder, while
+`width`/`height`/`fps` reconfigure the capture (livehal has no scaler
 stage — capture size is encoder input size — and framerate is a
-capture-side property).  Reserved per-tier `width`/`height`/`fps` fields
-exist in the schema for that future but are rejected by validation until
-the encoder-rebuild path lands; today tiers are bitrate-only presets, and
-must not exceed `encoder.bitrate`.
+capture-side property).  A bitrate-only tier switches seamlessly in
+place; a tier carrying any geometry rebuilds the pipeline underneath
+the stream — the RTP session survives, subscribers just see a brief
+freeze and an in-band SPS/PPS change.  `width`/`height` must be set
+together and must not exceed the capture size, `fps` must not exceed
+`capture.fps`, and `bitrate` must not exceed `encoder.bitrate`.
+
+A failed rebuild (e.g. the camera rejects the new size) rolls back to
+the previous configuration, and the tier's fields are always overlaid
+on the configured capture: unset fields restore the configured values,
+so a mixed ladder (bitrate-only and geometry tiers side by side) is
+well-defined.
 
 ### Backend naming
 

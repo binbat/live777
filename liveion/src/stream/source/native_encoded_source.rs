@@ -81,7 +81,7 @@ pub struct NativeEncodedSource {
     stream_id: String,
     params: livehal::NativeSourceParams,
     adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
-    tiers: Vec<super::adaptive_bitrate::BitrateTier>,
+    tiers: Vec<super::adaptive_bitrate::QualityTier>,
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     rtp_tx: broadcast::Sender<MediaPacket>,
     state_tx: broadcast::Sender<StateChangeEvent>,
@@ -105,7 +105,7 @@ impl NativeEncodedSource {
         stream_id: String,
         params: livehal::NativeSourceParams,
         adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
-        tiers: Vec<super::adaptive_bitrate::BitrateTier>,
+        tiers: Vec<super::adaptive_bitrate::QualityTier>,
     ) -> Self {
         let (rtp_tx, _) = broadcast::channel(1024);
         let (state_tx, _) = broadcast::channel(16);
@@ -438,8 +438,8 @@ impl NativeEncodedSource {
         self.params.bitrate
     }
 
-    /// Named bitrate presets (quality tiers) from the source config.
-    pub fn bitrate_tiers(&self) -> Vec<super::adaptive_bitrate::BitrateTier> {
+    /// Named quality tiers from the source config.
+    pub fn quality_tiers(&self) -> Vec<super::adaptive_bitrate::QualityTier> {
         self.tiers.clone()
     }
 
@@ -449,6 +449,36 @@ impl NativeEncodedSource {
         self.bitrate_handle
             .as_ref()
             .is_some_and(|h| h.set_bitrate(bps))
+    }
+
+    /// Rebuild the capture+encoder pipeline with new params (quality-tier
+    /// switch carrying resolution/framerate).  The RTP/state broadcast
+    /// channels survive, so subscribers stay attached across the rebuild;
+    /// they only observe a short frame gap and an in-band SPS/PPS change.
+    /// On start failure the previous params are restored (best effort) so
+    /// the stream is not left dead.
+    pub async fn reconfigure(&mut self, params: livehal::NativeSourceParams) -> Result<()> {
+        if self.pipeline.is_none() {
+            anyhow::bail!("source is not running");
+        }
+        let old_params = self.params.clone();
+        self.stop().await;
+        self.params = params;
+        // The new stream's SPS may carry a different profile-level-id —
+        // let it be re-derived instead of serving the stale value.
+        #[cfg(feature = "source")]
+        self.dynamic_profile.write().await.take();
+        if let Err(e) = self.start().await {
+            tracing::error!(
+                "[{}] reconfigure failed ({}), rolling back to previous params",
+                self.stream_id,
+                e
+            );
+            self.params = old_params;
+            let _ = self.start().await;
+            return Err(e);
+        }
+        Ok(())
     }
 }
 

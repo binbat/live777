@@ -34,12 +34,22 @@ pub struct BitrateResponse {
     /// True when the stream's adaptive-bitrate controller suspended itself
     /// in favour of this manual override (`DELETE` resumes it).
     pub adaptive_suspended: bool,
+    /// True when the tier carried resolution/framerate and the switch
+    /// rebuilt the capture+encoder pipeline (brief frame gap), as opposed
+    /// to a seamless in-place retune.
+    pub rebuilt: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TierInfo {
     pub name: String,
     pub bitrate: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -295,6 +305,9 @@ async fn get_source_bitrate(
             .map(|t| TierInfo {
                 name: t.name,
                 bitrate: t.bitrate,
+                width: t.width,
+                height: t.height,
+                fps: t.fps,
             })
             .collect(),
     }))
@@ -303,10 +316,12 @@ async fn get_source_bitrate(
 /// Manually retune the stream source's encoder bitrate (issue #409),
 /// either with a raw `bitrate` value or by naming a configured `tier`.
 ///
-/// Takes effect immediately.  On a stream with `encoder.adaptive_bitrate`
-/// enabled the AIMD controller suspends in favour of the manual value;
-/// `DELETE` on the same path clears the override and resumes adaptive
-/// control.
+/// Takes effect immediately.  A bitrate-only tier retunes the running
+/// encoder in place; a tier carrying resolution/framerate rebuilds the
+/// capture+encoder pipeline (brief frame gap).  On a stream with
+/// `encoder.adaptive_bitrate` enabled the AIMD controller suspends in
+/// favour of the manual value; `DELETE` on the same path clears the
+/// override and resumes adaptive control.
 #[cfg(feature = "source")]
 async fn set_source_bitrate(
     State(state): State<AppState>,
@@ -316,22 +331,22 @@ async fn set_source_bitrate(
     use crate::error::AppError;
     use crate::stream::source::manager::{SetBitrateOutcome, TierResolution};
 
-    let (bps, tier_name) = match (req.bitrate, req.tier) {
+    let (bps, tier_name, rebuilt) = match (req.bitrate, req.tier) {
         (Some(_), Some(_)) | (None, None) => {
             return Err(AppError::bad_request(
                 "exactly one of 'bitrate' or 'tier' must be set",
             ));
         }
         (Some(0), None) => return Err(AppError::bad_request("bitrate must be non-zero")),
-        (Some(bps), None) => (bps, None),
+        (Some(bps), None) => (bps, None, false),
         (None, Some(tier)) => {
-            match state
+            let resolved = match state
                 .stream_manager
                 .source_manager
                 .resolve_bitrate_tier(&stream, &tier)
                 .await
             {
-                TierResolution::Resolved(bps) => (bps, Some(tier)),
+                TierResolution::Resolved(t) => t,
                 TierResolution::SourceNotFound => {
                     return Err(AppError::source_not_found(format!(
                         "Source not found: {stream}"
@@ -342,7 +357,57 @@ async fn set_source_bitrate(
                         "tier '{tier}' is not defined for stream: {stream}"
                     )));
                 }
+            };
+
+            // A tier carrying geometry switches the whole ladder rung by
+            // rebuilding the pipeline; a bitrate-only tier takes the
+            // seamless in-place retune path below.
+            if resolved.needs_rebuild() {
+                let bps = resolved.bitrate;
+                let tier_name = resolved.name.clone();
+                match state
+                    .stream_manager
+                    .source_manager
+                    .apply_source_tier(&stream, &resolved)
+                    .await
+                {
+                    SetBitrateOutcome::Applied { adaptive_suspended } => {
+                        info!(
+                            "Source quality tier applied (pipeline rebuilt): {} -> {} [{} bps \
+                             {}x{} @ {} fps] (adaptive suspended: {})",
+                            stream,
+                            tier_name,
+                            bps,
+                            resolved.width.map(|w| w.to_string()).unwrap_or("-".into()),
+                            resolved.height.map(|h| h.to_string()).unwrap_or("-".into()),
+                            resolved.fps.map(|f| f.to_string()).unwrap_or("-".into()),
+                            adaptive_suspended
+                        );
+                        return Ok(Json(BitrateResponse {
+                            stream_id: stream,
+                            bitrate: bps,
+                            tier: Some(tier_name),
+                            adaptive_suspended,
+                            rebuilt: true,
+                        }));
+                    }
+                    SetBitrateOutcome::SourceNotFound => {
+                        return Err(AppError::source_not_found(format!(
+                            "Source not found: {stream}"
+                        )));
+                    }
+                    SetBitrateOutcome::AboveCeiling(_) => {
+                        unreachable!("apply_source_tier does not check the ceiling")
+                    }
+                    SetBitrateOutcome::Unsupported => {
+                        return Err(AppError::source_bitrate_unsupported(format!(
+                            "Rebuilding the source pipeline of {stream} for tier \
+                             '{tier_name}' failed (or the source is not running)"
+                        )));
+                    }
+                }
             }
+            (resolved.bitrate, Some(tier), false)
         }
     };
 
@@ -368,6 +433,7 @@ async fn set_source_bitrate(
                 bitrate: bps,
                 tier: tier_name,
                 adaptive_suspended,
+                rebuilt,
             }))
         }
         SetBitrateOutcome::SourceNotFound => Err(AppError::source_not_found(format!(

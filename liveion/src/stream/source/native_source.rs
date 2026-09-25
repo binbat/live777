@@ -20,18 +20,24 @@ use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 pub struct NativeSource {
     inner: NativeEncodedSource,
+    /// Configured (spec) pipeline params — the ladder's top rung and the
+    /// fallback for tier fields a tier leaves unset.
+    base_params: livehal::NativeSourceParams,
 }
 
 impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
         let native_params = spec.to_native_params()?;
-        let tiers: Vec<super::adaptive_bitrate::BitrateTier> = spec
+        let tiers: Vec<super::adaptive_bitrate::QualityTier> = spec
             .tiers
             .iter()
-            .map(|t| super::adaptive_bitrate::BitrateTier {
+            .map(|t| super::adaptive_bitrate::QualityTier {
                 name: t.name.clone(),
                 bitrate: t.bitrate,
+                width: t.width,
+                height: t.height,
+                fps: t.fps,
             })
             .collect();
         let adaptive = spec.encoder.adaptive_bitrate.then(|| {
@@ -45,8 +51,29 @@ impl NativeSource {
             super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, min)
         });
         Ok(Self {
-            inner: NativeEncodedSource::new(spec.stream_id.clone(), native_params, adaptive, tiers),
+            inner: NativeEncodedSource::new(
+                spec.stream_id.clone(),
+                native_params.clone(),
+                adaptive,
+                tiers,
+            ),
+            base_params: native_params,
         })
+    }
+
+    /// Effective pipeline params for a tier: the configured (spec) values
+    /// with the tier's geometry/bitrate overlaid.
+    #[cfg(feature = "source")]
+    fn tier_params(
+        &self,
+        tier: &super::adaptive_bitrate::QualityTier,
+    ) -> livehal::NativeSourceParams {
+        let mut params = self.base_params.clone();
+        params.width = tier.width.unwrap_or(params.width);
+        params.height = tier.height.unwrap_or(params.height);
+        params.fps = tier.fps.unwrap_or(params.fps);
+        params.bitrate = tier.bitrate;
+        params
     }
 }
 
@@ -108,7 +135,13 @@ impl StreamSource for NativeSource {
     }
 
     #[cfg(feature = "source")]
-    fn bitrate_tiers(&self) -> Vec<super::adaptive_bitrate::BitrateTier> {
-        self.inner.bitrate_tiers()
+    fn quality_tiers(&self) -> Vec<super::adaptive_bitrate::QualityTier> {
+        self.inner.quality_tiers()
+    }
+
+    #[cfg(feature = "source")]
+    async fn apply_quality_tier(&mut self, tier: &super::adaptive_bitrate::QualityTier) -> bool {
+        let params = self.tier_params(tier);
+        self.inner.reconfigure(params).await.is_ok()
     }
 }
