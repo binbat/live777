@@ -284,8 +284,8 @@ async fn delete_source(
     })))
 }
 
-/// Query the stream source's bitrate state: drive mode (adaptive / manual
-/// / fixed), current bitrate, active override, and configured tiers.
+/// Query the stream source's bitrate state: drive mode (adaptive / fixed)
+/// and the current encoder bitrate.  Read-only telemetry.
 #[cfg(feature = "source")]
 async fn get_source_bitrate(
     State(state): State<AppState>,

@@ -13,7 +13,7 @@ export interface StreamTableProps {
         recording?: boolean;
         autoDetectRecording?: boolean;
         recordingPlayback?: boolean;
-        sourceBitrate?: boolean;
+        source?: boolean;
     };
 }
 </script>
@@ -50,7 +50,7 @@ import { useStreamSSE } from "../hooks/use-stream-sse";
 import { useToken } from "../context";
 
 import ClientsDialog, { type IClientsDialog } from "./dialog-clients.vue";
-import BitrateDialog, { type IBitrateDialog } from "./dialog-bitrate.vue";
+import SourceDialog, { type ISourceDialog } from "./dialog-source.vue";
 import CascadeDialog, { type ICascadeDialog } from "./dialog-cascade.vue";
 import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
@@ -148,7 +148,7 @@ const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
 const cascadePushDialog = useTemplateRef<ICascadeDialog>("cascadePushDialog");
 const clientsDialog = useTemplateRef<IClientsDialog>("clientsDialog");
-const bitrateDialog = useTemplateRef<IBitrateDialog>("bitrateDialog");
+const sourceDialog = useTemplateRef<ISourceDialog>("sourceDialog");
 const newStreamDialog = useTemplateRef<INewStreamDialog>("newStreamDialog");
 const webStreams = ref<string[]>([]);
 const newStreamId = ref("");
@@ -179,7 +179,7 @@ const features = computed(() => ({
     recording: true,
     autoDetectRecording: false,
     recordingPlayback: true,
-    sourceBitrate: false,
+    source: false,
     ...props.features,
 }));
 
@@ -252,12 +252,12 @@ watch([streamsData, recordingAvailable], () => {
 }, { immediate: true });
 
 // Streams with a configured source (liveion only — liveman has no
-// /api/sources and keeps features.sourceBitrate off).  Sources change
+// /api/sources and keeps features.source off).  Sources change
 // only through the admin API, so a slow poll is enough.
 const sourceStreams = ref<Set<string>>(new Set());
 watchEffect((onCleanup) => {
     void token.value;
-    if (!features.value.sourceBitrate) {
+    if (!features.value.source) {
         sourceStreams.value = new Set();
         return;
     }
@@ -292,7 +292,7 @@ const handleViewClients = (id: string) => {
 };
 
 const handleViewSource = (id: string) => {
-    bitrateDialog.value?.show(id);
+    sourceDialog.value?.show(id);
 };
 
 const handleCascadePullStream = () => {
@@ -550,7 +550,7 @@ const handleCancelStop = () => {
                         >Preview</button>
                         <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
                         <button
-                            v-if="features.sourceBitrate && sourceStreams.has(i.id)"
+                            v-if="features.source && sourceStreams.has(i.id)"
                             class="btn btn-sm"
                             @click="handleViewSource(i.id)"
                         >Source</button>
@@ -660,7 +660,7 @@ const handleCancelStop = () => {
         @client-kicked="updateData"
     />
 
-    <BitrateDialog ref="bitrateDialog" />
+    <SourceDialog ref="sourceDialog" />
 
     <template v-if="showCascade">
         <CascadeDialog ref="cascadePullDialog" mode="pull" />

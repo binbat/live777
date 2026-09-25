@@ -437,7 +437,8 @@ impl NativeEncodedSource {
         self.adaptive
     }
 
-    /// The configured (ceiling) bitrate of the encoder.
+    /// The bitrate the pipeline is currently configured with (the boot
+    /// `encoder.bitrate` until a tier moves it).
     pub fn configured_bitrate(&self) -> u32 {
         self.params.bitrate
     }

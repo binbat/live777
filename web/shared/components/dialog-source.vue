@@ -1,5 +1,5 @@
 <script lang="ts">
-export interface IBitrateDialog {
+export interface ISourceDialog {
     show(streamId: string): void;
 }
 </script>

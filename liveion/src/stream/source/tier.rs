@@ -2,14 +2,14 @@
 //! source-level feature, distinct from the encoder-internal adaptive
 //! bitrate control in `adaptive_bitrate.rs`.
 //!
-//! A tier names a source configuration preset: an encoder bitrate plus
-//! optional capture geometry (`width`/`height`/`fps`).  Applying a tier
-//! re-provisions the source: bitrate-only tiers retune the running
-//! encoder in place, while a tier carrying geometry rebuilds the
-//! capture+encoder pipeline underneath the stream.  The same mechanism
-//! can later grow to switch source *types* (e.g. from a native capture
-//! source to an RTSP URL) — tiers deliberately describe source
-//! configuration, not encoder internals.
+//! A tier names a preset group of source parameters: optional capture
+//! (`width`/`height`/`fps`) and encoder (`bitrate`) overlays.  Applying
+//! a tier re-provisions the source: encoder-only tiers retune the
+//! running encoder in place, while a tier touching capture geometry
+//! rebuilds the capture+encoder pipeline underneath the stream.  The
+//! same mechanism can later grow to switch source *types* (e.g. from a
+//! native capture source to an RTSP URL) — tiers deliberately describe
+//! source configuration, not encoder internals.
 
 /// A named quality tier from the source config, switchable through the
 /// admin API (`POST /api/sources/{stream}/tier`).

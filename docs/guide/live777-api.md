@@ -221,8 +221,8 @@ Request:
 The bitrate endpoint is read-only *encoder* telemetry (native
 capture/encoder sources only — see the [livehal guide](./livehal.md)):
 how the source's bitrate is currently driven. The tier endpoint is the
-control surface: it re-provisions the source with a named
-geometry+bitrate preset.
+control surface: it re-provisions the source with a named preset of
+source parameters (capture geometry and/or encoder budget).
 
 ### Get Source Bitrate State
 
