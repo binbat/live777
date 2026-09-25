@@ -100,74 +100,70 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
-# width = 1296
-# height = 972
+# width = 1280
+# height = 720
 # fps = 30
 # pixel_format = "yuv420"
 # [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
-# bitrate = 2000000
+# bitrate = 1500000
 # profile = "baseline"        # or a 6-digit hex profile-level-id like "420028"
 # level = "4.0"               # required when profile is a name; 1080p needs >= 4.0
 # gop = 60
 # adaptive_bitrate = true     # AIMD: lower the running encoder while WHEP
 #                             # subscribers report congestion (rkmpp/v4l2-m2m)
-# min_bitrate = 300000        # AIMD floor (default: max(bitrate / 8, 300000))
+# min_bitrate = 150000        # AIMD floor (default: max(bitrate / 8, 300000))
 # [stream.pi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Quality-tier ladder (tested on OV5647), switchable at runtime via
-# POST /api/sources/pi-cam/tier {"tier": "mid"} or the WebUI.
+# Five-rung quality ladder (tested on OV5647), switchable at runtime via
+# POST /api/sources/pi-cam/tier {"tier": "maxres"} or the WebUI.
 # Bitrate-only tiers retune the running encoder seamlessly; a tier that
-# also sets width/height/fps switches the whole ladder rung by rebuilding
-# the capture+encoder pipeline (brief frame gap).  The tier's bitrate
-# becomes the AIMD's new ceiling — it keeps following network conditions
-# within the rung.
+# also sets width/height/fps switches the whole rung by rebuilding the
+# capture+encoder pipeline (brief frame gap).  The tier's bitrate becomes
+# the AIMD's new ceiling — it keeps following network conditions within
+# the rung.
 #
 # Encoder throughput on a Pi Zero 2 W is ~21 fps at 1080p and ~60 fps at
-# 480p — the ladder below stays inside those budgets: the 972p30 boot
-# profile runs realtime with zero headroom, maxres trades fps for pixels,
-# lowlatency trades pixels for fps.
+# 480p — every rung below stays inside that budget:
+# - std/maxres trade fps for pixels,
+# - lowlatency trades pixels for fps (60 fps exists only at 640x480 on
+#   the OV5647: its 16:9 sibling 1280x720@60 overruns the encoder, and
+#   ISP-cropped 640x360 is clamped to 33 fps by sensor mode selection),
+# - lowbw* rungs cut the frame rate to 10 fps for very slow links.
 #
-# Max-quality rung — 1080p at 20 fps, the rate the encoder can actually
-# sustain (1080p30 overdrives it to ~21 fps with queueing latency):
+# [[stream.pi-cam.sources.tiers]]
+# name = "std"
+# bitrate = 1500000
+# width = 1280
+# height = 720
+# fps = 30
 # [[stream.pi-cam.sources.tiers]]
 # name = "maxres"
 # bitrate = 3000000
 # width = 1920
 # height = 1080
 # fps = 20
-# Plain resolution+bitrate steps down:
-# [[stream.pi-cam.sources.tiers]]
-# name = "mid"
-# bitrate = 1500000
-# width = 1280
-# height = 720
-# fps = 30
-# [[stream.pi-cam.sources.tiers]]
-# name = "low"
-# bitrate = 800000
-# width = 640
-# height = 480
-# fps = 30
-# Floor rung for very slow links:
-# [[stream.pi-cam.sources.tiers]]
-# name = "tiny"
-# bitrate = 300000
-# width = 320
-# height = 240
-# fps = 15
-# 60 fps low-latency rung — OV5647 does 60 fps at 640x480 (the sensor
-# even reaches 90, but the encoder's ~60 fps ceiling at 480p makes that
-# pointless here); the smaller frame cuts encode and decode latency:
 # [[stream.pi-cam.sources.tiers]]
 # name = "lowlatency"
 # bitrate = 1000000
 # width = 640
 # height = 480
 # fps = 60
+# [[stream.pi-cam.sources.tiers]]
+# name = "lowbw720"
+# bitrate = 500000
+# width = 1280
+# height = 720
+# fps = 10
+# [[stream.pi-cam.sources.tiers]]
+# name = "lowbwtiny"
+# bitrate = 150000
+# width = 320
+# height = 240
+# fps = 10
 # Note: the OV5647's full 2592x1944 mode is capture-only territory —
 # the bcm2835 H.264 encoder tops out at 1080p, so 1080p20 is the top
 # rung here.
