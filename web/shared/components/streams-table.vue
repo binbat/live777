@@ -21,6 +21,8 @@ export interface StreamTableProps {
 <script setup lang="ts">
 import {
     computed,
+    onMounted,
+    onUnmounted,
     ref,
     toValue,
     useTemplateRef,
@@ -366,6 +368,35 @@ const handleOpenDebuggerPage = (id: string) => {
     window.open(url);
 };
 
+// The "More" menu teleports to <body>: the table scrolls horizontally
+// inside an overflow-x-auto wrapper on mobile, which would clip an
+// in-cell dropdown (overflow-x: auto forces overflow-y clipping too).
+const moreMenu = ref<{ id: string; top: number; right: number; openedAt: number } | null>(null);
+const toggleMoreMenu = (id: string, event: MouseEvent) => {
+    if (moreMenu.value?.id === id) {
+        moreMenu.value = null;
+        return;
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    moreMenu.value = {
+        id,
+        top: rect.bottom + 4,
+        right: Math.max(8, window.innerWidth - rect.right),
+        openedAt: Date.now(),
+    };
+};
+const closeMoreMenu = () => {
+    moreMenu.value = null;
+};
+// scroll events from a scroll-into-view (e.g. touch tap) can arrive
+// right after the click that opened the menu; ignore those
+const passiveCloseMoreMenu = () => {
+    if (moreMenu.value && Date.now() - moreMenu.value.openedAt < 300) return;
+    moreMenu.value = null;
+};
+onMounted(() => window.addEventListener("resize", passiveCloseMoreMenu));
+onUnmounted(() => window.removeEventListener("resize", passiveCloseMoreMenu));
+
 // Media statistics (issue #252): sum of all streams' rates and
 // cumulative bytes. Liveman marks merged cluster snapshots as node-work
 // totals because cascade hops are counted on each relay node.
@@ -488,7 +519,7 @@ const handleCancelStop = () => {
         </button>
     </div>
 
-    <div class="overflow-x-auto">
+    <div class="overflow-x-auto" @scroll.passive="passiveCloseMoreMenu">
         <table class="table whitespace-nowrap">
             <thead>
                 <tr>
@@ -555,23 +586,11 @@ const handleCancelStop = () => {
                                 class="btn btn-sm"
                                 @click="handleViewSource(i.id)"
                             >Source</button>
-                            <div
+                            <button
                                 v-if="showCascade || features.player || features.debugger"
-                                class="dropdown dropdown-end"
-                            >
-                                <button tabindex="0" class="btn btn-sm">More</button>
-                                <ul tabindex="0" class="menu dropdown-content bg-base-100 rounded-box z-10 w-40 p-2 shadow">
-                                    <li v-if="showCascade">
-                                        <a @click="handleCascadePushStream(i.id)">Cascade Push</a>
-                                    </li>
-                                    <li v-if="features.player">
-                                        <a @click="handleOpenPlayerPage(i.id)">Player</a>
-                                    </li>
-                                    <li v-if="features.debugger">
-                                        <a @click="handleOpenDebuggerPage(i.id)">Debugger</a>
-                                    </li>
-                                </ul>
-                            </div>
+                                class="btn btn-sm"
+                                @click="toggleMoreMenu(i.id, $event)"
+                            >More</button>
                             <button
                                 v-if="recordingAvailable"
                                 class="btn btn-sm"
@@ -690,4 +709,24 @@ const handleCancelStop = () => {
         :get-whip-url="getWhipUrl"
         @stop="handleWebStreamStop(s)"
     />
+
+    <Teleport to="body">
+        <template v-if="moreMenu">
+            <div class="fixed inset-0 z-40" @click="closeMoreMenu" />
+            <ul
+                class="menu fixed z-50 bg-base-100 rounded-box w-40 p-2 shadow"
+                :style="{ top: `${moreMenu.top}px`, right: `${moreMenu.right}px` }"
+            >
+                <li v-if="showCascade">
+                    <a @click="handleCascadePushStream(moreMenu.id); closeMoreMenu()">Cascade Push</a>
+                </li>
+                <li v-if="features.player">
+                    <a @click="handleOpenPlayerPage(moreMenu.id); closeMoreMenu()">Player</a>
+                </li>
+                <li v-if="features.debugger">
+                    <a @click="handleOpenDebuggerPage(moreMenu.id); closeMoreMenu()">Debugger</a>
+                </li>
+            </ul>
+        </template>
+    </Teleport>
 </template>
