@@ -354,7 +354,13 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
     if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
-        if (err) *err = std::string("STREAMON (OUTPUT) failed: ") + strerror(errno);
+        // bcm2835-codec defers control application to start_streaming: a
+        // requested mode the firmware rejects (e.g. CBR, which the VC
+        // encoder does not support) surfaces here as ESRCH, not at S_CTRL.
+        std::string msg = std::string("STREAMON (OUTPUT) failed: ") + strerror(errno);
+        if (cfg.bitrate_mode == 2)
+            msg += " (note: bcm2835-codec firmware rejects CBR; use bitrate_mode = \"vbr\")";
+        if (err) *err = msg;
         cleanup();
         return false;
     }

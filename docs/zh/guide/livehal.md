@@ -133,7 +133,8 @@ profile = "baseline"     # 也可以是 6 位十六进制 profile-level-id，如
 level = "3.1"            # 当 profile 为名称时必填
 gop = 60                 # 关键帧间隔（帧数）；0 = 仅按需出关键帧
                          # （PLI/FIR、新订阅者加入）——仅 v4l2-m2m
-# bitrate_mode = "vbr"   # 仅 v4l2-m2m："vbr"（驱动默认）或 "cbr"
+# bitrate_mode = "vbr"   # 仅 v4l2-m2m："vbr"（驱动默认）或 "cbr"；
+                         # 注意 bcm2835-codec 固件会拒绝 CBR
 
 [stream.pi-cam.sources.output]
 payload_type = 96

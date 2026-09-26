@@ -21,7 +21,8 @@
 //! bitrate = 1_500_000
 //! profile = "42001f"
 //! gop = 60
-//! # bitrate_mode = "vbr"   # v4l2-m2m only: "vbr" (driver default) or "cbr"
+//! # bitrate_mode = "vbr"   # v4l2-m2m only: "vbr" (driver default) or "cbr";
+//!                          # bcm2835-codec firmware rejects CBR
 //!
 //! [stream.usb-cam.sources.output]
 //! payload_type = 96
@@ -85,7 +86,9 @@ pub struct EncoderSpec {
     pub gop: u32,
     /// Encoder rate-control mode: `"vbr"` or `"cbr"`.  Absent keeps the
     /// driver default (VBR on bcm2835-codec).  Only the `v4l2-m2m` backend
-    /// honours this today; other backends ignore it.
+    /// honours this today; other backends ignore it.  Note the
+    /// bcm2835-codec (Raspberry Pi) firmware rejects CBR — the encoder
+    /// fails to start with it.
     #[serde(default)]
     pub bitrate_mode: Option<String>,
     /// Prefer DMA-BUF zero-copy path (default `false`).

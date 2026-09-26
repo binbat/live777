@@ -50,7 +50,7 @@ profile = "baseline"
 level = "4.0"
 gop = 60            # 关键帧间隔（帧数）；GOP 越长越省带宽，
                     # 0 = 仅按需出关键帧（PLI/FIR、新订阅者加入）
-# bitrate_mode = "vbr"  # bcm2835-codec 默认值；"cbr" 锁定码率
+# bitrate_mode = "vbr"  # bcm2835-codec 默认值；固件会拒绝 "cbr"
 prefer_dmabuf = true  # 零拷贝需要两侧都设置
 
 [stream.pi-cam.sources.output]
