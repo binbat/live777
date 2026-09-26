@@ -286,6 +286,7 @@ static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     cfg.level_idc = ffi->level_idc;
     cfg.tier_flag = ffi->tier_flag;
     cfg.gop = ffi->gop;
+    cfg.bitrate_mode = ffi->bitrate_mode;
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;
 }

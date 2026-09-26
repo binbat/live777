@@ -61,7 +61,9 @@ codec = "h264"
 bitrate = 2000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
 profile = "baseline"
 level = "4.0"
-gop = 60
+gop = 60            # keyframe interval in frames; longer GOPs save bandwidth,
+                    # 0 = keyframes only on request (PLI/FIR, subscriber join)
+# bitrate_mode = "vbr"  # bcm2835-codec default; "cbr" pins the rate
 prefer_dmabuf = true  # must be set on both sides for zero-copy
 
 [stream.pi-cam.sources.output]

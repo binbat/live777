@@ -197,6 +197,23 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     }
 
     struct v4l2_control ctrl = {};
+
+    // Rate-control mode (VBR/CBR).  Not all M2M drivers expose this control
+    // (bcm2835-codec does, defaulting to VBR), so a failure is a warning —
+    // the encoder still runs with the driver's default mode.
+    if (cfg.bitrate_mode != 0) {
+        ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE_MODE;
+        ctrl.value = cfg.bitrate_mode == 2
+            ? V4L2_MPEG_VIDEO_BITRATE_MODE_CBR
+            : V4L2_MPEG_VIDEO_BITRATE_MODE_VBR;
+        if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
+            fprintf(stderr,
+                    "[V4l2M2mEncoder] S_CTRL BITRATE_MODE(%s) failed: %s — "
+                    "keeping driver default\n",
+                    cfg.bitrate_mode == 2 ? "CBR" : "VBR", strerror(errno));
+        }
+    }
+
     ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE;
     ctrl.value = bitrate;
     if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
@@ -207,8 +224,13 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
 
     // H.264-specific controls: only apply when the output codec is H.264.
     if (codec_ == VideoCodec::H264) {
+        // bcm2835-codec: writing I_PERIOD also updates GOP_SIZE, and every
+        // I frame is an IDR, so this is the keyframe interval in frames.
+        // gop == 0 disables periodic keyframes entirely (MMAL INTRAPERIOD=0:
+        // one initial IDR, then P-frames only) — keyframes are then produced
+        // solely by FORCE_KEY_FRAME (RTCP PLI/FIR / subscriber join).
         ctrl.id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
-        ctrl.value = fps * 2;
+        ctrl.value = static_cast<int>(cfg.gop);
         if (ioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
             if (err) *err = std::string("S_CTRL I_PERIOD failed: ") + strerror(errno);
             cleanup();

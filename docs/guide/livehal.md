@@ -142,7 +142,9 @@ codec = "h264"
 bitrate = 1_000_000
 profile = "baseline"     # or a 6-digit hex profile-level-id such as "42001f"
 level = "3.1"            # required when profile is a profile name
-gop = 60
+gop = 60                 # keyframe interval in frames; 0 = IDR only on
+                         # request (PLI/FIR, subscriber join) — v4l2-m2m only
+# bitrate_mode = "vbr"   # v4l2-m2m only: "vbr" (driver default) or "cbr"
 
 [stream.pi-cam.sources.output]
 payload_type = 96
