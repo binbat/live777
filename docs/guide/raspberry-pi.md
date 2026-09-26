@@ -101,9 +101,11 @@ tier's bitrate as its ceiling and the lowest tier as its floor. See
 
 The `prefer_dmabuf` pair enables DMA-BUF zero-copy: captured frames are
 queued to the hardware encoder as dma-bufs, eliminating the two full-frame
-CPU copies per frame. It is optional — without it (or if the driver cannot
+CPU copies per frame — e.g. 1296x972@30 drops from ~55% to ~12% of one
+core on a Zero 2 W. It is optional — without it (or if the driver cannot
 import the buffer) the pipeline uses the CPU-copy path. See
-[livehal — Raspberry Pi notes](./livehal.md#zero-copy-dma-buf).
+[livehal — Zero-copy (DMA-BUF)](./livehal.md#zero-copy-dma-buf) for the
+full benchmark table.
 
 ## Step 3: Run
 

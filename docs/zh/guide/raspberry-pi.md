@@ -83,8 +83,8 @@ encoder = { bitrate = 150000 }
 自适应码率默认开启：AIMD 控制器跟随 WHEP 订阅者的 RTCP 反馈实时调整编码器，当前档位码率为上限、最低档为下限。语义详见
 [livehal](./livehal.md#adaptive-bitrate)。
 
-`prefer_dmabuf` 这对开关启用 DMA-BUF 零拷贝：采集帧以 dma-buf 直接入队硬件编码器，消除每帧两次整帧 CPU 拷贝。可选项——不设置（或驱动无法导入缓冲区）时 pipeline 走 CPU 拷贝路径。详见
-[livehal — 树莓派说明](./livehal.md#zero-copy-dma-buf)。
+`prefer_dmabuf` 这对开关启用 DMA-BUF 零拷贝：采集帧以 dma-buf 直接入队硬件编码器，消除每帧两次整帧 CPU 拷贝——例如 Zero 2 W 上 1296x972@30 从单核 ~55% 降到 ~12%。可选项——不设置（或驱动无法导入缓冲区）时 pipeline 走 CPU 拷贝路径。完整实测对比表见
+[livehal — 零拷贝（DMA-BUF）](./livehal.md#zero-copy-dma-buf)。
 
 ## 第三步：运行
 
