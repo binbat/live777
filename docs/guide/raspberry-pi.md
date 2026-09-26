@@ -53,6 +53,7 @@ width = 1296        # OV5647 native 2x2-binned mode: full field of view
 height = 972
 fps = 30
 pixel_format = "yuv420"
+prefer_dmabuf = true  # DMA-BUF zero-copy capture → encode (optional)
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
@@ -61,6 +62,7 @@ bitrate = 2000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
 profile = "baseline"
 level = "4.0"
 gop = 60
+prefer_dmabuf = true  # must be set on both sides for zero-copy
 
 [stream.pi-cam.sources.output]
 payload_type = 96
@@ -96,6 +98,12 @@ Adaptive bitrate is on by default: an AIMD controller follows WHEP
 subscriber RTCP feedback and retunes the running encoder, with the active
 tier's bitrate as its ceiling and the lowest tier as its floor. See
 [livehal](./livehal.md#adaptive-bitrate-experimental) for the semantics.
+
+The `prefer_dmabuf` pair enables DMA-BUF zero-copy: captured frames are
+queued to the hardware encoder as dma-bufs, eliminating the two full-frame
+CPU copies per frame. It is optional — without it (or if the driver cannot
+import the buffer) the pipeline uses the CPU-copy path. See
+[livehal — Raspberry Pi notes](./livehal.md#zero-copy-dma-buf).
 
 ## Step 3: Run
 

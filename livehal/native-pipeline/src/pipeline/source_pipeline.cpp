@@ -66,6 +66,11 @@ public:
         // YUV420P, passes UYVY through unchanged, and libcamera always
         // delivers YUV420P regardless of the configured pixel_format.
         encoder_cfg.input_format = capture_->outputFormat();
+        // Zero-copy needs both sides: the user opts in via prefer_dmabuf on
+        // capture and encoder, and the capture backend must actually arm
+        // the deferred-requeue dmabuf contract on its frames.
+        encoder_cfg.prefer_dmabuf =
+            ecfg.prefer_dmabuf && capture_->emitsDmabufFrames();
 
         encoder_ = create_encoder_backend(encoder_cfg);
         if (!encoder_) {

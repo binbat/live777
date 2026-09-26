@@ -49,7 +49,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - All FFI details are crate-private in `livehal`; `liveion` only sees `EncodedPacket` through the channel.
 - **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
 - `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
-- **DMA-BUF zero-copy** (generic V4L2 → RKMPP): implemented.  With `prefer_dmabuf = true` on both capture and encoder, the capture exports each V4L2 buffer as a DMA-BUF (`VIDIOC_EXPBUF`) and the encoder imports it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between `VIDIOC_DQBUF` and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails the pipeline falls back to the CPU-copy path.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
+- **DMA-BUF zero-copy**: implemented for generic V4L2 → RKMPP and for Raspberry Pi (libcamera / generic V4L2 → V4L2 M2M).  With `prefer_dmabuf = true` on both capture and encoder, the capture hands each frame's DMA-BUF to the encoder and the encoder queues it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between dequeue and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails (or the frame layout does not match what the encoder can import) the pipeline falls back to the CPU-copy path.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
 
 ## Config
 
@@ -560,6 +560,38 @@ selected mode's limit is also printed by `rpicam-hello` at startup):
   simply runs at the ceiling.  120 fps is not possible.
 - Rough CPU cost on a Zero 2 W (libcamera → v4l2-m2m H.264): ~20% of one
   core at 640x480@30, ~40% at 640x480@60, ~65% at 1296x972@30.
+
+### Zero-copy (DMA-BUF)
+
+The Raspberry Pi pipeline supports DMA-BUF zero-copy capture → encode:
+with `prefer_dmabuf = true` on **both** sides, libcamera hands each frame's
+dma-buf straight to the v4l2-m2m encoder — the two full-frame CPU copies
+per frame (ISP staging copy + encoder input copy) are eliminated.
+
+```toml
+[stream.cam.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 1280
+height = 720
+fps = 30
+pixel_format = "yuv420"
+prefer_dmabuf = true      # DMA-BUF zero-copy (capture side)
+
+[stream.cam.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 2_000_000
+prefer_dmabuf = true      # DMA-BUF zero-copy (encoder side)
+```
+
+The capture buffers are requeued only after the encoder hardware finished
+reading them (deferred-requeue contract), so the ISP can never overwrite a
+frame mid-encode.  If the frame layout cannot be imported by the encoder
+(e.g. stride mismatch) the pipeline falls back to a single copy per frame
+(the pre-zero-copy cost); check the startup log for
+`[V4l2M2mEncoder] zero-copy input enabled`.  The same option works for the
+generic V4L2 capture backend with single-plane NV12/YUV420 devices.
 
 ## Low-latency streaming
 

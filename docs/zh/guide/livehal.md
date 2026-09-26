@@ -49,7 +49,7 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 - 所有 FFI 细节在 `livehal` 内部都是 crate-private 的；`liveion` 只能通过通道看到 `EncodedPacket`。
 - **原生源的 RTP 路径**：`EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`。这避免了其他源所使用的 `Packet` → bytes → `Packet::unmarshal` 往返。
 - `MediaPacket::Rtp { data }` 字节路径仍由 `rtp_listener` / `rtsp_source` / `sdp_source` 使用。
-- **DMA-BUF 零拷贝**（通用 V4L2 → RKMPP）：已实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每个 V4L2 缓冲区导出为 DMA-BUF（`VIDIOC_EXPBUF`），编码器直接导入使用——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从 `VIDIOC_DQBUF` 到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回 V4L2（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
+- **DMA-BUF 零拷贝**：已在通用 V4L2 → RKMPP 与树莓派（libcamera / 通用 V4L2 → V4L2 M2M）上实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每帧的 DMA-BUF 直接交给编码器入队——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从出队到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回去（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败（或帧布局无法被编码器导入）时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
 
 ## 配置
 
@@ -520,6 +520,29 @@ clock_rate = 90000
 
 - **60fps 只有 640x480 能达到**；请求更高只会按上限运行。120fps 不可能。
 - Zero 2 W 上的大致 CPU 开销（libcamera → v4l2-m2m H.264）：640x480@30 约单核 20%，640x480@60 约 40%，1296x972@30 约 65%。
+
+### 零拷贝（DMA-BUF）{#zero-copy-dma-buf}
+
+树莓派 pipeline 支持 DMA-BUF 零拷贝采集→编码：采集和编码**两侧都**设 `prefer_dmabuf = true` 时，libcamera 把每帧的 dma-buf 直接交给 v4l2-m2m 编码器——每帧的两次整帧 CPU 拷贝（ISP staging 拷贝 + 编码器输入拷贝）全部消除。
+
+```toml
+[stream.cam.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 1280
+height = 720
+fps = 30
+pixel_format = "yuv420"
+prefer_dmabuf = true      # DMA-BUF 零拷贝（采集侧）
+
+[stream.cam.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 2_000_000
+prefer_dmabuf = true      # DMA-BUF 零拷贝（编码侧）
+```
+
+采集缓冲区在编码器硬件读完之前不会 requeue（延迟 requeue 契约），ISP 不可能在编码中途覆盖帧数据。帧布局无法被编码器导入时（如 stride 不匹配）pipeline 回退为每帧一次拷贝（即零拷贝前的开销）；启动日志中出现 `[V4l2M2mEncoder] zero-copy input enabled` 即表示零拷贝生效。单 plane NV12/YUV420 设备使用通用 V4L2 采集后端时同样可用。
 
 ## 低延时推流
 

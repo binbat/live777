@@ -29,6 +29,12 @@ using namespace libcamera;
 struct MappedRequest {
     Request* request = nullptr;
     FrameBuffer* framebuffer = nullptr;
+    // Index of this buffer in allocation order; the zero-copy release
+    // contract identifies the buffer by it.
+    uint32_t buffer_index = 0;
+    // Single dma-buf fd shared by all planes (different offsets), -1 when
+    // the buffer is not exportable.
+    int dma_fd = -1;
     // Single mmap of the whole FrameBuffer (libcamera planes live in one
     // dma-buf with different offsets).  base_addr may be nullptr if the
     // buffer has zero length.
@@ -62,6 +68,13 @@ public:
     std::mutex registry_mutex_;
     std::map<Request*, MappedRequest> registry_;
 
+    // Zero-copy (prefer_dmabuf): requests handed to the consumer via an
+    // armed RawFrame::release stay out of the capture queue until
+    // release_request() requeues them.  Indexed by buffer_index.
+    bool prefer_dmabuf_ = false;
+    std::mutex release_mutex_;
+    std::vector<Request*> held_requests_;
+
     // Per-instance timestamp base so multiple capture backends do not share
     // the same epoch. Initialised in start().
     std::chrono::steady_clock::time_point start_time_{};
@@ -88,6 +101,10 @@ public:
 
     void release_resources();
     void on_request_completed(Request* request);
+    // Deferred requeue of a request whose buffer the consumer (encoder)
+    // held via the zero-copy release contract; a no-op once stopped.
+    static void release_trampoline(void* ctx, uint32_t buffer_index);
+    void release_request(uint32_t buffer_index);
 
     // --- CaptureBackend overrides ---
     bool init(const CaptureConfig& cfg, std::string* err) override;
@@ -98,6 +115,7 @@ public:
     RawPixelFormat outputFormat() const override {
         return RawPixelFormat::Yuv420p;
     }
+    bool emitsDmabufFrames() const override { return prefer_dmabuf_; }
 
 private:
     PiCameraImpl() = default;
@@ -160,6 +178,10 @@ void PiCameraImpl::release_resources() {
 
     // Drop requests before freeing buffers.
     requests.clear();
+    {
+        std::lock_guard<std::mutex> lock(release_mutex_);
+        held_requests_.clear();
+    }
 
     // Unmap all buffer mappings.
     {
@@ -202,12 +224,6 @@ void PiCameraImpl::on_request_completed(Request* request) {
         mapped = &it->second;
     }
 
-    // Copy each plane into the contiguous staging buffer, compacting away
-    // row padding: the ISP may stride-align plane rows (e.g. 1296-wide
-    // frames come back with a padded pitch), while the frame contract
-    // downstream is a single tightly packed I420 blob with stride == width.
-    uint8_t* dst = mapped->contiguous.data();
-    size_t offset = 0;
     const auto& planes = mapped->framebuffer->planes();
     const size_t plane_rows[3] = {
         static_cast<size_t>(height_),
@@ -219,6 +235,67 @@ void PiCameraImpl::on_request_completed(Request* request) {
         static_cast<size_t>(width_ / 2),
         static_cast<size_t>(width_ / 2),
     };
+
+    CaptureFrameCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        cb = capture_cb_;
+    }
+
+    // Absolute steady_clock (CLOCK_MONOTONIC epoch on Linux) — the same
+    // clock domain the V4L2 backends stamp buffer SOF in, so downstream
+    // [latency] stages measure true frame age on every capture backend.
+    auto now = std::chrono::steady_clock::now();
+    uint64_t timestamp =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            now.time_since_epoch()).count();
+
+    // Zero-copy hand-off: deliver the dma-buf planes as-is (no staging
+    // copy) and do NOT requeue the request — release_request() requeues it
+    // once the consumer (encoder) is done reading the buffer
+    // (media_types.h deferred-requeue contract).  Requests cancelled by
+    // camera->stop() carry no valid frame and must skip the hand-off.
+    if (cb && prefer_dmabuf_ && planes.size() == 3 && mapped->dma_fd >= 0
+        && mapped->base_addr && mapped->base_addr != MAP_FAILED
+        && request->status() == Request::RequestComplete) {
+        RawFrame f{};
+        f.kind = BufferKind::DmaBuf;
+        f.format = RawPixelFormat::Yuv420p;
+        f.width = static_cast<uint32_t>(width_);
+        f.height = static_cast<uint32_t>(height_);
+        f.pts_us = timestamp;
+        f.seq = ++seq_;
+        f.plane_count = 3;
+        for (size_t i = 0; i < 3; ++i) {
+            const auto& plane = planes[i];
+            const size_t rows = plane_rows[i];
+            const uint32_t stride =
+                rows > 0 ? static_cast<uint32_t>(plane.length / rows) : 0;
+            f.planes[i] = {
+                static_cast<const uint8_t*>(mapped->base_addr) + plane.offset,
+                stride,
+                plane.length,
+                mapped->dma_fd,
+                plane.offset,
+            };
+        }
+        f.buffer_index = mapped->buffer_index;
+        f.release = &PiCameraImpl::release_trampoline;
+        f.release_ctx = this;
+        cb(f);
+        return;
+    }
+
+    // Copy each plane into the contiguous staging buffer, compacting away
+    // row padding: the ISP may stride-align plane rows (e.g. 1296-wide
+    // frames come back with a padded pitch), while the frame contract
+    // downstream is a single tightly packed I420 blob with stride == width.
+    // The staging buffer is not allocated in zero-copy mode; requests that
+    // land here without one (cancelled by camera->stop()) carry no frame
+    // and skip straight to the requeue logic below.
+    if (!mapped->contiguous.empty()) {
+    uint8_t* dst = mapped->contiguous.data();
+    size_t offset = 0;
     bool padded = false;
     for (size_t i = 0; i < planes.size(); ++i) {
         const auto& plane = planes[i];
@@ -252,12 +329,6 @@ void PiCameraImpl::on_request_completed(Request* request) {
                 planes.empty() ? 0u : planes[0].length);
     }
 
-    CaptureFrameCallback cb;
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        cb = capture_cb_;
-    }
-
     // Deliver the frame pointing straight at the staging buffer — no second
     // full-frame copy.  This is safe because the request has NOT been
     // requeued yet: the ISP cannot overwrite the dma-buf, and no later
@@ -265,14 +336,6 @@ void PiCameraImpl::on_request_completed(Request* request) {
     // duration of the callback.  stop() waits for in-flight callbacks
     // before resources are released, so the staging buffer outlives cb.
     if (cb) {
-        // Absolute steady_clock (CLOCK_MONOTONIC epoch on Linux) — the same
-        // clock domain the V4L2 backends stamp buffer SOF in, so downstream
-        // [latency] stages measure true frame age on every capture backend.
-        auto now = std::chrono::steady_clock::now();
-        uint64_t timestamp =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch()).count();
-
         RawFrame f{};
         f.kind = BufferKind::Cpu;
         f.format = RawPixelFormat::Yuv420p;
@@ -289,6 +352,7 @@ void PiCameraImpl::on_request_completed(Request* request) {
             0,
         };
         cb(f);
+    }
     }
 
     // Requeue only after the callback is done with the frame.  Re-read the
@@ -307,6 +371,32 @@ void PiCameraImpl::on_request_completed(Request* request) {
     }
 }
 
+void PiCameraImpl::release_trampoline(void* ctx, uint32_t buffer_index) {
+    static_cast<PiCameraImpl*>(ctx)->release_request(buffer_index);
+}
+
+// Deferred requeue for a request whose dma-buf the consumer held.  Called
+// by the encoder (from any thread) once the hardware finished reading the
+// buffer (or on its error/stop paths).  Races with stop() are fine: after
+// camera->stop() a late release is a no-op.
+void PiCameraImpl::release_request(uint32_t buffer_index) {
+    std::shared_ptr<libcamera::Camera> cam;
+    Request* request = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(release_mutex_);
+        if (!running.load() || buffer_index >= held_requests_.size()) return;
+        request = held_requests_[buffer_index];
+        cam = camera;
+    }
+    if (!request || !cam) return;
+    request->reuse(Request::ReuseFlag::ReuseBuffers);
+    if (cam->queueRequest(request) < 0) {
+        fprintf(stderr,
+                "[CameraInternal] deferred queueRequest failed for req=%p\n",
+                request);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CaptureBackend implementation
 // ---------------------------------------------------------------------------
@@ -314,6 +404,7 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
     width_ = static_cast<int>(cfg.width);
     height_ = static_cast<int>(cfg.height);
     target_fps = static_cast<int>(cfg.fps);
+    prefer_dmabuf_ = cfg.prefer_dmabuf;
 
     cameraManager = std::make_unique<CameraManager>();
     if (cameraManager->start() != 0) {
@@ -336,7 +427,10 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
     sc.size.width = static_cast<unsigned int>(cfg.width);
     sc.size.height = static_cast<unsigned int>(cfg.height);
     sc.pixelFormat = formats::YUV420;
-    sc.bufferCount = 8;
+    // Zero-copy needs headroom: the encoder may hold up to 8 buffers in
+    // flight via the deferred-requeue contract, and the ISP must always
+    // have free requests to keep streaming.
+    sc.bufferCount = prefer_dmabuf_ ? 12 : 8;
 
     CameraConfiguration::Status validation = config->validate();
     if (validation == CameraConfiguration::Invalid) {
@@ -363,10 +457,36 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
+    if (prefer_dmabuf_) {
+        // Zero-copy requires every buffer to be a single dma-buf holding
+        // exactly the three Y/U/V planes at different offsets (true for
+        // the RPi pipeline handler).
+        for (const auto& buffer : allocator_->buffers(videoStream)) {
+            const auto& planes = buffer->planes();
+            const int fd = planes.empty() ? -1 : planes[0].fd.get();
+            bool exportable = planes.size() == 3 && fd >= 0;
+            for (const auto& plane : planes) {
+                if (plane.fd.get() != fd) {
+                    exportable = false;
+                    break;
+                }
+            }
+            if (!exportable) {
+                fprintf(stderr,
+                        "[CameraInternal] buffers are not single-fd 3-plane "
+                        "dma-bufs — zero-copy disabled, CPU path in use\n");
+                prefer_dmabuf_ = false;
+                break;
+            }
+        }
+    }
+
+    uint32_t buffer_index = 0;
     for (const auto& buffer : allocator_->buffers(videoStream)) {
         FrameBuffer* framebuffer = buffer.get();
         MappedRequest mapped;
         mapped.framebuffer = framebuffer;
+        mapped.buffer_index = buffer_index;
         mapped.total_size = 0;
 
         // Compute total buffer size and mmap the whole dma-buf once.
@@ -387,6 +507,7 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
             release_resources();
             return false;
         }
+        mapped.dma_fd = fd;
 
         void* addr = mmap(nullptr, total_length, PROT_READ, MAP_SHARED, fd, 0);
         if (addr == MAP_FAILED) {
@@ -396,7 +517,11 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
         }
         mapped.base_addr = addr;
         mapped.mapped_size = total_length;
-        mapped.contiguous.resize(mapped.total_size);
+        // The CPU staging buffer is unused on the zero-copy path (the
+        // init-time validation above guarantees the dmabuf frame shape).
+        if (!prefer_dmabuf_) {
+            mapped.contiguous.resize(mapped.total_size);
+        }
 
         std::unique_ptr<Request> request = camera->createRequest();
         if (!request) {
@@ -419,7 +544,12 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
             std::lock_guard<std::mutex> lock(g_instance_mutex);
             g_request_to_instance[mapped.request] = shared_from_this();
         }
+        {
+            std::lock_guard<std::mutex> lock(release_mutex_);
+            held_requests_.push_back(request.get());
+        }
         requests.push_back(std::move(request));
+        buffer_index++;
     }
     return true;
 }
