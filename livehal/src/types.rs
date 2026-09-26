@@ -18,6 +18,9 @@ pub struct NativeSourceParams {
     pub bitrate: u32,
     pub profile: String,
     pub gop: u32,
+    /// Encoder rate-control mode: 0 = driver default, 1 = VBR, 2 = CBR.
+    /// Only the v4l2-m2m backend honours this today.
+    pub bitrate_mode: u32,
     pub payload_type: u32,
     pub clock_rate: u32,
     pub capture_prefer_dmabuf: u8,

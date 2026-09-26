@@ -371,6 +371,7 @@ fn build_ffi_config(
             level_idc: params.level_idc,
             tier_flag: params.tier_flag,
             gop: params.gop,
+            bitrate_mode: params.bitrate_mode,
             prefer_dmabuf: params.encoder_prefer_dmabuf,
         },
         payload_type: params.payload_type,

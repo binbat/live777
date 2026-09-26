@@ -46,6 +46,7 @@ typedef struct {
     uint32_t level_idc;      // 40=H.264 4.0, 120=H.265 4.0
     uint32_t tier_flag;      // 0=main tier (H.265 only; always 0 for H.264)
     uint32_t gop;
+    uint32_t bitrate_mode; // 0 = driver default, 1 = VBR, 2 = CBR
     uint8_t prefer_dmabuf;   // 0 = false, 1 = true
 } EncoderConfigFFI;
 
