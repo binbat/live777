@@ -174,7 +174,7 @@ jobs:
           cp ${{ env.BUILD_PATH }}/net4mqtt${{ env.EXE_SUFFIX }} ${{ env.PKG_NET4MQTT_NAME }}
 
       - name: Artifact Upload Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_bin
           path: |
@@ -232,7 +232,7 @@ jobs:
           nfpm pkg --packager archlinux --config whepfrom.yaml
 
       - name: Artifact Upload deb package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.job.nfpm }}
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_deb
@@ -240,7 +240,7 @@ jobs:
               *.deb
 
       - name: Artifact Upload rpm package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.job.nfpm }}
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_rpm
@@ -248,7 +248,7 @@ jobs:
               *.rpm
 
       - name: Artifact Upload archlinux package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: ${{ matrix.job.nfpm }}
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_archlinux
@@ -351,7 +351,7 @@ jobs:
           echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
       - name: Artifact Upload ${{ matrix.variant }} live777
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_live777
           path: ${{ env.TAR_LIVE777_NAME }}
