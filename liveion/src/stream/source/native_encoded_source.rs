@@ -457,6 +457,20 @@ impl NativeEncodedSource {
         self.active_tier = name;
     }
 
+    /// The state the pipeline is actually running with: the last applied
+    /// tier's name plus the current params (post-rollback these are the
+    /// restored previous params).
+    #[cfg(feature = "source")]
+    pub fn active_tier_state(&self) -> super::tier::ActiveTierState {
+        super::tier::ActiveTierState {
+            name: self.active_tier.clone(),
+            width: self.params.width,
+            height: self.params.height,
+            fps: self.params.fps,
+            bitrate: self.params.bitrate,
+        }
+    }
+
     /// Retune the running encoder (adaptive bitrate control, issue #409).
     /// False when the pipeline is not running or the backend cannot retune.
     pub fn set_bitrate(&self, bps: u32) -> bool {

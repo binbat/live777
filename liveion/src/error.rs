@@ -21,6 +21,10 @@ pub enum AppError {
     /// cannot retune, pipeline not running, or a tier rebuild failed).
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     SourceBitrateUnsupported(String),
+    /// A user-configured hook script failed and the operation was aborted
+    /// before taking effect (e.g. an `on_source_changed` hook).
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    HookFailed(String),
     /// The request itself is malformed (semantically); maps to 400.
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     BadRequest(String),
@@ -82,6 +86,14 @@ impl AppError {
         AppError::BadRequest(t.to_string())
     }
 
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
+    pub fn hook_failed<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::HookFailed(t.to_string())
+    }
+
     pub fn throw<T>(t: T) -> Self
     where
         T: ToString,
@@ -100,6 +112,7 @@ impl IntoResponse for AppError {
             AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::SourceNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::SourceBitrateUnsupported(err) => (StatusCode::CONFLICT, err).into_response(),
+            AppError::HookFailed(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
             AppError::BadRequest(err) => (StatusCode::BAD_REQUEST, err).into_response(),
             AppError::InternalServerError(err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()

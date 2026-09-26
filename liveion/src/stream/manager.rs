@@ -226,7 +226,7 @@ impl Manager {
             #[cfg(feature = "source")]
             rtsp_pull_counts: Default::default(),
             #[cfg(feature = "source")]
-            source_manager: SourceManager::new(),
+            source_manager: SourceManager::with_tier_hooks(&config),
             stats_version,
         };
 

@@ -587,6 +587,32 @@ pub struct HookConfig {
     /// `idle-timeout`) is passed as argv[3] / `LIVE777_REASON`.
     #[serde(default)]
     pub on_publish_stopped: Vec<String>,
+    /// Scripts run, in order, when a source's parameter set is changed
+    /// through the admin tier API (`POST /api/sources/{stream}/tier`) — a
+    /// tier is a named preset of source parameters, applying one
+    /// re-provisions the source.  The scripts run **synchronously inside**
+    /// the apply, before the tier's capture+encoder re-provisioning:
+    /// hardware that must be reconfigured for the new parameter set
+    /// (e.g. a camera sensor's mode gear on Rockchip-style V4L2 pipelines,
+    /// where framerate is a sensor-mode property the capture node cannot
+    /// change) is switched here so the subsequent pipeline rebuild starts
+    /// on the right hardware state.  A failing script aborts the apply
+    /// when `on_error = "stop"`, before the pipeline is touched.  When
+    /// the apply does not reach the target state — aborted, or the
+    /// pipeline rebuild failed and rolled back — the scripts run again
+    /// with the source's *current* state, so hardware they switched is
+    /// switched back (best effort; scripts must be idempotent).
+    ///
+    /// Unlike the lifecycle hooks these do not go through the queued hook
+    /// executor.  argv is `<stream> <tier>`; the tier name is also
+    /// exported as `LIVE777_SOURCE_TIER` (empty when the source runs its
+    /// configured base profile), and the tier parameters as
+    /// `LIVE777_SOURCE_WIDTH` / `LIVE777_SOURCE_HEIGHT` /
+    /// `LIVE777_SOURCE_FPS` / `LIVE777_SOURCE_BITRATE` — the *declared*
+    /// tier values on the pre-apply run (empty for unset fields), the
+    /// pipeline's *actual* current values on the compensation run.
+    #[serde(default)]
+    pub on_source_changed: Vec<String>,
 }
 
 /// Global `[hooks]` section: hook scripts plus execution policy.
