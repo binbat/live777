@@ -100,8 +100,9 @@ struct RawFrame {
 // encoder backend constructs one at submit() entry so that EVERY exit path
 // (validation failure, unsupported kind, put failure) returns the buffer to
 // the capture exactly once; a backend that retains the buffer asynchronously
-// (rkmpp zero-copy) disarms the guard once ownership moved to its in-flight
-// queue.  Backends that never retain (v4l2-m2m, rdk) simply never disarm.
+// (rkmpp and v4l2-m2m zero-copy) disarms the guard once ownership moved to
+// its in-flight queue.  Backends that never retain (rdk) simply never
+// disarm.
 // ---------------------------------------------------------------------------
 struct FrameReleaseGuard {
     const RawFrame& frame;

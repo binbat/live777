@@ -49,7 +49,7 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 - 所有 FFI 细节在 `livehal` 内部都是 crate-private 的；`liveion` 只能通过通道看到 `EncodedPacket`。
 - **原生源的 RTP 路径**：`EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`。这避免了其他源所使用的 `Packet` → bytes → `Packet::unmarshal` 往返。
 - `MediaPacket::Rtp { data }` 字节路径仍由 `rtp_listener` / `rtsp_source` / `sdp_source` 使用。
-- **DMA-BUF 零拷贝**（通用 V4L2 → RKMPP）：已实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每个 V4L2 缓冲区导出为 DMA-BUF（`VIDIOC_EXPBUF`），编码器直接导入使用——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从 `VIDIOC_DQBUF` 到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回 V4L2（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
+- **DMA-BUF 零拷贝**：已在通用 V4L2 → RKMPP 与树莓派（libcamera / 通用 V4L2 → V4L2 M2M）上实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每帧的 DMA-BUF 直接交给编码器入队——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从出队到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回去（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败（或帧布局无法被编码器导入）时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
 
 ## 配置
 
@@ -501,7 +501,77 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-零拷贝路径需要**两侧都**设 `prefer_dmabuf`；任一侧未设置（或驱动无法导出/导入缓冲区）都会回退 CPU 拷贝路径。输入必须是 NV12。
+零拷贝路径需要**两侧都**设 `prefer_dmabuf`——语义和各平台支持见 [零拷贝（DMA-BUF）](#zero-copy-dma-buf)。输入必须是 NV12。
+
+## 零拷贝（DMA-BUF）{#zero-copy-dma-buf}
+
+启用零拷贝后，采集后端把每帧的 dma-buf 直接交给编码器——帧数据完全不经过 CPU。未启用时，每帧在输入路上被拷贝两次：先在采集侧拷进 CPU staging 缓冲，再拷进编码器输入缓冲。
+
+缓冲区所有权是显式的：采集缓冲区在编码器硬件读完之前不会 requeue（延迟 requeue 释放契约），摄像头不可能在编码中途覆盖帧数据。缓冲区无法导出/导入、或布局与编码器不匹配（如 stride 填充）时，pipeline 逐帧回退为单次拷贝（即零拷贝前的开销），并只打印一次日志。
+
+### 启用方式：两侧都设 `prefer_dmabuf` {#zero-copy-flags}
+
+零拷贝是两个独立端之间的所有权契约，因此两侧都要显式开启：
+
+| 开关 | 允许该侧…… |
+|---|---|
+| `capture.prefer_dmabuf` | 把缓冲区留在采集队列之外，所有权交给消费方（延迟 requeue） |
+| `encoder.prefer_dmabuf` | 导入外部 dma-buf，并持有到硬件读取完毕 |
+
+任一侧未设置时 pipeline 照常运行，只是走 CPU 拷贝路径（绝不报错）。**所有**支持的平台都用这两个开关配置零拷贝，因此 Rockchip RK3588 / RV1126B 的配置（上文 RKMPP 示例）与树莓派的形状完全一致：
+
+```toml
+[stream.cam.sources.capture]
+backend = "libcamera"
+device = "0"
+width = 1280
+height = 720
+fps = 30
+pixel_format = "yuv420"
+prefer_dmabuf = true      # DMA-BUF 零拷贝（采集侧）
+
+[stream.cam.sources.encoder]
+backend = "v4l2-m2m"
+codec = "h264"
+bitrate = 2_000_000
+prefer_dmabuf = true      # DMA-BUF 零拷贝（编码侧）
+```
+
+从启动日志确认是否生效——出现 `[V4l2M2mEncoder] zero-copy input enabled` 即生效；之后若出现 `frame layout not dmabuf-importable` 则说明在用拷贝回退（日志会说明是哪个布局参数不匹配）。
+
+### 平台支持
+
+| 平台 | 采集后端 | 编码后端 | 状态 |
+|---|---|---|---|
+| 树莓派 | `libcamera` | `v4l2-m2m` | 支持 |
+| 树莓派 / 通用 Linux | `v4l2`（单 plane NV12 或 YUV420） | `v4l2-m2m` | 支持 |
+| Rockchip RK3588 / RV1126B | `v4l2`（NV12） | `rkmpp` | 支持 |
+| RDK X5 | — | `rdk` | 未实现（始终拷贝） |
+
+### libcamera 与 v4l2 采集零拷贝的区别
+
+| | `libcamera` | `v4l2` |
+|---|---|---|
+| 缓冲区来源 | libcamera 分配的 dma-buf（本来就是单 fd） | 驱动 MMAP 缓冲区经 `VIDIOC_EXPBUF` 导出（需要驱动支持） |
+| 可 arm 的布局 | YUV420P——3 个 plane 以 offset 共存于一个 fd | 单 plane 连续 NV12 或 YUV420；多 fd 的 NV12M / YUV420M 保持 CPU 路径 |
+| 缓冲区数量 | 12（编码器最多持有 8 个 + ISP 余量） | 16 |
+| 像素转换 | 无——ISP 输出原样使用，stride 填充如实暴露 | 可 arm 格式均无转换 |
+
+两种情况下编码器都只在采集 stride 和 plane offset 与自身单 plane 布局完全一致时才导入 dma-buf，否则走 dma_heap 池的单次拷贝回退。树莓派上 ISP 和 bcm2835-codec 都把 stride 按 64 字节对齐，常用宽度（320 / 640 / 1280 / 1296 / 1920）都能干净导入。
+
+### 实测数据（Raspberry Pi Zero 2 W）
+
+用本版本实测：Debian 13,OV5647,libcamera → v4l2-m2m H.264 baseline 4.0，无订阅者；稳态下单核 CPU 占比：
+
+| 流 | 拷贝路径 | 零拷贝 | 降幅 |
+|---|---|---|---|
+| 1296x972@30 | ~55% | ~12% | ~4.5x |
+| 1920x1080@30 | ~65% | ~12% | ~5x |
+| 640x480@60 | ~40% | ~15% | ~2.7x |
+| 1280x720@10 | ~17% | ~4.5% | ~3.7x |
+| 320x240@10 | ~5.5% | ~3% | ~1.8x |
+
+零拷贝路径上剩下的开销是每帧固定成本（驱动 ioctl、RTP 打包），与像素数无关——所以高帧率、小分辨率的流相对收益最小，而 1080p@30（拷贝路径下很难再同时跑别的任务）变得非常便宜。
 
 ## 树莓派说明 {#raspberry-pi-notes}
 
@@ -520,6 +590,7 @@ clock_rate = 90000
 
 - **60fps 只有 640x480 能达到**；请求更高只会按上限运行。120fps 不可能。
 - Zero 2 W 上的大致 CPU 开销（libcamera → v4l2-m2m H.264）：640x480@30 约单核 20%，640x480@60 约 40%，1296x972@30 约 65%。
+- 零拷贝可以消掉其中大部分开销——启用方法、libcamera 与 v4l2 的对比、以及这块板子的各分辨率实测数据见 [零拷贝（DMA-BUF）](#zero-copy-dma-buf)。
 
 ## 低延时推流
 

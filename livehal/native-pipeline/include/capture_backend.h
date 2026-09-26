@@ -63,6 +63,13 @@ public:
     /// `CaptureConfig::pixel_format` — e.g. the generic V4L2 backend
     /// converts YUYV to YUV420P, and libcamera always delivers YUV420P.
     virtual RawPixelFormat outputFormat() const = 0;
+
+    /// Whether frames from this backend carry the deferred-requeue dmabuf
+    /// contract (BufferKind::DmaBuf with an armed release), valid after a
+    /// successful init().  The SourcePipeline ANDs this with the encoder's
+    /// prefer_dmabuf to pick the encoder's input mode; backends that only
+    /// sometimes emit DmaBuf frames must return false.
+    virtual bool emitsDmabufFrames() const { return false; }
 };
 
 /// Platform-specific capture factories — defined in backend .cpp files.

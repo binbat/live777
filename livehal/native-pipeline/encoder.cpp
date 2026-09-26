@@ -1,12 +1,15 @@
 #include "include/encoder_backend.h"
 #include "include/latency_stats.h"
+#include "include/v4l2_m2m_dmabuf.h"
 #include "include/v4l2_m2m_format.h"
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fcntl.h>
+#include <linux/dma-heap.h>
 #include <linux/videodev2.h>
 #include <mutex>
 #include <queue>
@@ -41,9 +44,42 @@ public:
         size_t length;
     };
 
+    // OUTPUT (raw input) queue mode.  Mmap: driver buffers are mmap'd and
+    // frames are memcpy'd in (the universal path).  Dmabuf: zero-copy —
+    // capture dmabuf fds are queued directly, with a dma_heap fallback pool
+    // for frames whose layout the encoder cannot import.
+    enum class InputMode { Mmap, Dmabuf };
+    InputMode input_mode_ = InputMode::Mmap;
+
     std::vector<Buffer> inputBuffers;
     std::vector<Buffer> outputBuffers;
     std::queue<int> freeInputIndices;
+
+    // Dmabuf mode: ownership pairing for queued OUTPUT slots.  OUTPUT DQBUF
+    // returns buffers in submission order, so each dequeue completes the
+    // oldest entry: a held capture buffer goes back via its release callback
+    // (deferred requeue), a fallback-pool slot returns to the free list.
+    struct InFlightEntry {
+        CaptureBufferReleaseFn release = nullptr;
+        void* release_ctx = nullptr;
+        uint32_t buffer_index = 0;
+        int pool_slot = -1; // >= 0: dma_heap fallback pool slot to return
+    };
+    std::deque<InFlightEntry> in_flight_;
+
+    // Dmabuf mode copy fallback: CPU-writable dmabufs for frames the encoder
+    // cannot import (CPU frames, stride/offset mismatch).  Same per-frame
+    // cost as the Mmap path.
+    struct PoolBuffer {
+        int fd = -1;
+        void* start = nullptr;
+        size_t length = 0;
+    };
+    std::vector<PoolBuffer> fallback_pool_;
+    std::vector<int> free_pool_slots_;
+    int dma_heap_fd_ = -1;
+    bool dmabuf_fallback_logged_ = false;
+
     std::atomic<bool> force_idr{false};
     int frames_injected = 0;
     int frames_dropped = 0;
@@ -62,6 +98,14 @@ public:
     void cleanup();
     static const char* default_device_path();
     static uint32_t codec_to_v4l2_pixelformat(VideoCodec codec);
+    bool allocate_fallback_pool(unsigned int count);
+    void release_in_flight_head();
+    bool copy_frame_into(const RawFrame& frame, uint8_t* destination,
+                         size_t destination_length, size_t* out_size,
+                         std::string* err) const;
+    bool queue_dmabuf_input(int idx, int dma_fd, size_t length,
+                            size_t bytes_used, uint64_t pts_us,
+                            std::string* err);
 
     // --- EncoderBackend overrides ---
     bool init(const EncoderConfig& cfg, std::string* err) override;
@@ -183,38 +227,76 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
     struct v4l2_requestbuffers req = {};
     req.count = 8;
     req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    req.memory = V4L2_MEMORY_MMAP;
-    if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-        if (err) *err = std::string("REQBUFS (OUTPUT) failed: ") + strerror(errno);
-        cleanup();
-        return false;
+    if (cfg.prefer_dmabuf) {
+        // Zero-copy input: capture dmabuf fds are queued directly, so the
+        // OUTPUT queue needs buffer slots but no driver-allocated memory.
+        req.memory = V4L2_MEMORY_DMABUF;
+        if (ioctl(fd, VIDIOC_REQBUFS, &req) == 0) {
+            if (req.count >= 2) {
+                input_mode_ = InputMode::Dmabuf;
+                for (unsigned int i = 0; i < req.count; i++) {
+                    freeInputIndices.push(i);
+                }
+                if (!allocate_fallback_pool(req.count)) {
+                    fprintf(stderr,
+                            "[V4l2M2mEncoder] dma_heap unavailable: no copy "
+                            "fallback for non-importable frames\n");
+                }
+                fprintf(stderr,
+                        "[V4l2M2mEncoder] zero-copy input enabled (%u DMABUF "
+                        "slots, %zu fallback buffers)\n",
+                        req.count, fallback_pool_.size());
+            } else {
+                struct v4l2_requestbuffers release_req = {};
+                release_req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+                release_req.memory = V4L2_MEMORY_DMABUF;
+                ioctl(fd, VIDIOC_REQBUFS, &release_req);
+            }
+        } else {
+            fprintf(stderr,
+                    "[V4l2M2mEncoder] DMABUF REQBUFS failed: %s — falling "
+                    "back to MMAP input\n",
+                    strerror(errno));
+        }
+        req = {};
+        req.count = 8;
+        req.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
     }
+    if (input_mode_ == InputMode::Mmap) {
+        req.memory = V4L2_MEMORY_MMAP;
+        if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+            if (err) *err = std::string("REQBUFS (OUTPUT) failed: ") + strerror(errno);
+            cleanup();
+            return false;
+        }
 
-    for (unsigned int i = 0; i < req.count; i++) {
-        struct v4l2_buffer buf = {};
-        struct v4l2_plane planes[1] = {};
-        buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        buf.length = 1;
-        buf.m.planes = planes;
-        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            if (err) *err = std::string("QUERYBUF (OUTPUT) failed: ") + strerror(errno);
-            cleanup();
-            return false;
+        for (unsigned int i = 0; i < req.count; i++) {
+            struct v4l2_buffer buf = {};
+            struct v4l2_plane planes[1] = {};
+            buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            buf.length = 1;
+            buf.m.planes = planes;
+            if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+                if (err) *err = std::string("QUERYBUF (OUTPUT) failed: ") + strerror(errno);
+                cleanup();
+                return false;
+            }
+            void* start = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE,
+                               MAP_SHARED, fd, planes[0].m.mem_offset);
+            if (start == MAP_FAILED) {
+                if (err) *err = "mmap failed for input buffer";
+                cleanup();
+                return false;
+            }
+            inputBuffers.push_back({start, planes[0].length});
+            freeInputIndices.push(i);
         }
-        void* start = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE,
-                           MAP_SHARED, fd, planes[0].m.mem_offset);
-        if (start == MAP_FAILED) {
-            if (err) *err = "mmap failed for input buffer";
-            cleanup();
-            return false;
-        }
-        inputBuffers.push_back({start, planes[0].length});
-        freeInputIndices.push(i);
     }
 
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
         if (err) *err = std::string("REQBUFS (CAPTURE) failed: ") + strerror(errno);
         cleanup();
@@ -268,18 +350,15 @@ bool V4l2M2mEncoder::init(const EncoderConfig& cfg, std::string* err) {
 bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // This encoder never retains capture buffers (CPU frames are copied
-    // into its own pool synchronously, DmaBuf frames are rejected), so an
-    // armed frame is always handed back — the guard covers every exit path
-    // (media_types.h release contract).
+    // Deferred-requeue contract (media_types.h): in Dmabuf mode a zero-copy
+    // frame's capture buffer moves into in_flight_ on a successful QBUF and
+    // is handed back when the hardware returns the OUTPUT slot; every other
+    // path (validation failure, copy fallback, Mmap mode) finishes with the
+    // buffer synchronously, so the guard releases it on return.
     FrameReleaseGuard release_guard(frame);
 
     if (fd < 0 || !running_.load()) {
         if (err) *err = "encoder not running";
-        return false;
-    }
-    if (frame.kind != BufferKind::Cpu) {
-        if (err) *err = "CPU-frame required for V4L2 M2M encoder";
         return false;
     }
 
@@ -322,16 +401,23 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
         }
     }
 
-    // Reclaim input pool
+    // Reclaim input slots.  In Dmabuf mode each dequeued OUTPUT slot also
+    // completes the oldest in-flight entry: a held capture buffer goes back
+    // to the capture backend (deferred requeue), a fallback-pool slot
+    // returns to the free list.
     struct v4l2_buffer buf_in = {};
     struct v4l2_plane planes_in[1] = {};
     buf_in.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    buf_in.memory = V4L2_MEMORY_MMAP;
+    buf_in.memory = input_mode_ == InputMode::Dmabuf
+        ? V4L2_MEMORY_DMABUF : V4L2_MEMORY_MMAP;
     buf_in.length = 1;
     buf_in.m.planes = planes_in;
 
     while (ioctl(fd, VIDIOC_DQBUF, &buf_in) == 0) {
-        if (buf_in.index < inputBuffers.size()) {
+        if (input_mode_ == InputMode::Dmabuf) {
+            release_in_flight_head();
+            freeInputIndices.push(buf_in.index);
+        } else if (buf_in.index < inputBuffers.size()) {
             freeInputIndices.push(buf_in.index);
         } else {
             fprintf(stderr, "[V4l2M2mEncoder] invalid input buffer index %u\n", buf_in.index);
@@ -345,6 +431,13 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
             return false;
         }
 
+        if (force_idr.exchange(false)) {
+            struct v4l2_control ctrl = {};
+            ctrl.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
+            ctrl.value = 1;
+            ioctl(fd, VIDIOC_S_CTRL, &ctrl);
+        }
+
         int idx = freeInputIndices.front();
         freeInputIndices.pop();
         auto fail_input = [&](const char* message) {
@@ -353,184 +446,341 @@ bool V4l2M2mEncoder::submit(const RawFrame& frame, std::string* err) {
             return false;
         };
 
-        auto* destination = static_cast<uint8_t*>(inputBuffers[idx].start);
-        size_t src_size = 0;
-        if (input_format_ == RawPixelFormat::Nv12) {
-            if (frame.format != RawPixelFormat::Nv12 || frame.plane_count < 2
-                || frame.planes[0].data == nullptr
-                || frame.planes[1].data == nullptr) {
-                return fail_input("NV12 encoder input requires Y and UV planes");
-            }
-            const size_t y_destination_bytes =
-                static_cast<size_t>(input_stride_) * height;
-            const size_t uv_destination_bytes =
-                static_cast<size_t>(input_stride_) * (height / 2);
-            src_size = y_destination_bytes + uv_destination_bytes;
-            if (src_size > inputBuffers[idx].length) {
-                return fail_input("NV12 frame exceeds encoder input buffer");
-            }
-            if (frame.planes[0].stride < width || frame.planes[1].stride < width
-                || frame.planes[0].bytes
-                       < static_cast<size_t>(frame.planes[0].stride) * height
-                || frame.planes[1].bytes
-                       < static_cast<size_t>(frame.planes[1].stride) * (height / 2)) {
-                return fail_input("NV12 frame plane is shorter than its declared stride");
-            }
-            memset(destination, 0, src_size);
-            for (uint32_t row = 0; row < height; ++row) {
-                memcpy(destination + static_cast<size_t>(row) * input_stride_,
-                       frame.planes[0].data
-                           + static_cast<size_t>(row) * frame.planes[0].stride,
-                       width);
-            }
-            uint8_t* destination_uv = destination + y_destination_bytes;
-            for (uint32_t row = 0; row < height / 2; ++row) {
-                memcpy(destination_uv + static_cast<size_t>(row) * input_stride_,
-                       frame.planes[1].data
-                           + static_cast<size_t>(row) * frame.planes[1].stride,
-                       width);
-            }
-        } else if (input_format_ == RawPixelFormat::Uyvy422) {
-            if (frame.format != RawPixelFormat::Uyvy422
-                || frame.plane_count != 1
-                || frame.planes[0].data == nullptr) {
-                return fail_input("UYVY encoder input requires one packed plane");
-            }
-            const uint32_t row_bytes = width * 2;
-            const uint32_t source_stride = frame.planes[0].stride
-                ? frame.planes[0].stride : row_bytes;
-            src_size = input_frame_bytes_;
-            if (source_stride < row_bytes
-                || frame.planes[0].bytes
-                       < static_cast<size_t>(source_stride) * height) {
-                return fail_input("UYVY frame plane is shorter than its declared stride");
-            }
-            if (src_size > inputBuffers[idx].length) {
-                return fail_input("UYVY frame exceeds encoder input buffer");
-            }
-            memset(destination, 0, src_size);
-            for (uint32_t row = 0; row < height; ++row) {
-                memcpy(destination + static_cast<size_t>(row) * input_stride_,
-                       frame.planes[0].data
-                           + static_cast<size_t>(row) * source_stride,
-                       row_bytes);
-            }
-        } else {
-            if (frame.format != RawPixelFormat::Yuv420p
-                || (frame.plane_count != 1 && frame.plane_count != 3)
-                || frame.planes[0].data == nullptr) {
-                return fail_input("YUV420P encoder input requires one or three planes");
-            }
-
-            const uint32_t destination_chroma_stride = input_stride_ / 2;
-            const size_t destination_y_bytes =
-                static_cast<size_t>(input_stride_) * height;
-            const size_t destination_chroma_bytes =
-                static_cast<size_t>(destination_chroma_stride) * (height / 2);
-            src_size = destination_y_bytes + destination_chroma_bytes * 2;
-            if (src_size > inputBuffers[idx].length) {
-                return fail_input("YUV420P frame exceeds encoder input buffer");
-            }
-
-            const uint8_t* source_y = frame.planes[0].data;
-            const uint32_t source_y_stride =
-                frame.planes[0].stride ? frame.planes[0].stride : width;
-            const uint8_t* source_u = nullptr;
-            const uint8_t* source_v = nullptr;
-            uint32_t source_u_stride = 0;
-            uint32_t source_v_stride = 0;
-
-            if (frame.plane_count == 3) {
-                if (frame.planes[1].data == nullptr || frame.planes[2].data == nullptr) {
-                    return fail_input("YUV420P chroma plane is null");
+        if (input_mode_ == InputMode::Dmabuf) {
+            size_t import_bytes = 0;
+            if (v4l2_m2m_dmabuf_importable(
+                    input_format_, width, height, input_stride_, frame,
+                    &import_bytes)) {
+                // Zero-copy: queue the capture dmabuf as-is.  Ownership of
+                // the held capture buffer moves to in_flight_ only on a
+                // successful QBUF; the guard covers every failure path.
+                if (!queue_dmabuf_input(idx, frame.planes[0].dma_fd,
+                                        import_bytes, import_bytes,
+                                        frame.pts_us, err)) {
+                    freeInputIndices.push(idx);
+                    return false;
                 }
-                source_u = frame.planes[1].data;
-                source_v = frame.planes[2].data;
-                source_u_stride =
-                    frame.planes[1].stride ? frame.planes[1].stride : width / 2;
-                source_v_stride =
-                    frame.planes[2].stride ? frame.planes[2].stride : width / 2;
-                if (frame.planes[0].bytes
-                        < static_cast<size_t>(source_y_stride) * height
-                    || frame.planes[1].bytes
-                        < static_cast<size_t>(source_u_stride) * (height / 2)
-                    || frame.planes[2].bytes
-                        < static_cast<size_t>(source_v_stride) * (height / 2)) {
-                    return fail_input("YUV420P plane is shorter than its declared stride");
-                }
+                in_flight_.push_back(
+                    {frame.release, frame.release_ctx, frame.buffer_index, -1});
+                release_guard.disarm();
             } else {
-                const uint32_t source_chroma_stride = source_y_stride / 2;
-                const size_t source_y_bytes =
-                    static_cast<size_t>(source_y_stride) * height;
-                const size_t source_chroma_bytes =
-                    static_cast<size_t>(source_chroma_stride) * (height / 2);
-                if (frame.planes[0].bytes
-                    < source_y_bytes + source_chroma_bytes * 2) {
-                    return fail_input("contiguous YUV420P frame is too short");
+                // Copy fallback: the frame layout is not importable (CPU
+                // frame, stride/offset mismatch).  Copy into a dma_heap pool
+                // buffer and queue that — same per-frame cost as Mmap mode.
+                if (!dmabuf_fallback_logged_) {
+                    dmabuf_fallback_logged_ = true;
+                    fprintf(stderr,
+                            "[V4l2M2mEncoder] frame layout not dmabuf-"
+                            "importable (kind=%u format=%u planes=%u stride "
+                            "%u/%u/%u vs encoder %u) — using copy fallback\n",
+                            static_cast<unsigned>(frame.kind),
+                            static_cast<unsigned>(frame.format),
+                            frame.plane_count, frame.planes[0].stride,
+                            frame.planes[1].stride, frame.planes[2].stride,
+                            input_stride_);
                 }
-                source_u = source_y + source_y_bytes;
-                source_v = source_u + source_chroma_bytes;
-                source_u_stride = source_chroma_stride;
-                source_v_stride = source_chroma_stride;
-            }
-
-            memset(destination, 0, src_size);
-            for (uint32_t row = 0; row < height; ++row) {
-                memcpy(destination + static_cast<size_t>(row) * input_stride_,
-                       source_y + static_cast<size_t>(row) * source_y_stride,
-                       width);
-            }
-            uint8_t* destination_u = destination + destination_y_bytes;
-            uint8_t* destination_v = destination_u + destination_chroma_bytes;
-            for (uint32_t row = 0; row < height / 2; ++row) {
-                memcpy(destination_u
-                           + static_cast<size_t>(row) * destination_chroma_stride,
-                       source_u + static_cast<size_t>(row) * source_u_stride,
-                       width / 2);
-                memcpy(destination_v
-                           + static_cast<size_t>(row) * destination_chroma_stride,
-                       source_v + static_cast<size_t>(row) * source_v_stride,
-                       width / 2);
-            }
-        }
-
-        // Re-initialise the buffer structure before QBUF.  The same
-        // structure was used for DQBUF above and may contain stale
-        // flags/timestamps written back by the driver.
-        buf_in = {};
-        planes_in[0] = {};
-        buf_in.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        buf_in.memory = V4L2_MEMORY_MMAP;
-        buf_in.length = 1;
-        buf_in.m.planes = planes_in;
-        buf_in.index = idx;
-        planes_in[0].bytesused = src_size;
-        buf_in.timestamp.tv_sec = frame.pts_us / 1000000;
-        buf_in.timestamp.tv_usec = frame.pts_us % 1000000;
-
-        if (force_idr.exchange(false)) {
-            struct v4l2_control ctrl = {};
-            ctrl.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
-            ctrl.value = 1;
-            ioctl(fd, VIDIOC_S_CTRL, &ctrl);
-        }
-
-        if (ioctl(fd, VIDIOC_QBUF, &buf_in) == 0) {
-            frames_injected++;
-            if (frames_injected % 60 == 0) {
-                fprintf(stderr, "[V4l2M2mEncoder] stats: injected=%d dropped=%d\n",
-                        frames_injected, frames_dropped);
+                if (free_pool_slots_.empty()) {
+                    freeInputIndices.push(idx);
+                    frames_dropped++;
+                    fprintf(stderr,
+                            "[V4l2M2mEncoder] dropped frame (no free "
+                            "fallback buffer), total_dropped=%d\n",
+                            frames_dropped);
+                    return true;
+                }
+                const int slot = free_pool_slots_.back();
+                free_pool_slots_.pop_back();
+                PoolBuffer& pool = fallback_pool_[slot];
+                size_t src_size = 0;
+                std::string copy_err;
+                if (!copy_frame_into(frame,
+                                     static_cast<uint8_t*>(pool.start),
+                                     pool.length, &src_size, &copy_err)) {
+                    free_pool_slots_.push_back(slot);
+                    freeInputIndices.push(idx);
+                    if (err) *err = copy_err;
+                    return false;
+                }
+                if (!queue_dmabuf_input(idx, pool.fd, pool.length, src_size,
+                                        frame.pts_us, err)) {
+                    free_pool_slots_.push_back(slot);
+                    freeInputIndices.push(idx);
+                    return false;
+                }
+                in_flight_.push_back({nullptr, nullptr, 0, slot});
             }
         } else {
-            // Return the buffer index to the free pool on queue failure.
-            freeInputIndices.push(idx);
-            if (err) *err = std::string("QBUF (OUTPUT) failed: ") + strerror(errno);
-            return false;
+            auto* destination = static_cast<uint8_t*>(inputBuffers[idx].start);
+            size_t src_size = 0;
+            std::string copy_err;
+            if (!copy_frame_into(frame, destination, inputBuffers[idx].length,
+                                 &src_size, &copy_err)) {
+                return fail_input(copy_err.c_str());
+            }
+
+            // Re-initialise the buffer structure before QBUF.  The same
+            // structure was used for DQBUF above and may contain stale
+            // flags/timestamps written back by the driver.
+            buf_in = {};
+            planes_in[0] = {};
+            buf_in.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+            buf_in.memory = V4L2_MEMORY_MMAP;
+            buf_in.length = 1;
+            buf_in.m.planes = planes_in;
+            buf_in.index = idx;
+            planes_in[0].bytesused = src_size;
+            buf_in.timestamp.tv_sec = frame.pts_us / 1000000;
+            buf_in.timestamp.tv_usec = frame.pts_us % 1000000;
+
+            if (ioctl(fd, VIDIOC_QBUF, &buf_in) < 0) {
+                // Return the buffer index to the free pool on queue failure.
+                freeInputIndices.push(idx);
+                if (err) *err = std::string("QBUF (OUTPUT) failed: ") + strerror(errno);
+                return false;
+            }
+        }
+
+        frames_injected++;
+        if (frames_injected % 60 == 0) {
+            fprintf(stderr, "[V4l2M2mEncoder] stats: injected=%d dropped=%d\n",
+                    frames_injected, frames_dropped);
         }
     } else {
         frames_dropped++;
         fprintf(stderr, "[V4l2M2mEncoder] dropped frame (no free input buffer), total_dropped=%d\n",
                 frames_dropped);
+    }
+    return true;
+}
+
+// Copy a frame into an encoder-layout buffer (input_stride_, single plane).
+// Used by the Mmap input path and by the Dmabuf mode copy fallback.  The
+// source plane pointers must be valid for the duration of the call.
+bool V4l2M2mEncoder::copy_frame_into(
+    const RawFrame& frame, uint8_t* destination, size_t destination_length,
+    size_t* out_size, std::string* err) const {
+    size_t src_size = 0;
+    if (input_format_ == RawPixelFormat::Nv12) {
+        if (frame.format != RawPixelFormat::Nv12 || frame.plane_count < 2
+            || frame.planes[0].data == nullptr
+            || frame.planes[1].data == nullptr) {
+            if (err) *err = "NV12 encoder input requires Y and UV planes";
+            return false;
+        }
+        const size_t y_destination_bytes =
+            static_cast<size_t>(input_stride_) * height;
+        const size_t uv_destination_bytes =
+            static_cast<size_t>(input_stride_) * (height / 2);
+        src_size = y_destination_bytes + uv_destination_bytes;
+        if (src_size > destination_length) {
+            if (err) *err = "NV12 frame exceeds encoder input buffer";
+            return false;
+        }
+        if (frame.planes[0].stride < width || frame.planes[1].stride < width
+            || frame.planes[0].bytes
+                   < static_cast<size_t>(frame.planes[0].stride) * height
+            || frame.planes[1].bytes
+                   < static_cast<size_t>(frame.planes[1].stride) * (height / 2)) {
+            if (err) *err = "NV12 frame plane is shorter than its declared stride";
+            return false;
+        }
+        memset(destination, 0, src_size);
+        for (uint32_t row = 0; row < height; ++row) {
+            memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                   frame.planes[0].data
+                       + static_cast<size_t>(row) * frame.planes[0].stride,
+                   width);
+        }
+        uint8_t* destination_uv = destination + y_destination_bytes;
+        for (uint32_t row = 0; row < height / 2; ++row) {
+            memcpy(destination_uv + static_cast<size_t>(row) * input_stride_,
+                   frame.planes[1].data
+                       + static_cast<size_t>(row) * frame.planes[1].stride,
+                   width);
+        }
+    } else if (input_format_ == RawPixelFormat::Uyvy422) {
+        if (frame.format != RawPixelFormat::Uyvy422
+            || frame.plane_count != 1
+            || frame.planes[0].data == nullptr) {
+            if (err) *err = "UYVY encoder input requires one packed plane";
+            return false;
+        }
+        const uint32_t row_bytes = width * 2;
+        const uint32_t source_stride = frame.planes[0].stride
+            ? frame.planes[0].stride : row_bytes;
+        src_size = input_frame_bytes_;
+        if (source_stride < row_bytes
+            || frame.planes[0].bytes
+                   < static_cast<size_t>(source_stride) * height) {
+            if (err) *err = "UYVY frame plane is shorter than its declared stride";
+            return false;
+        }
+        if (src_size > destination_length) {
+            if (err) *err = "UYVY frame exceeds encoder input buffer";
+            return false;
+        }
+        memset(destination, 0, src_size);
+        for (uint32_t row = 0; row < height; ++row) {
+            memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                   frame.planes[0].data
+                       + static_cast<size_t>(row) * source_stride,
+                   row_bytes);
+        }
+    } else {
+        if (frame.format != RawPixelFormat::Yuv420p
+            || (frame.plane_count != 1 && frame.plane_count != 3)
+            || frame.planes[0].data == nullptr) {
+            if (err) *err = "YUV420P encoder input requires one or three planes";
+            return false;
+        }
+
+        const uint32_t destination_chroma_stride = input_stride_ / 2;
+        const size_t destination_y_bytes =
+            static_cast<size_t>(input_stride_) * height;
+        const size_t destination_chroma_bytes =
+            static_cast<size_t>(destination_chroma_stride) * (height / 2);
+        src_size = destination_y_bytes + destination_chroma_bytes * 2;
+        if (src_size > destination_length) {
+            if (err) *err = "YUV420P frame exceeds encoder input buffer";
+            return false;
+        }
+
+        const uint8_t* source_y = frame.planes[0].data;
+        const uint32_t source_y_stride =
+            frame.planes[0].stride ? frame.planes[0].stride : width;
+        const uint8_t* source_u = nullptr;
+        const uint8_t* source_v = nullptr;
+        uint32_t source_u_stride = 0;
+        uint32_t source_v_stride = 0;
+
+        if (frame.plane_count == 3) {
+            if (frame.planes[1].data == nullptr || frame.planes[2].data == nullptr) {
+                if (err) *err = "YUV420P chroma plane is null";
+                return false;
+            }
+            source_u = frame.planes[1].data;
+            source_v = frame.planes[2].data;
+            source_u_stride =
+                frame.planes[1].stride ? frame.planes[1].stride : width / 2;
+            source_v_stride =
+                frame.planes[2].stride ? frame.planes[2].stride : width / 2;
+            if (frame.planes[0].bytes
+                    < static_cast<size_t>(source_y_stride) * height
+                || frame.planes[1].bytes
+                    < static_cast<size_t>(source_u_stride) * (height / 2)
+                || frame.planes[2].bytes
+                    < static_cast<size_t>(source_v_stride) * (height / 2)) {
+                if (err) *err = "YUV420P plane is shorter than its declared stride";
+                return false;
+            }
+        } else {
+            const uint32_t source_chroma_stride = source_y_stride / 2;
+            const size_t source_y_bytes =
+                static_cast<size_t>(source_y_stride) * height;
+            const size_t source_chroma_bytes =
+                static_cast<size_t>(source_chroma_stride) * (height / 2);
+            if (frame.planes[0].bytes
+                < source_y_bytes + source_chroma_bytes * 2) {
+                if (err) *err = "contiguous YUV420P frame is too short";
+                return false;
+            }
+            source_u = source_y + source_y_bytes;
+            source_v = source_u + source_chroma_bytes;
+            source_u_stride = source_chroma_stride;
+            source_v_stride = source_chroma_stride;
+        }
+
+        memset(destination, 0, src_size);
+        for (uint32_t row = 0; row < height; ++row) {
+            memcpy(destination + static_cast<size_t>(row) * input_stride_,
+                   source_y + static_cast<size_t>(row) * source_y_stride,
+                   width);
+        }
+        uint8_t* destination_u = destination + destination_y_bytes;
+        uint8_t* destination_v = destination_u + destination_chroma_bytes;
+        for (uint32_t row = 0; row < height / 2; ++row) {
+            memcpy(destination_u
+                       + static_cast<size_t>(row) * destination_chroma_stride,
+                   source_u + static_cast<size_t>(row) * source_u_stride,
+                   width / 2);
+            memcpy(destination_v
+                       + static_cast<size_t>(row) * destination_chroma_stride,
+                   source_v + static_cast<size_t>(row) * source_v_stride,
+                   width / 2);
+        }
+    }
+    if (out_size) *out_size = src_size;
+    return true;
+}
+
+bool V4l2M2mEncoder::queue_dmabuf_input(
+    int idx, int dma_fd, size_t length, size_t bytes_used, uint64_t pts_us,
+    std::string* err) {
+    struct v4l2_buffer buf = {};
+    struct v4l2_plane planes[1] = {};
+    buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    buf.memory = V4L2_MEMORY_DMABUF;
+    buf.index = idx;
+    buf.length = 1;
+    buf.m.planes = planes;
+    planes[0].m.fd = dma_fd;
+    planes[0].length = length;
+    planes[0].bytesused = bytes_used;
+    buf.timestamp.tv_sec = pts_us / 1000000;
+    buf.timestamp.tv_usec = pts_us % 1000000;
+
+    if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+        if (err) *err = std::string("QBUF (OUTPUT, DMABUF) failed: ") + strerror(errno);
+        return false;
+    }
+    return true;
+}
+
+void V4l2M2mEncoder::release_in_flight_head() {
+    if (in_flight_.empty()) {
+        fprintf(stderr, "[V4l2M2mEncoder] OUTPUT DQBUF with empty in-flight queue\n");
+        return;
+    }
+    InFlightEntry entry = in_flight_.front();
+    in_flight_.pop_front();
+    if (entry.release) {
+        entry.release(entry.release_ctx, entry.buffer_index);
+    }
+    if (entry.pool_slot >= 0) {
+        free_pool_slots_.push_back(entry.pool_slot);
+    }
+}
+
+// Copy-fallback pool for Dmabuf mode: CPU-writable dma-bufs from the
+// kernel dma_heap allocator (CMA first, system heap as fallback), so any
+// frame can still be queued with one copy when it cannot be imported.
+bool V4l2M2mEncoder::allocate_fallback_pool(unsigned int count) {
+    const char* heap_paths[] = {"/dev/dma_heap/linux,cma", "/dev/dma_heap/system"};
+    for (const char* path : heap_paths) {
+        dma_heap_fd_ = open(path, O_RDWR | O_CLOEXEC);
+        if (dma_heap_fd_ >= 0) break;
+    }
+    if (dma_heap_fd_ < 0) return false;
+
+    for (unsigned int i = 0; i < count; i++) {
+        struct dma_heap_allocation_data data = {};
+        data.len = input_frame_bytes_;
+        data.fd_flags = O_RDWR | O_CLOEXEC;
+        if (ioctl(dma_heap_fd_, DMA_HEAP_IOCTL_ALLOC, &data) < 0 || data.fd < 0) {
+            fprintf(stderr, "[V4l2M2mEncoder] dma_heap alloc failed: %s\n",
+                    strerror(errno));
+            return !fallback_pool_.empty();
+        }
+        void* start = mmap(nullptr, input_frame_bytes_, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, data.fd, 0);
+        if (start == MAP_FAILED) {
+            fprintf(stderr, "[V4l2M2mEncoder] dma_heap mmap failed: %s\n",
+                    strerror(errno));
+            close(data.fd);
+            return !fallback_pool_.empty();
+        }
+        fallback_pool_.push_back({data.fd, start, input_frame_bytes_});
+        free_pool_slots_.push_back(static_cast<int>(i));
     }
     return true;
 }
@@ -591,6 +841,29 @@ void V4l2M2mEncoder::cleanup() {
         close(fd);
         fd = -1;
     }
+    // Dmabuf mode: hand any capture buffers still held in the encoder back
+    // to the capture backend (a no-op for it once streaming stopped), then
+    // release the fallback pool.  Entries already completed via OUTPUT DQBUF
+    // were popped at dequeue time, so each buffer is released exactly once.
+    while (!in_flight_.empty()) {
+        InFlightEntry entry = in_flight_.front();
+        in_flight_.pop_front();
+        if (entry.release) {
+            entry.release(entry.release_ctx, entry.buffer_index);
+        }
+    }
+    for (auto& pool : fallback_pool_) {
+        if (pool.start && pool.start != MAP_FAILED) munmap(pool.start, pool.length);
+        if (pool.fd >= 0) close(pool.fd);
+    }
+    fallback_pool_.clear();
+    free_pool_slots_.clear();
+    if (dma_heap_fd_ >= 0) {
+        close(dma_heap_fd_);
+        dma_heap_fd_ = -1;
+    }
+    input_mode_ = InputMode::Mmap;
+    dmabuf_fallback_logged_ = false;
     inputBuffers.clear();
     outputBuffers.clear();
     while (!freeInputIndices.empty()) freeInputIndices.pop();

@@ -117,6 +117,14 @@ struct V4L2CaptureImpl : public CaptureBackend {
     void stop() override;
     bool isRunning() const override;
     RawPixelFormat outputFormat() const override;
+    // Single-plane contiguous formats arm the deferred-requeue contract on
+    // every frame; multi-plane (NV12M/YUV420M) and converted formats stay
+    // on the CPU path, so they must not switch the encoder to dmabuf mode.
+    bool emitsDmabufFrames() const override {
+        return prefer_dmabuf
+            && (pixel_format == V4L2_PIX_FMT_NV12
+                || pixel_format == V4L2_PIX_FMT_YUV420);
+    }
 
     void capture_loop();
     void release_resources();
@@ -335,14 +343,15 @@ bool V4L2CaptureImpl::make_frame(
             frame->kind = BufferKind::DmaBuf;
             arm_release(frame, index);
         }
+        const uint32_t base_offset = static_cast<uint32_t>(data_offset(0));
         frame->format = RawPixelFormat::Nv12;
         frame->plane_count = 2;
         frame->planes[0] = {
-            base, stride, static_cast<uint32_t>(y_bytes), dma_fd, 0};
+            base, stride, static_cast<uint32_t>(y_bytes), dma_fd, base_offset};
         frame->planes[1] = {
             base + y_bytes, stride,
             static_cast<uint32_t>(static_cast<size_t>(stride) * (height / 2)),
-            dma_fd, static_cast<uint32_t>(y_bytes)};
+            dma_fd, base_offset + static_cast<uint32_t>(y_bytes)};
         return true;
     }
 
@@ -353,6 +362,43 @@ bool V4L2CaptureImpl::make_frame(
             return false;
         }
         frame->format = RawPixelFormat::Yuv420p;
+        if (pixel_format == V4L2_PIX_FMT_YUV420) {
+            // Single-plane contiguous Y/U/V: expose the component planes so
+            // the frame can be imported as a dmabuf (mirrors the NV12
+            // contiguous layout above).
+            const uint32_t stride = plane_strides[0] ? plane_strides[0] : width;
+            const uint32_t chroma_stride = stride / 2;
+            const size_t y_bytes = static_cast<size_t>(stride) * height;
+            const size_t chroma_bytes =
+                static_cast<size_t>(chroma_stride) * (height / 2);
+            const size_t used = std::min(bytes_used(0), available_bytes(0));
+            if (used < y_bytes + chroma_bytes * 2) {
+                if (err) *err = "short contiguous YUV420 capture buffer";
+                return false;
+            }
+            const auto* base =
+                static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0);
+            const int dma_fd = mapped.planes[0].dma_fd;
+            if (prefer_dmabuf && dma_fd >= 0) {
+                frame->kind = BufferKind::DmaBuf;
+                arm_release(frame, index);
+            }
+            const uint32_t base_offset = static_cast<uint32_t>(data_offset(0));
+            frame->plane_count = 3;
+            frame->planes[0] = {
+                base, stride, static_cast<uint32_t>(y_bytes),
+                dma_fd, base_offset};
+            frame->planes[1] = {
+                base + y_bytes, chroma_stride,
+                static_cast<uint32_t>(chroma_bytes),
+                dma_fd, base_offset + static_cast<uint32_t>(y_bytes)};
+            frame->planes[2] = {
+                base + y_bytes + chroma_bytes, chroma_stride,
+                static_cast<uint32_t>(chroma_bytes),
+                dma_fd,
+                base_offset + static_cast<uint32_t>(y_bytes + chroma_bytes)};
+            return true;
+        }
         frame->plane_count = static_cast<uint32_t>(mapped.planes.size());
         for (uint32_t plane = 0; plane < frame->plane_count; ++plane) {
             const size_t used = std::min(bytes_used(plane), available_bytes(plane));
