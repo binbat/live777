@@ -381,6 +381,30 @@ public:
             }
         }
 
+        // Clean the alignment padding rows once per pool buffer.  The
+        // capture path only writes `height` active rows (CPU-copy and
+        // dmabuf alike), so rows [height, ver_stride) would otherwise keep
+        // whatever stale content the pool came with — the boundary CU reads
+        // them, and decoders that ignore SPS conformance windows show them
+        // as a green band at the bottom for heights that are not multiples
+        // of 16 (1080p, 360p).  Fill the Y pad with black and the UV pad
+        // neutral so any padding that leaks through is invisible.
+        if (ver_stride_ > cfg_.height) {
+            const size_t y_active = static_cast<size_t>(hor_stride_) * cfg_.height;
+            const size_t y_total = static_cast<size_t>(hor_stride_) * ver_stride_;
+            const size_t uv_active = static_cast<size_t>(hor_stride_) * (cfg_.height / 2);
+            const size_t uv_total = static_cast<size_t>(hor_stride_) * (ver_stride_ / 2);
+            for (int i = 0; i < kInputPoolSize; i++) {
+                auto* y = static_cast<uint8_t*>(mpp_buffer_get_ptr(input_bufs_[i]));
+                if (!y) continue;
+                std::memset(y + y_active, 0x10, y_total - y_active);
+                std::memset(y + y_total + uv_active, 0x80, uv_total - uv_active);
+                // Make the CPU writes visible to the DMA master (CACHABLE
+                // pool buffers are shared with the capture/encoder engines).
+                mpp_buffer_sync_end(input_bufs_[i]);
+            }
+        }
+
         std::fprintf(stderr,
             "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
             frame_size_, kInputPoolSize);
