@@ -381,6 +381,37 @@ public:
             }
         }
 
+        // Black-fill every pool buffer once at init.  A pool buffer is only
+        // ever written by the CPU-copy path afterwards, which touches just
+        // the active width x height region (row copies write src_w bytes
+        // per row), so the stride-alignment padding — rows [height,
+        // ver_stride) and columns [width, hor_stride) — would otherwise
+        // keep whatever stale content the pool came with.  The boundary CU
+        // reads it, and decoders that ignore SPS conformance windows show
+        // it as a green band at the bottom (or right edge) of the frame —
+        // seen on RV1126B at 1080p/360p.  Filling the active region too is
+        // harmless: the first frame's copy overwrites it before the buffer
+        // ever reaches the encoder.  The zero-copy dmabuf path never
+        // touches the pool — its padding is whatever the capture driver
+        // wrote — so it is unaffected, for better or worse.
+        for (int i = 0; i < kInputPoolSize; i++) {
+            auto* y = static_cast<uint8_t*>(mpp_buffer_get_ptr(input_bufs_[i]));
+            if (!y) {
+                std::fprintf(stderr,
+                    "[RkMppEncoder] warn: pool buffer %d has no mapped ptr, "
+                    "padding fill skipped\n", i);
+                continue;
+            }
+            const size_t y_size = static_cast<size_t>(hor_stride_) * ver_stride_;
+            // Same DMA cache-sync bracket as the per-frame copy path, so
+            // the fill is visible to the DMA master (CACHABLE pool buffers
+            // are shared with the capture/encoder engines).
+            mpp_buffer_sync_begin(input_bufs_[i]);
+            std::memset(y, 0x10, y_size);                        // Y: black
+            std::memset(y + y_size, 0x80, frame_size_ - y_size); // UV: neutral
+            mpp_buffer_sync_end(input_bufs_[i]);
+        }
+
         std::fprintf(stderr,
             "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
             frame_size_, kInputPoolSize);
