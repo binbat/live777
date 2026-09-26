@@ -206,17 +206,19 @@ pub fn default_rtc_ice_servers() -> Vec<RTCIceServer> {
 #[derive(clap::Args)]
 pub struct IceServerArgs {
     /// ICE server used for offer gathering, repeatable; format
-    /// `<url>[,<username>[,<credential>]]`. Pass an empty string to use host
-    /// candidates only.
-    #[arg(long = "ice-server", value_name = "SPEC", default_value = DEFAULT_ICE_SERVER_URL)]
+    /// `<url>[,<username>[,<credential>]]`. Defaults to none — host
+    /// candidates only (WHIP/WHEP endpoints advertise their own ICE servers
+    /// via Link headers). Pass an empty string to explicitly disable ICE
+    /// servers.
+    #[arg(long = "ice-server", value_name = "SPEC")]
     pub ice_servers: Vec<IceServer>,
 }
 
 #[cfg(feature = "clap")]
 impl IceServerArgs {
-    /// Convert the parsed specs into runtime `RTCIceServer`s. An empty spec
-    /// (`--ice-server ""`) is dropped, so this yields an empty list — host
-    /// candidates only.
+    /// Convert the parsed specs into runtime `RTCIceServer`s. The list is
+    /// empty by default (an empty spec `--ice-server ""` is dropped too), so
+    /// this yields an empty list — host candidates only.
     pub fn to_rtc_ice_servers(&self) -> Vec<RTCIceServer> {
         to_rtc_ice_servers(self.ice_servers.clone())
     }

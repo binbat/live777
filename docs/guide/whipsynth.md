@@ -53,7 +53,7 @@ whipsynth -w http://localhost:7777/whip/live \
 | `--height` | `480` | Video height in pixels |
 | `--fps` | `30` | Video frame rate |
 | `--duration` | none | Run for the specified number of seconds, then exit |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 
 ## Load-test mode
 

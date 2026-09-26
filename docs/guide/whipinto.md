@@ -24,7 +24,7 @@ This tool has three working mode:
 | `-w`, `--whip` | required | WHIP endpoint URL |
 | `-t`, `--token` | none | Bearer token for WHIP authentication |
 | `--command` | none | Run a command as child process |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 | `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
 
 ## RTP

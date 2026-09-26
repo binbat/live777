@@ -16,7 +16,7 @@ This tool has two working mode:
 | `-t`, `--token` | none | Bearer token for WHEP authentication |
 | `--command` | none | Run a command as child process |
 | `--channel` | none | DataChannel &lt;-&gt; UDP forwarding URL, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
-| `--ice-server` | `stun:stun.l.google.com:19302` | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]` (empty string disables ICE servers) |
+| `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 | `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
 
 ## RTP
