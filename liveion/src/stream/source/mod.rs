@@ -302,6 +302,16 @@ pub trait StreamSource: Send + Sync {
         None
     }
 
+    /// The state the source's pipeline is actually running with (native
+    /// sources only): the last applied tier's name plus the current
+    /// capture geometry and encoder bitrate.  Read after a failed tier
+    /// apply rolled the pipeline back, to re-align hook-driven hardware
+    /// with the restored state.
+    #[cfg(feature = "source")]
+    fn active_tier_state(&self) -> Option<tier::ActiveTierState> {
+        None
+    }
+
     /// Apply a quality tier (source-level re-provisioning).  Bitrate-only
     /// tiers retune the running encoder in place; a tier carrying
     /// geometry rebuilds the capture+encoder pipeline underneath the

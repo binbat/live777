@@ -257,3 +257,55 @@ Notes:
   already debounce via `on_demand_close_after_ms`.
 - No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
+
+## Source change hooks
+
+`on_source_changed` hooks fire when a source's parameter set is changed
+through the admin tier API, `POST /api/sources/{stream}/tier` — a tier is
+a named preset of source parameters (see
+[Bitrate telemetry & quality tiers](./livehal#bitrate-telemetry--quality-tiers)),
+so applying one changes the source. Unlike the lifecycle hooks above,
+they run **synchronously inside the apply**, before the tier's
+capture+encoder re-provisioning — they never go through the FIFO hook
+queue.
+
+This is where hardware that must match the new rung *before* the pipeline
+rebuild belongs: on platforms where framerate is a sensor-mode property the
+capture node cannot change (e.g. Rockchip V4L2 pipelines, `VIDIOC_S_PARM`
+unsupported on rkisp1), the script pokes the sensor's mode gear, then the
+rebuild streams into the already-correct hardware state.
+
+Execution contract:
+
+- Global `[hooks]` scripts first, then per-stream, in configured order —
+  all awaited before the re-provisioning. Rapid tier applies are
+  serialized, so a script cannot interleave with another tier's rebuild.
+- A failing script aborts the tier apply when `on_error = "stop"`, before
+  the pipeline is touched (the API call fails).
+- When the apply does not reach the target state — aborted, or the
+  pipeline rebuild failed and rolled back — the scripts run **again** with
+  the source's *current* state, so hardware they switched is switched
+  back. This compensation run is best effort (failures are only logged).
+- Make scripts idempotent: "bring the hardware in line with the given
+  values" is the whole contract, and the same script serves both runs.
+
+Metadata (argv is `<stream> <tier>`; there is no `LIVE777_EVENT` — the
+hook only ever fires for this one event):
+
+| argv / env               | value                                                                       |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `$1` / `LIVE777_STREAM`  | stream name                                                                 |
+| `$2` / `LIVE777_SOURCE_TIER` | tier name (empty when the source runs its configured base profile)      |
+| `LIVE777_SOURCE_WIDTH`   | pre-apply run: declared tier capture width (empty when inheriting base); compensation run: the pipeline's actual current width |
+| `LIVE777_SOURCE_HEIGHT`  | declared tier capture height / actual current height                        |
+| `LIVE777_SOURCE_FPS`     | declared tier capture framerate / actual current framerate                  |
+| `LIVE777_SOURCE_BITRATE` | tier bitrate in bits/s / actual current bitrate                             |
+
+```toml
+[stream.cam.hooks]
+# Switch the sensor mode gear ahead of the pipeline rebuild; on a failed
+# apply the same script runs again with the restored state and switches
+# the gear back.
+on_source_changed = ["/etc/live777/hooks/sensor-gear.sh"]
+```
+

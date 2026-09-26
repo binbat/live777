@@ -399,5 +399,10 @@ async fn apply_source_tier(
              or the pipeline rebuild failed and was rolled back)",
             resolved.name
         ))),
+        ApplyTierOutcome::HookFailed => Err(AppError::hook_failed(format!(
+            "Applying tier '{}' to {stream} aborted: an on_source_changed \
+             hook failed",
+            resolved.name
+        ))),
     }
 }

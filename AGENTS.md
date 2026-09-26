@@ -298,7 +298,22 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   dispatcher forwards `StreamCreated`/`StreamDeleted`/`PublishStarted`/
   `PublishStopped` into an internal queue, then scripts run sequentially
   (global first, per-stream after, configured order) with per-script timeout
-  and `on_error` policy.
+  and `on_error` policy.  One hook deliberately bypasses the queue:
+  `on_source_changed` scripts run **synchronously inside** a source's
+  parameter-set change (the admin tier API, `apply_source_tier`) before
+  the capture+encoder re-provisioning — for hardware that must be
+  reconfigured ahead of the pipeline rebuild (e.g. camera sensor mode
+  gears on Rockchip-style V4L2 pipelines, where framerate is a
+  sensor-mode property).  A hook failure aborts the apply when
+  `on_error = "stop"` (`ApplyTierOutcome::HookFailed` → 500).  When the
+  apply does not reach the target state (aborted, or the rebuild failed
+  and rolled back), the scripts run again with the source's *current*
+  state (`StreamSource::active_tier_state`, best effort) so hardware
+  they switched is switched back.  Scripts see argv `<stream> <tier>`
+  and `LIVE777_SOURCE_TIER` plus the source geometry/bitrate
+  (`LIVE777_SOURCE_WIDTH`/`_HEIGHT`/`_FPS`/`_BITRATE`) — declared tier
+  values on the pre-apply run, the pipeline's actual current values on
+  the compensation run.
 - `liveion/src/target.rs` — static WHIP push targets
   (`[[stream.<name>.targets]]`, declarative cascade-push; `target-whip`
   feature). One supervisor task per target keeps the push media-driven:
