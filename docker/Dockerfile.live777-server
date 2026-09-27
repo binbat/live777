@@ -22,7 +22,7 @@ COPY --from=builder-node /app/assets/ assets
 # capture/encoder features need system FFmpeg/libcamera dev libraries that are
 # not available in this slim builder image.
 RUN cargo build --release --bin=live777 --bin=liveman \
-    --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
+    --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,rtsp
 
 FROM debian:trixie-slim
 
