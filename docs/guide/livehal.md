@@ -331,7 +331,7 @@ cargo build --bin live777 --release \
 ## Build
 
 ::: tip Prebuilt binaries
-You usually do not need to compile anything: releases after `v0.9.0`
+You usually do not need to compile anything: releases from `v0.10.0` onward
 publish native builds (`live777-<version>-aarch64-unknown-linux-gnu-rpi.tar.gz`
 for Raspberry Pi, `-rkmpp.tar.gz` for RK3588/RV1126B). See
 [Installation](./installation.md#arm-boards-raspberry-pi-rk3588-rdk-x5) and

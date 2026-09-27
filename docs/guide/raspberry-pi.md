@@ -18,12 +18,12 @@ Camera Module v1. Any 64-bit Raspberry Pi OS with a working libcamera stack
 
 ## Step 1: Install the native-rpi build
 
-Releases after `v0.9.0` publish a prebuilt native Raspberry Pi tarball —
+Releases from `v0.10.0` onward publish a prebuilt native Raspberry Pi tarball —
 pick `live777-<version>-aarch64-unknown-linux-gnu-rpi.tar.gz` from the
 [releases page](https://github.com/binbat/live777/releases):
 
 ```bash
-TAG=v0.9.1   # the release you want; must be newer than v0.9.0
+TAG=v0.10.0   # the release you want; v0.10.0 is the first with native builds
 wget https://github.com/binbat/live777/releases/download/${TAG}/live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 tar xzf live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
@@ -32,8 +32,8 @@ cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
 The tarball contains the `live777` binary, a `live777.toml` config template
 and a `live777.service` systemd unit.
 
-If your release has no `-rpi` asset (the native build was added after
-`v0.9.0`), build from source instead — see [livehal](./livehal.md#build),
+If your release has no `-rpi` asset (the native build was added in
+`v0.10.0`), build from source instead — see [livehal](./livehal.md#build),
 or cross-compile with `just rpi-cross-build`.
 
 ## Step 2: Configure the camera source

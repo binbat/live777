@@ -24,7 +24,7 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 
 ## ARM 开发板（树莓派 / RK3588 / RDK X5） {#arm-boards}
 
-`v0.9.0` 之后的 Release 会发布内置**硬件采集 + 编码管线**（见 [livehal](/zh/guide/livehal)）的原生构建——摄像头推流不需要 ffmpeg 或任何辅助进程：
+自 `v0.10.0` 起的 Release 会发布内置**硬件采集 + 编码管线**（见 [livehal](/zh/guide/livehal)）的原生构建——摄像头推流不需要 ffmpeg 或任何辅助进程：
 
 | 开发板 | Release 资产 |
 |-------|---------------|
@@ -32,7 +32,7 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 | 瑞芯微 RK3588 / RV1126B | `live777-<版本>-aarch64-unknown-linux-gnu-rkmpp.tar.gz` |
 
 ```bash
-TAG=v0.9.1   # 必须晚于 v0.9.0
+TAG=v0.10.0   # 首个包含原生构建的版本，或更新的 Release
 wget https://github.com/binbat/live777/releases/download/${TAG}/live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 tar xzf live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
