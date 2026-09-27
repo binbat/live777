@@ -24,7 +24,7 @@ docker run --name live777-server --rm --network host ghcr.io/binbat/live777-serv
 
 ## ARM Boards (Raspberry Pi / RK3588 / RDK X5)
 
-Releases after `v0.9.0` publish native builds with the **hardware capture +
+Releases from `v0.10.0` onward publish native builds with the **hardware capture +
 encoder pipeline** (see [livehal](/guide/livehal)) baked in — a camera
 streams without ffmpeg or any other helper process:
 
@@ -34,7 +34,7 @@ streams without ffmpeg or any other helper process:
 | Rockchip RK3588 / RV1126B | `live777-<version>-aarch64-unknown-linux-gnu-rkmpp.tar.gz` |
 
 ```bash
-TAG=v0.9.1   # must be newer than v0.9.0
+TAG=v0.10.0   # the first release with native builds; or any newer one
 wget https://github.com/binbat/live777/releases/download/${TAG}/live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 tar xzf live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi

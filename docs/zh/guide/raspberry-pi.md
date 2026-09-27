@@ -10,11 +10,11 @@
 
 ## 第一步：安装 native-rpi 构建
 
-`v0.9.0` 之后的 Release 会发布预编译的树莓派原生构建包——在
+`v0.10.0` 起的 Release 会发布预编译的树莓派原生构建包——在
 [releases 页面](https://github.com/binbat/live777/releases)选择 `live777-<版本>-aarch64-unknown-linux-gnu-rpi.tar.gz`：
 
 ```bash
-TAG=v0.9.1   # 目标版本；必须晚于 v0.9.0
+TAG=v0.10.0   # 目标版本；v0.10.0 是首个包含原生构建的版本
 wget https://github.com/binbat/live777/releases/download/${TAG}/live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 tar xzf live777-${TAG}-aarch64-unknown-linux-gnu-rpi.tar.gz
 cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
@@ -22,7 +22,7 @@ cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
 
 压缩包内含 `live777` 二进制、`live777.toml` 配置模板和 `live777.service` systemd 单元。
 
-如果你选的 Release 没有 `-rpi` 资产（原生构建是在 `v0.9.0` 之后加入的），改为从源码构建——见 [livehal](./livehal.md#build)，或用 `just rpi-cross-build` 交叉编译。
+如果你选的 Release 没有 `-rpi` 资产（原生构建自 `v0.10.0` 起加入），改为从源码构建——见 [livehal](./livehal.md#build)，或用 `just rpi-cross-build` 交叉编译。
 
 ## 第二步：配置摄像头源
 
