@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-09-27
+
+### Fixed
+
+- Fixed the `live777` / `liveman` / `liveion` Docker image builds: the Dockerfiles built with `--all-features`, which since this cycle also selects `rsmpeg` (needs native FFmpeg dev libraries) and the `native-*` capture/encoder features (need libcamera/V4L2 headers) — none of which can build in a plain `rust:slim` stage. The Dockerfiles now build with the same explicit feature set as the release pipeline. (No Docker images were published for 0.10.0 as a result.)
+- Release binaries and Docker images are now built with the `rtsp` feature, so the embedded RTSP server announced in 0.10.0 is actually present in the published artifacts.
+
 ## [0.10.0] - 2026-09-27
 
 ### Breaking Changes
