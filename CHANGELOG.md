@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.1] - 2026-09-27
 
+### Breaking Changes
+
+- **The combined `live777` Docker image was renamed and split**: `ghcr.io/binbat/live777-server` now carries `live777` + `liveman`, and the new `ghcr.io/binbat/live777-client` is a self-contained FFmpeg + `whipinto` + `whepfrom` image. The old `ghcr.io/binbat/live777` image will no longer receive new tags — switch to `-server` / `-client`.
+
 ### Fixed
 
 - Fixed the `live777` / `liveman` / `liveion` Docker image builds: the Dockerfiles built with `--all-features`, which since this cycle also selects `rsmpeg` (needs native FFmpeg dev libraries) and the `native-*` capture/encoder features (need libcamera/V4L2 headers) — none of which can build in a plain `rust:slim` stage. The Dockerfiles now build with the same explicit feature set as the release pipeline. (No Docker images were published for 0.10.0 as a result.)
