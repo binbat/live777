@@ -101,7 +101,13 @@ async fn test_liveion_info() {
     let body = res.json::<api::response::ServerInfo>().await.unwrap();
 
     assert!(!body.version.is_empty());
-    assert!(body.version.contains(&body.git_hash));
+    // Non-tag builds are git-describe style and embed the hash
+    // ("v0.10.1-3-gb789a64"); at a tag checkout the version is exactly the
+    // tag and the hash only appears in the separate git_hash field.
+    assert!(
+        body.version.contains(&body.git_hash)
+            || body.version == format!("v{}", env!("CARGO_PKG_VERSION"))
+    );
     assert!(!body.git_hash.is_empty());
     assert!(!body.build_time.is_empty());
     assert!(body.features.iter().all(|f| !f.is_empty()));
