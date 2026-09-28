@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **No default ICE servers anywhere — deployments are LAN-only out of the box.** liveion's `ice_servers` no longer falls back to `stun:stun.l.google.com:19302` when the key is omitted from the config file; the list is now empty unless configured, so WHIP/WHEP responses carry no `Link: ...; rel="ice-server"` headers and browsers/CLI clients gather host candidates only. The livetwo library defaults (`PublishPeerOptions`, `WhepPeerOptions`, `ProbeConfig`) are empty too, the `iceserver` crate's `default_ice_servers()` / `default_rtc_ice_servers()` / `DEFAULT_ICE_SERVER_URL` helpers were removed, and the sample `conf/live777.toml` no longer enables the Google STUN server. Deployments that need STUN/TURN must configure `[[ice_servers]]` (liveion) or `[extra_ice]` (liveman) explicitly.
+
 ## [0.10.1] - 2026-09-27
 
 ### Breaking Changes

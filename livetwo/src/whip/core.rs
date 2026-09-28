@@ -29,6 +29,7 @@ use crate::utils;
 const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Options for [`create_publish_peer`].
+#[derive(Default)]
 pub struct PublishPeerOptions {
     /// ICE servers used for gathering the offer; an empty list means host
     /// candidates only, which is useful on loopback-only test setups. The
@@ -39,15 +40,6 @@ pub struct PublishPeerOptions {
     /// the SDP offer prefers them (e.g. H265 with sprop parameters or AV1 with
     /// a resolution-derived level-idx).
     pub extra_video_codecs: Vec<RTCRtpCodecParameters>,
-}
-
-impl Default for PublishPeerOptions {
-    fn default() -> Self {
-        Self {
-            ice_servers: iceserver::default_rtc_ice_servers(),
-            extra_video_codecs: Vec::new(),
-        }
-    }
 }
 
 /// A peer built by [`create_publish_peer`]. Tracks are added by the caller.
