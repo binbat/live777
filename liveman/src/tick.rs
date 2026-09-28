@@ -7,7 +7,8 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::service::recordings_index::RecordingsIndexService;
-use crate::{AppState, error::AppError, result::Result, route::utils::session_delete};
+use crate::store::Server;
+use crate::{AppState, result::Result, route::utils::session_delete};
 
 use api::recorder::{
     AckRecordingsRequest, DeleteRecordingsRequest, PullRecordingsRequest, RecordingKey,
@@ -42,16 +43,24 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
         let server = map_server.get(alias).unwrap();
         for stream_info in streams {
             for session_info in &stream_info.subscribe.sessions {
-                if let Some(cascade_info) = &session_info.cascade
-                    && let Ok((target_node_addr, target_stream)) =
-                        parse_node_and_stream(cascade_info.target_url.clone().unwrap())
-                    && let Some(target_node) = map_url_server.get(&target_node_addr)
-                    && let Some(target_stream_info) = nodes
-                        .get(&target_node.alias)
-                        .unwrap()
-                        .iter()
-                        .find(|i| i.id == target_stream)
-                    && target_stream_info.subscribe.leave_at != 0
+                let Some(cascade_info) = &session_info.cascade else {
+                    continue;
+                };
+                let Some(target_url) = cascade_info.target_url.clone() else {
+                    continue;
+                };
+                let Some((target_node, target_stream)) =
+                    resolve_cascade_target(&target_url, &map_server, &map_url_server)
+                else {
+                    continue;
+                };
+                let Some(target_stream_info) = nodes
+                    .get(&target_node.alias)
+                    .and_then(|streams| streams.iter().find(|i| i.id == target_stream))
+                else {
+                    continue;
+                };
+                if target_stream_info.subscribe.leave_at != 0
                     && Utc::now().timestamp_millis()
                         >= target_stream_info.subscribe.leave_at
                             + state.config.cascade.maximum_idle_time as i64
@@ -84,26 +93,32 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
     Ok(())
 }
 
-fn parse_node_and_stream(url: String) -> Result<(String, String)> {
-    let url = Url::parse(&url)?;
-    let split: Vec<&str> = url.path().split('/').collect();
-    Ok((
-        format!(
-            "{}://{}:{}",
-            url.scheme(),
-            url.host_str()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("host error")))?,
-            url.port()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("port error")))?
-        ),
-        split
-            .last()
+/// Resolve a cascade `target_url` to its destination node and stream. Push
+/// cascades point at liveman's node-pinned endpoint
+/// (`{public}/api/whip/{alias}/{stream}`), so the node must be resolved by
+/// alias; any other form is treated as a direct node address
+/// (`{node}/whip/{stream}`) and resolved by origin.
+fn resolve_cascade_target(
+    target_url: &str,
+    map_server: &HashMap<String, Server>,
+    map_url_server: &HashMap<String, Server>,
+) -> Option<(Server, String)> {
+    let url = Url::parse(target_url).ok()?;
+    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["api", "whip", alias, stream] => map_server
+            .get(*alias)
             .cloned()
-            .ok_or(AppError::InternalServerError(anyhow::anyhow!(
-                "url path split error"
-            )))?
-            .to_string(),
-    ))
+            .map(|node| (node, stream.to_string())),
+        ["whip", stream] => {
+            let addr = format!("{}://{}:{}", url.scheme(), url.host_str()?, url.port()?);
+            map_url_server
+                .get(&addr)
+                .cloned()
+                .map(|node| (node, stream.to_string()))
+        }
+        _ => None,
+    }
 }
 
 /// Liveman Auto Record Check
@@ -566,4 +581,71 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(alias: &str, url: &str) -> Server {
+        Server {
+            alias: alias.to_string(),
+            url: url.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn maps() -> (HashMap<String, Server>, HashMap<String, Server>) {
+        let cloud = server("cloud", "http://127.0.0.1:7782");
+        let map_server = HashMap::from([("cloud".to_string(), cloud.clone())]);
+        let map_url_server = HashMap::from([(cloud.url.clone(), cloud)]);
+        (map_server, map_url_server)
+    }
+
+    #[test]
+    fn resolve_pinned_push_target_by_alias() {
+        let (map_server, map_url_server) = maps();
+        let (node, stream) = resolve_cascade_target(
+            "http://127.0.0.1:8890/api/whip/cloud/cam0",
+            &map_server,
+            &map_url_server,
+        )
+        .unwrap();
+        assert_eq!(node.alias, "cloud");
+        assert_eq!(stream, "cam0");
+    }
+
+    #[test]
+    fn resolve_direct_push_target_by_origin() {
+        let (map_server, map_url_server) = maps();
+        let (node, stream) = resolve_cascade_target(
+            "http://127.0.0.1:7782/whip/cam0",
+            &map_server,
+            &map_url_server,
+        )
+        .unwrap();
+        assert_eq!(node.alias, "cloud");
+        assert_eq!(stream, "cam0");
+    }
+
+    #[test]
+    fn resolve_unknown_target_returns_none() {
+        let (map_server, map_url_server) = maps();
+        assert!(
+            resolve_cascade_target(
+                "http://127.0.0.1:8890/api/whip/ghost/cam0",
+                &map_server,
+                &map_url_server,
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_cascade_target(
+                "http://9.9.9.9:7782/whip/cam0",
+                &map_server,
+                &map_url_server,
+            )
+            .is_none()
+        );
+    }
 }
