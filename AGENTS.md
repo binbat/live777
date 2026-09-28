@@ -246,6 +246,25 @@ clients via Link headers).
   covers stats) — live rates push every tick while media flows, a silent
   stream's zero rate flushes exactly once, and an idle server sends
   nothing.
+  DataChannel lifecycle: every channel gets a read and a write task
+  (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
+  the per-stream publish/subscribe broadcast buses. The webrtc driver never
+  delivers `OnClose` for a server-side `PeerConnection::close` (it aborts
+  first), so each session carries a `CancellationToken` (`dc_cancel` on
+  `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
+  `Drop`) that both loops `select!` on — without it the read loop parks on
+  `poll()` forever, and its bus sender clone keeps the bus open, which used
+  to pin the `[stream.x.channel]` UDP bridge (and its listen port) of a
+  dead stream forever. `on_data_channel` only wires a channel whose peer
+  still owns a live session (a late announce from a replaced/torn-down
+  session is dropped), and both sides gate sends on `Connected`
+  (`wait_for_peer_connected`, 15 s). The UDP bridge itself
+  (`forward/channel.rs`) is owned by the forward: `PeerForwardInternal::close`
+  cancels it and awaits the socket release, so a provisioned-stream reset
+  rebinds the same port deterministically (`bind_with_retry` covers slow
+  external holders). The client side mirrors this: whepfrom's channel
+  bridge runs on a session-scoped token that `whep::from` cancels and
+  awaits before returning.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt
@@ -266,8 +285,12 @@ clients via Link headers).
   `PublishStopped`/`SessionStopReason::Replaced`, and same-codec takeovers
   are seamless to subscribers via the media-generation machinery. Streams
   opt out with `strategy.override_publisher = false` (global or per-stream),
-  restoring the 409; cascade-pull publishers are never displaced and always
-  conflict (409), since their supervisor would reconnect and fight.
+  restoring the 409 — except a plain-WHIP incumbent that is already
+  `Disconnected`/`Failed`/`Closed` is displaced even then, so a fast
+  reconnect does not bounce off the zombie session with a 409 while the
+  disconnected-watchdog is still reaping it. Cascade-pull publishers are
+  never displaced and always conflict (409), since their supervisor would
+  reconnect and fight.
   Source encoder bitrate control (issue #409): adaptive bitrate is on by
   default for native encoder sources (`adaptive = false` opts out,
   `adaptive = { min_bitrate = … }` sets a custom floor; the default floor

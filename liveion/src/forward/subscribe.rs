@@ -7,6 +7,7 @@ use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RtpCodecKind};
 use rtc::shared::marshal::MarshalSize;
 use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::{Duration, Instant, sleep};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
@@ -81,6 +82,12 @@ pub(crate) struct SubscribeRTCPeerConnection {
     connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
     /// Outbound media counters for this subscriber (both media kinds).
     pub(crate) stats: Arc<MediaStats>,
+    /// Cancelled on drop — every session-removal path drops the session —
+    /// killing this session's data-channel forwarding tasks. The webrtc
+    /// driver never delivers `OnClose` for a server-side
+    /// `PeerConnection::close` (it aborts first), so without this those
+    /// tasks parked on `poll()` forever.
+    dc_cancel: CancellationToken,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -136,7 +143,19 @@ impl SubscribeRTCPeerConnection {
             media_info,
             connection_state_rx,
             stats,
+            dc_cancel: CancellationToken::new(),
         }
+    }
+
+    /// This session's own connection-state channel, used to gate data-channel
+    /// sends until the peer is Connected.
+    pub(crate) fn connection_state_rx(&self) -> watch::Receiver<RTCPeerConnectionState> {
+        self.connection_state_rx.clone()
+    }
+
+    /// Token that stops this session's data-channel forwarding tasks.
+    pub(crate) fn dc_cancel_token(&self) -> CancellationToken {
+        self.dc_cancel.clone()
     }
 
     pub(crate) async fn info(&self) -> SessionInfo {
@@ -1155,6 +1174,12 @@ impl SubscribeRTCPeerConnection {
         } else {
             Ok(())
         }
+    }
+}
+
+impl Drop for SubscribeRTCPeerConnection {
+    fn drop(&mut self) {
+        self.dc_cancel.cancel();
     }
 }
 
