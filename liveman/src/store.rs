@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use api::response::Stream;
-use api::strategy::Strategy;
 
 use crate::config::UpdateMode;
 
@@ -36,9 +35,13 @@ pub struct Node {
     /// Liveman-side per-stream subscriber capacity from `[[nodes]] sub_max`
     /// (`None` = unlimited).
     pub sub_max: Option<u16>,
+    /// Whether the node is currently reachable: poll-mode nodes are marked
+    /// by their `/api/streams/` poll result, SSE nodes by their stream
+    /// connection, and net4mqtt nodes by discovery presence.
+    pub online: bool,
 
     streams: Vec<Stream>,
-    pub strategy: Option<Strategy>,
+    /// Round-trip time of the last successful poll contact.
     pub duration: Option<Duration>,
 }
 
@@ -435,73 +438,13 @@ impl Storage {
         self.cascade_notify.clone()
     }
 
-    fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {
-        self.get_map_nodes()
-            .into_iter()
-            .filter(|(_, v)| v.kind != NodeKind::Net4mqtt && v.strategy.is_none())
-            .collect()
-    }
-
-    async fn update_strategy_from(&mut self, nodes: HashMap<String, Node>) {
-        let start = Instant::now();
-        let mut requests = Vec::new();
-
-        for (alias, server) in nodes {
-            requests.push((
-                alias,
-                self.client
-                    .get(format!("{}{}", server.url, api::path::strategy()))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
-                    .send(),
-            ));
-        }
-
-        let handles = requests
-            .into_iter()
-            .map(|(alias, value)| {
-                tokio::spawn(async move { (alias, value.await, start.elapsed()) })
-            })
-            .collect::<Vec<
-                tokio::task::JoinHandle<(
-                    std::string::String,
-                    std::result::Result<reqwest::Response, reqwest::Error>,
-                    std::time::Duration,
-                )>,
-            >>();
-
-        let duration = start.elapsed();
-
-        if duration > Duration::from_secs(1) {
-            warn!("update duration: {:?}", duration);
-        } else {
-            debug!("update duration: {:?}", duration);
-        }
-
-        for handle in handles {
-            let result = tokio::join!(handle);
-            match result {
-                (Ok((alias, Ok(res), duration)),) => {
-                    debug!(
-                        "{}: spend time: [{:?}] Response: {:?}",
-                        alias, duration, res
-                    );
-
-                    match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
-                        Ok(strategy) => {
-                            if let Some(node) =
-                                self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
-                            {
-                                node.duration = Some(duration);
-                                node.strategy = Some(strategy);
-                            }
-                        }
-                        Err(e) => error!("Error: {:?}", e),
-                    };
-                }
-                (Ok((name, Err(e), duration)),) => {
-                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
-                }
-                _ => {}
+    /// Mark a node's reachability, and on success remember the contact RTT
+    /// for the dashboard.
+    pub fn node_set_online(&self, alias: &str, online: bool, rtt: Option<Duration>) {
+        if let Some(node) = self.list.write().unwrap().get_mut(alias) {
+            node.online = online;
+            if online && let Some(rtt) = rtt {
+                node.duration = Some(rtt);
             }
         }
     }
@@ -518,9 +461,6 @@ impl Storage {
             }
             self.time = Instant::now();
         }
-
-        self.update_strategy_from(self.get_do_strategy_update_list())
-            .await;
 
         let start = Instant::now();
         let poll_nodes: Vec<(String, Node)> = self
@@ -543,7 +483,12 @@ impl Storage {
         let handles = requests
             .into_iter()
             .map(|(alias, value)| {
-                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+                // Measure the RTT after the response completes, not at
+                // dispatch time.
+                tokio::spawn(async move {
+                    let res = value.await;
+                    (alias, start.elapsed(), res)
+                })
             })
             .collect::<Vec<
                 tokio::task::JoinHandle<(
@@ -574,6 +519,10 @@ impl Storage {
                         "{}: spend time: [{:?}] Response: {:?}",
                         alias, duration, res
                     );
+                    // Any HTTP response means the node is reachable, even an
+                    // error status (auth mismatch, 500) — the snapshot simply
+                    // stays stale then.
+                    self.node_set_online(&alias, true, Some(duration));
 
                     match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
                         Ok(streams) => {
@@ -593,6 +542,7 @@ impl Storage {
                 }
                 (Ok((name, duration, Err(e))),) => {
                     error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
+                    self.node_set_online(&name, false, None);
                 }
                 _ => {}
             }
@@ -603,55 +553,6 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strategy_update_list_skips_net4mqtt_nodes() {
-        let storage = Storage::new(reqwest::Client::new());
-        {
-            let mut nodes = storage.list.write().unwrap();
-            nodes.insert(
-                "static-0".to_string(),
-                Node::new(
-                    "token".to_string(),
-                    NodeKind::Static,
-                    "http://127.0.0.1:7777".to_string(),
-                    UpdateMode::Poll,
-                ),
-            );
-            nodes.insert(
-                "mqtt-0".to_string(),
-                Node::new(
-                    "".to_string(),
-                    NodeKind::Net4mqtt,
-                    "http://mqtt-0.net4mqtt.local:7777".to_string(),
-                    UpdateMode::default(),
-                ),
-            );
-        }
-
-        let list = storage.get_do_strategy_update_list();
-        assert!(list.contains_key("static-0"));
-        assert!(!list.contains_key("mqtt-0"));
-    }
-
-    #[test]
-    fn strategy_update_list_skips_nodes_with_strategy() {
-        let storage = Storage::new(reqwest::Client::new());
-        {
-            let mut nodes = storage.list.write().unwrap();
-            let mut node = Node::new(
-                "token".to_string(),
-                NodeKind::Static,
-                "http://127.0.0.1:7777".to_string(),
-                UpdateMode::Poll,
-            );
-            node.strategy = Some(Strategy::default());
-            nodes.insert("static-0".to_string(), node);
-        }
-
-        let list = storage.get_do_strategy_update_list();
-        assert!(!list.contains_key("static-0"));
-    }
 
     #[test]
     fn server_sub_max_comes_from_node_config() {

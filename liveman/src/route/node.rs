@@ -1,8 +1,6 @@
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 
-use api::strategy::Strategy;
-
 use crate::{AppState, result::Result};
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,8 +18,6 @@ pub struct Node {
     url: String,
     status: NodeState,
     duration: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    strategy: Option<Strategy>,
 }
 
 pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
@@ -34,11 +30,10 @@ pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>>
             .map(|(alias, node)| Node {
                 alias,
                 url: node.url,
-                status: match node.strategy {
-                    Some(_) => NodeState::Running,
-                    None => NodeState::Stopped,
+                status: match node.online {
+                    true => NodeState::Running,
+                    false => NodeState::Stopped,
                 },
-                strategy: node.strategy,
                 duration: match node.duration {
                     Some(s) => format!("{}ms", s.as_millis()),
                     None => "-".to_string(),

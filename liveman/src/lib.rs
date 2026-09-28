@@ -187,15 +187,17 @@ where
                                     match msg {
                                         Some((agent_id, _local_id, data)) => {
                                             if data.len() > 5 {
-                                                nodes.write().unwrap().insert(
-                                                    agent_id.clone(),
-                                                    Node::new(
-                                                        "".to_string(),
-                                                        NodeKind::Net4mqtt,
-                                                        format!("http://{}", dns.registry(&agent_id)),
-                                                        UpdateMode::default(),
-                                                    ),
+                                                // Discovery presence is the
+                                                // liveness signal for
+                                                // net4mqtt nodes.
+                                                let mut node = Node::new(
+                                                    "".to_string(),
+                                                    NodeKind::Net4mqtt,
+                                                    format!("http://{}", dns.registry(&agent_id)),
+                                                    UpdateMode::default(),
                                                 );
+                                                node.online = true;
+                                                nodes.write().unwrap().insert(agent_id.clone(), node);
                                             } else {
                                                 nodes.write().unwrap().remove(&agent_id);
                                             }

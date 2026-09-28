@@ -61,7 +61,6 @@ fn liveion_test_environment_pins_webrtc_ice_to_loopback() {
 #[tokio::test]
 async fn test_liveion_simple() {
     let cfg = liveion::config::Config::default();
-    let strategy = cfg.strategy.clone();
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -70,15 +69,15 @@ async fn test_liveion_simple() {
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
+    let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
         .await
         .unwrap();
 
     assert_eq!(http::StatusCode::OK, res.status());
 
-    let body = res.json::<api::strategy::Strategy>().await.unwrap();
+    let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-    assert_eq!(strategy, body);
+    assert!(body.is_empty());
 }
 
 #[tokio::test]
@@ -126,7 +125,6 @@ async fn test_liveion_info() {
 #[tokio::test]
 async fn test_liveion_ipv6() {
     let cfg = liveion::config::Config::default();
-    let strategy = cfg.strategy.clone();
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
@@ -135,15 +133,15 @@ async fn test_liveion_ipv6() {
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
+    let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
         .await
         .unwrap();
 
     assert_eq!(http::StatusCode::OK, res.status());
 
-    let body = res.json::<api::strategy::Strategy>().await.unwrap();
+    let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-    assert_eq!(strategy, body);
+    assert!(body.is_empty());
 }
 
 #[tokio::test]
