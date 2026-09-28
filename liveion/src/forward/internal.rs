@@ -125,6 +125,10 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_publish(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -139,6 +143,7 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                             "publish",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
@@ -235,17 +240,22 @@ pub(crate) async fn wait_for_peer_connected(
 const DISCONNECTED_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Give a `Disconnected` peer time to recover (transient network blip, ICE
-/// restart); if it is still disconnected when the grace expires, close it so
-/// teardown follows the normal `Closed` path instead of lingering as a
-/// zombie session with dead forwarding loops.
+/// restart); if it is still disconnected when the grace expires, close it and
+/// remove the session directly. The direct removal is load-bearing: webrtc's
+/// `close()` aborts the driver task, so the `Closed` state event that would
+/// normally drive session removal is never emitted, and without this the
+/// session lingers as a zombie in `Disconnected` forever. Both `remove_*`
+/// paths are idempotent no-ops if the `Closed` event did get delivered first.
 fn spawn_disconnected_watchdog(
     stream: String,
     role: &'static str,
     connection_state_tx: &watch::Sender<RTCPeerConnectionState>,
     peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
 ) {
     let mut state_rx = connection_state_tx.subscribe();
     let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
     tokio::spawn(async move {
         let wait = async {
             while matches!(*state_rx.borrow(), RTCPeerConnectionState::Disconnected) {
@@ -267,6 +277,18 @@ fn spawn_disconnected_watchdog(
             );
             if let Some(peer) = peer.upgrade() {
                 let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        _ => internal.remove_subscribe(peer).await,
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
             }
         }
     });
@@ -314,6 +336,10 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_subscribe(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -328,6 +354,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                             "subscribe",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
