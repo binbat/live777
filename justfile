@@ -239,7 +239,7 @@ run-cluster:
 
 # Edge cameras + cloud SFU cascade demo (see conf/livenil/edge-cloud/)
 run-edge-cloud:
-    cargo run --bin=livenil --features=webui,cascade -- -c conf/livenil/edge-cloud
+    cargo run --bin=livenil --features=webui,cascade,source-whep -- -c conf/livenil/edge-cloud
 
 only-mpeg-rtp-h264:
     ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtp 'rtp://{{host}}:5002?pkt_size=1200' -sdp_file {{isdp}}

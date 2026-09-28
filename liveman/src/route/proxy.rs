@@ -17,6 +17,7 @@ use iceserver::{cloudflare, coturn, format_iceserver, link_header};
 use crate::route::cascade;
 use crate::route::node;
 use crate::route::recorder;
+use crate::route::source;
 use crate::route::storage;
 use crate::route::stream;
 use crate::store::Server;
@@ -54,6 +55,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/streams/{stream}", post(stream::create))
         .route("/api/streams/{stream}", delete(stream::destroy))
         .merge(recorder::route())
+        .merge(source::route())
         .merge(storage::route())
 }
 
@@ -284,7 +286,11 @@ async fn session(
     }
 }
 
-async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Result<Response> {
+pub(crate) async fn request_proxy(
+    state: AppState,
+    mut req: Request,
+    target: &Server,
+) -> Result<Response> {
     Span::current().record("target_addr", target.url.clone());
     let path = req.uri().path();
     let path_query = req

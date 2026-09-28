@@ -36,6 +36,8 @@ mod cascade_cluster {
     };
     use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
+    use rtc::rtp::header::Header;
+    use rtc::rtp::packet::Packet;
     use rtc::rtp_transceiver::rtp_sender::{
         RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
     };
@@ -260,7 +262,7 @@ mod cascade_cluster {
                 ..Default::default()
             }],
         )));
-        peer.add_track(track).await.unwrap();
+        peer.add_track(track.clone()).await.unwrap();
         let offer = peer.create_offer(None).await.unwrap();
         peer.set_local_description(offer).await.unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -280,6 +282,35 @@ mod cascade_cluster {
             .await
             .unwrap();
         wait_connected(state_rx, "publisher").await;
+
+        // Pump dummy VP8 packets so codec-readiness checks (WHEP sources,
+        // subscriber answers) see real media. Stops on its own when the
+        // peer closes (writes start failing).
+        tokio::spawn(async move {
+            let mut sequence_number: u16 = 0;
+            let mut timestamp: u32 = 0;
+            loop {
+                let packet = Packet {
+                    header: Header {
+                        version: 2,
+                        payload_type: 96,
+                        sequence_number,
+                        timestamp,
+                        ssrc: 0xca5cade0,
+                        ..Default::default()
+                    },
+                    // Minimal VP8 payload descriptor + dummy picture data;
+                    // the SFU forwards RTP without parsing the payload.
+                    payload: vec![0x10, 0x80, 0x01, 0x02, 0x03, 0x04].into(),
+                };
+                if track.write_rtp(packet).await.is_err() {
+                    break;
+                }
+                sequence_number = sequence_number.wrapping_add(1);
+                timestamp = timestamp.wrapping_add(3000);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
         peer
     }
 
@@ -572,5 +603,119 @@ mod cascade_cluster {
     #[tokio::test]
     async fn cascade_push_mode_overflow_migration_loop() {
         run_edge_cloud_loop(CascadeMode::Push).await;
+    }
+
+    /// Cluster operators manage per-node sources through liveman only
+    /// (alias-pinned proxy of liveion's `/api/sources/...`): create a WHEP
+    /// source on the cloud pulling from the edge, watch the bridge come up,
+    /// query state, then delete it — all without touching the node directly.
+    #[cfg(feature = "source-whep")]
+    #[tokio::test]
+    async fn liveman_proxies_source_management() {
+        init_test_environment();
+        let cluster = boot_cluster(CascadeMode::Pull).await;
+        let stream = "cam0";
+        let publisher = whip_publish(&cluster, "edge0", stream).await;
+
+        wait_until(
+            "liveman sees cam0 on edge0",
+            Duration::from_secs(10),
+            || async {
+                let res = reqwest::get(format!(
+                    "http://{}{}",
+                    cluster.liveman,
+                    api::path::streams("")
+                ))
+                .await
+                .unwrap();
+                let body: Vec<serde_json::Value> = res.json().await.unwrap();
+                body.iter().any(|s| s["id"] == stream)
+            },
+        )
+        .await;
+
+        // Create a WHEP source on the cloud through liveman (alias-pinned).
+        let res = reqwest::Client::new()
+            .post(format!(
+                "http://{}/api/sources/cloud/{}",
+                cluster.liveman, stream
+            ))
+            .json(&serde_json::json!({
+                "url": format!("whep://{}/whep/{}", cluster.edge0, stream)
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+
+        // The source bridges the stream onto the cloud.
+        wait_until(
+            "cloud hosts cam0 via the source",
+            Duration::from_secs(15),
+            || async {
+                let streams = streams_of(cluster.cloud).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => s
+                        .publish
+                        .sessions
+                        .iter()
+                        .any(|p| p.state == api::response::RTCPeerConnectionState::Connected),
+                    None => false,
+                }
+            },
+        )
+        .await;
+
+        // Query source info and the node-wide list through liveman.
+        for url in [
+            format!("http://{}/api/sources/cloud/{}", cluster.liveman, stream),
+            format!("http://{}/api/sources/cloud", cluster.liveman),
+        ] {
+            let res = reqwest::get(url).await.unwrap();
+            assert_eq!(http::StatusCode::OK, res.status());
+        }
+
+        // Eager registration: a viewer through liveman lands on the cloud
+        // (whose source-bridge publish beats the edge's capped capacity).
+        let viewer = whep_viewer(&cluster, stream, "source-viewer").await;
+        wait_until(
+            "cloud serves the viewer through its source",
+            Duration::from_secs(10),
+            || async {
+                let streams = streams_of(cluster.cloud).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => active_subs(s).len() == 1,
+                    None => false,
+                }
+            },
+        )
+        .await;
+        let _ = viewer.close().await;
+
+        // Delete the source through liveman: the bridge and the stream's
+        // virtual publisher go away.
+        let res = reqwest::Client::new()
+            .delete(format!(
+                "http://{}/api/sources/cloud/{}",
+                cluster.liveman, stream
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status());
+        wait_until(
+            "source removed from the cloud",
+            Duration::from_secs(15),
+            || async {
+                let res = reqwest::get(format!("http://{}/api/sources", cluster.cloud))
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = res.json().await.unwrap();
+                body["sources"].as_array().unwrap().is_empty()
+            },
+        )
+        .await;
+
+        let _ = publisher.close().await;
     }
 }
