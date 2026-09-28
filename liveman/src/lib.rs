@@ -96,7 +96,7 @@ where
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
         let mut node = Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode);
-        node.sub_max = v.sub_max;
+        node.sub_max = v.sub_max.or_else(|| cfg.node_sub_max(&v.alias));
         nodes.write().unwrap().insert(v.alias.clone(), node);
 
         if v.mode == UpdateMode::Sse {
@@ -172,6 +172,8 @@ where
             });
 
             let cancel_discovery = cancel.clone();
+            let discovery_nodes = cfg.nodes.clone();
+            let discovery_rules = cfg.node_rules.clone();
             std::thread::spawn(move || {
                 let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
@@ -189,7 +191,9 @@ where
                                             if data.len() > 5 {
                                                 // Discovery presence is the
                                                 // liveness signal for
-                                                // net4mqtt nodes.
+                                                // net4mqtt nodes; policy
+                                                // comes from [[nodes]] /
+                                                // [[node_rules]] by alias.
                                                 let mut node = Node::new(
                                                     "".to_string(),
                                                     NodeKind::Net4mqtt,
@@ -197,6 +201,11 @@ where
                                                     UpdateMode::default(),
                                                 );
                                                 node.online = true;
+                                                node.sub_max = crate::config::resolve_sub_max(
+                                                    &discovery_nodes,
+                                                    &discovery_rules,
+                                                    &agent_id,
+                                                );
                                                 nodes.write().unwrap().insert(agent_id.clone(), node);
                                             } else {
                                                 nodes.write().unwrap().remove(&agent_id);

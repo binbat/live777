@@ -155,6 +155,13 @@ enabled = false
 # liveion does not enforce it.
 # sub_max = 1
 
+# [[node_rules]]
+# Policy for nodes without an explicit [[nodes]] entry — primarily
+# dynamically discovered (net4mqtt) nodes. Glob on the node alias; first
+# match wins. Nodes matching nothing get no limit.
+# pattern = "edge*"
+# sub_max = 1
+
 # [[nodes]]
 # alias = "static-1"
 # token = "live777"
