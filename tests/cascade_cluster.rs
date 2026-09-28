@@ -459,6 +459,65 @@ mod cascade_cluster {
             "the edge must still carry exactly one outbound copy (the hop)"
         );
 
+        // --- a broken hop is healed by the supervisor (pull mode) ---
+        // Kill the hop on its edge side (the cloud's incoming WHEP session).
+        // The viewers stay attached to the cloud throughout: the pull's dead
+        // incumbent is replaced via the media-generation machinery, so there
+        // is no publisher-leave teardown.
+        //
+        // Push mode is not covered here: a push hop killed through the
+        // session API shuts down gracefully — the push client DELETEs the
+        // session it created on the destination, and the destination's
+        // publisher-leave teardown drops the viewers by design. The seamless
+        // path (override-displacing a network-dead incoming push) cannot be
+        // simulated over HTTP in-process.
+        if pull {
+            let streams = streams_of(cluster.edge0).await;
+            let hop_id = active_subs(find_stream(&streams, stream).unwrap())
+                .first()
+                .map(|s| s.id.clone())
+                .expect("the hop is the only active subscriber on the edge");
+            let pre_kill_publish = find_stream(&streams_of(cluster.cloud).await, stream)
+                .and_then(|s| s.publish.sessions.first().map(|p| p.id.clone()));
+            let res = reqwest::Client::new()
+                .delete(format!(
+                    "http://{}/session/{}/{}",
+                    cluster.edge0, stream, hop_id
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+
+            wait_until(
+                "supervisor re-establishes the killed hop",
+                Duration::from_secs(20),
+                || async {
+                    let streams = streams_of(cluster.cloud).await;
+                    match find_stream(&streams, stream) {
+                        Some(s) => s.publish.sessions.iter().any(|p| {
+                            p.state == api::response::RTCPeerConnectionState::Connected
+                                && Some(&p.id) != pre_kill_publish.as_ref()
+                        }),
+                        None => false,
+                    }
+                },
+            )
+            .await;
+            wait_until(
+                "both viewers still attached after the hop rebuild",
+                Duration::from_secs(10),
+                || async {
+                    let streams = streams_of(cluster.cloud).await;
+                    match find_stream(&streams, stream) {
+                        Some(s) => active_subs(s).len() == 2,
+                        None => false,
+                    }
+                },
+            )
+            .await;
+        }
+
         // --- all viewers leave gracefully: the hop is torn down ---
         let ids: Vec<String> = find_stream(&streams_of(cluster.cloud).await, stream)
             .unwrap()

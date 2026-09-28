@@ -121,6 +121,57 @@ pub struct Storage {
     stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
     session: Arc<RwLock<HashMap<String, String>>>,
     update_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Desired cascade hops, keyed by stream. The supervisor
+    /// (`route::cascade::cascade_supervisor`) converges the actual hop to
+    /// each intent and the reaper (`tick::cascade_check`) tears intents
+    /// down; inserts notify `cascade_notify` so the first establishment
+    /// attempt is immediate instead of waiting for a tick.
+    cascade_intents: Arc<RwLock<HashMap<String, CascadeIntent>>>,
+    cascade_notify: Arc<tokio::sync::Notify>,
+}
+
+/// A desired inter-node cascade hop for one stream. Nodes are referenced by
+/// alias and resolved fresh on every supervisor pass, so node re-registration
+/// (changed URL/token) does not strand the intent.
+#[derive(Debug, Clone)]
+pub struct CascadeIntent {
+    pub stream: String,
+    pub src: String,
+    pub dst: String,
+    /// Whether the one-time `close_other_sub` cleanup already ran for this
+    /// hop. Runs once per intent, right after the hop first establishes.
+    pub subs_closed: bool,
+    /// Consecutive issue attempts since the hop was last seen healthy; drives
+    /// the retry backoff.
+    pub attempts: u32,
+    /// Earliest time the next (re)issue is allowed.
+    pub next_attempt: Instant,
+    /// Since when the destination has had no viewers, maintained by the idle
+    /// reaper (`tick::cascade_check`). While set, the supervisor does not
+    /// re-establish a dead hop — nobody is watching — which prevents a
+    /// create/destroy thrash loop with the destination's auto_delete_whep.
+    /// Once it exceeds `cascade.maximum_idle_time` the intent is torn down.
+    pub idle_since: Option<Instant>,
+    /// Whether the hop was ever seen healthy. Once healthy, a later death
+    /// with no viewers watching must not be re-established (the hop dying
+    /// dropped everyone); the gate keys off this rather than `attempts`,
+    /// because a healthy observation resets the attempt counter.
+    pub was_healthy: bool,
+}
+
+impl CascadeIntent {
+    pub fn new(stream: String, src: String, dst: String) -> Self {
+        Self {
+            stream,
+            src,
+            dst,
+            subs_closed: false,
+            attempts: 0,
+            next_attempt: Instant::now(),
+            idle_since: None,
+            was_healthy: false,
+        }
+    }
 }
 
 impl Storage {
@@ -132,6 +183,8 @@ impl Storage {
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
             update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            cascade_intents: Arc::new(RwLock::new(HashMap::new())),
+            cascade_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -340,6 +393,46 @@ impl Storage {
             .map_err(|e| anyhow!("{:?}", e))?
             .remove(session);
         Ok(())
+    }
+
+    /// Insert or replace the cascade intent for a stream and wake the
+    /// supervisor, so the first establishment attempt is immediate.
+    pub fn cascade_intent_insert(&self, intent: CascadeIntent) {
+        self.cascade_intents
+            .write()
+            .unwrap()
+            .insert(intent.stream.clone(), intent);
+        self.cascade_notify.notify_one();
+    }
+
+    /// Write back supervisor-side progress (backoff, subs_closed) without
+    /// waking the supervisor.
+    pub fn cascade_intent_update(&self, intent: CascadeIntent) {
+        self.cascade_intents
+            .write()
+            .unwrap()
+            .insert(intent.stream.clone(), intent);
+    }
+
+    pub fn cascade_intent_get(&self, stream: &str) -> Option<CascadeIntent> {
+        self.cascade_intents.read().unwrap().get(stream).cloned()
+    }
+
+    pub fn cascade_intent_remove(&self, stream: &str) -> Option<CascadeIntent> {
+        self.cascade_intents.write().unwrap().remove(stream)
+    }
+
+    pub fn cascade_intents(&self) -> Vec<CascadeIntent> {
+        self.cascade_intents
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn cascade_notify_waiter(&self) -> Arc<tokio::sync::Notify> {
+        self.cascade_notify.clone()
     }
 
     fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {

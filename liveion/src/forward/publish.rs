@@ -59,6 +59,12 @@ impl PublishRTCPeerConnection {
         })
     }
 
+    /// Current peer connection state, mirrored from the driver's state
+    /// channel.
+    pub(crate) fn connection_state(&self) -> RTCPeerConnectionState {
+        *self.connection_state_rx.borrow()
+    }
+
     /// `stats` carries this publisher's aggregated inbound counters. The
     /// peer does not own its tracks, so callers aggregate them from
     /// `publish_tracks` (see

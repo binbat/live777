@@ -1452,6 +1452,67 @@ impl PeerForwardInternal {
         Ok(Some(session_id))
     }
 
+    /// Displace the incumbent publisher when it is a cascade pull whose peer
+    /// is no longer connected: the hop's supervisor (liveman) re-issues the
+    /// pull, and replacing here — like `replace_publish` — keeps subscribers
+    /// attached through the media-generation machinery instead of dropping
+    /// them with a publisher-leave teardown. A still-connected cascade-pull
+    /// incumbent and any plain WHIP publisher keep their hard conflict.
+    pub(crate) async fn replace_dead_cascade_pull_incumbent(&self) -> Result<Option<String>> {
+        let dead = {
+            let publish = self.publish.read().await;
+            match publish.as_ref() {
+                Some(p) => {
+                    p.cascade.is_some()
+                        && matches!(
+                            p.connection_state(),
+                            RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                        )
+                }
+                None => false,
+            }
+        };
+        if !dead {
+            return Ok(None);
+        }
+        // Aggregated before the `publish` write lock, mirroring
+        // `replace_publish` (lock order: `publish_tracks` before `publish`).
+        let stats = self.current_publish_stats().await;
+        let (old_peer, session_info) = {
+            let mut publish = self.publish.write().await;
+            let Some(current) = publish.as_ref() else {
+                return Ok(None);
+            };
+            // Recheck under the write lock: a re-issued pull may have
+            // attached since the read pass.
+            if current.cascade.is_none()
+                || !matches!(
+                    current.connection_state(),
+                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                )
+            {
+                return Ok(None);
+            }
+            let mut session_info = current.info(stats).await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
+            let old = publish.take().unwrap();
+            (old.peer, session_info)
+        };
+        let session_id = session_info.id.clone();
+        info!(
+            "[{}] [publish] {} replaced: dead cascade-pull incumbent",
+            self.stream, session_id
+        );
+        // Close before cleanup, mirroring `replace_publish`: the close
+        // re-enters `remove_publish` via the state handler, which is a no-op
+        // because the session is already out of `publish`.
+        let _ = old_peer.close().await;
+        self.do_remove_publish_cleanup(session_info, SessionStopReason::Replaced)
+            .await;
+        Ok(Some(session_id))
+    }
+
     /// Register a publish session. Returns the new session ID on success.
     pub(crate) async fn set_publish(
         &self,
