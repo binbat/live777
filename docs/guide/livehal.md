@@ -135,6 +135,8 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "yuv420"
+# hflip = true           # mirror left-right; libcamera only (ISP, zero cost)
+# vflip = true           # flip top-bottom; hflip + vflip = 180° rotation
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
@@ -153,6 +155,15 @@ clock_rate = 90000
 ```
 
 `pixel_format` and `codec` values are validated at startup (unknown values error early).  `capture` + `encoder` are mutually exclusive with `url`; the source type is derived from `capture.backend` (`device` is a camera ID for libcamera or a path for v4l2).
+
+`capture.hflip` / `capture.vflip` (both default `false`) flip the image —
+mirror left-right and top-bottom respectively; setting both gives a 180°
+rotation.  They are **libcamera-only**: the flip is done by the ISP, so it
+costs no CPU.  The `v4l2` backend rejects them at startup — its video node
+(unicam) only DMA-moves frames with no image-processing capability, and the
+flip controls on the sensor sub-device cannot be used safely outside
+libcamera (they would desync the ISP's Bayer order).  90°/270° rotation is
+not offered: the Raspberry Pi ISP cannot transpose an image in hardware.
 
 `conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.
 

@@ -32,6 +32,8 @@ typedef struct {
     uint32_t fps;
     uint32_t pixel_format;   // RawPixelFormat enum value
     uint8_t prefer_dmabuf;   // 0 = false, 1 = true
+    uint8_t hflip;           // mirror left-right (libcamera only; ISP-applied)
+    uint8_t vflip;           // flip top-bottom; hflip+vflip = 180° rotation
 } CaptureConfigFFI;
 
 typedef struct {

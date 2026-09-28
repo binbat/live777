@@ -57,6 +57,19 @@ pub struct CaptureSpec {
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
+    /// Horizontal flip (mirror the image left-right, default `false`).
+    /// Both `hflip` and `vflip` set together give a 180° rotation.
+    ///
+    /// **libcamera backend only**: the flip is applied by the ISP, so it
+    /// costs no CPU.  90°/270° rotation is not offered — the Raspberry Pi
+    /// ISP cannot transpose an image in hardware.  The `v4l2` backend is
+    /// rejected by validation: its video node (unicam) only DMA-moves
+    /// frames and has no image-processing capability.
+    #[serde(default)]
+    pub hflip: bool,
+    /// Vertical flip (top-bottom, default `false`).  See [`CaptureSpec::hflip`].
+    #[serde(default)]
+    pub vflip: bool,
 }
 
 /// Encoder specification.
@@ -338,6 +351,15 @@ impl SourceSpec {
             anyhow::bail!(
                 "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
                 self.capture.backend
+            );
+        }
+        if (self.capture.hflip || self.capture.vflip) && backend != "libcamera" {
+            anyhow::bail!(
+                "capture.hflip/vflip are supported only by the libcamera backend: \
+                 the v4l2 video node (unicam) only DMA-moves frames and has no \
+                 image-processing capability; flip controls exist only on the \
+                 sensor sub-device, and setting them behind libcamera's back \
+                 would desync the ISP's Bayer order"
             );
         }
         if self.capture.width == 0 || self.capture.height == 0 {
@@ -761,6 +783,8 @@ impl SourceSpec {
             payload_type: self.output.payload_type as u32,
             clock_rate: self.output.clock_rate,
             capture_prefer_dmabuf: self.capture.prefer_dmabuf as u8,
+            capture_hflip: self.capture.hflip as u8,
+            capture_vflip: self.capture.vflip as u8,
             encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
             codec_name: self.encoder.codec.to_uppercase(),
             default_profile: profile_string,
@@ -790,6 +814,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "yuyv".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "v4l2-m2m".into(),
@@ -819,6 +845,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: true,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rdk".into(),
@@ -848,6 +876,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rkmpp".into(),
@@ -877,6 +907,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rkmpp".into(),
@@ -940,6 +972,27 @@ mod tests {
     fn test_source_spec_rejects_mjpeg() {
         let mut spec = v4l2_spec();
         spec.capture.pixel_format = "mjpeg".into();
+        assert!(spec.validate().is_err());
+    }
+
+    // --- capture flip (hflip/vflip) tests ---
+
+    #[test]
+    fn test_source_spec_validate_libcamera_flip_ok() {
+        let mut spec = libcamera_spec();
+        spec.capture.hflip = true;
+        assert!(spec.validate().is_ok());
+        spec.capture.vflip = true;
+        assert!(spec.validate().is_ok()); // both = 180° rotation
+    }
+
+    #[test]
+    fn test_source_spec_validate_v4l2_flip_rejected() {
+        let mut spec = v4l2_spec();
+        spec.capture.hflip = true;
+        assert!(spec.validate().is_err());
+        spec.capture.hflip = false;
+        spec.capture.vflip = true;
         assert!(spec.validate().is_err());
     }
 
@@ -1510,6 +1563,21 @@ mod tests {
         assert_eq!(params.capture_device, "0");
         assert_eq!(params.encoder_backend, "rdk");
         assert_eq!(params.profile, "64002a");
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_capture_flip() {
+        let mut spec = libcamera_spec();
+        spec.capture.hflip = true;
+        spec.capture.vflip = true;
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.capture_hflip, 1);
+        assert_eq!(params.capture_vflip, 1);
+
+        let params = v4l2_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_hflip, 0);
+        assert_eq!(params.capture_vflip, 0);
     }
 
     #[test]

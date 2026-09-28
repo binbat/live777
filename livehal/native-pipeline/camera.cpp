@@ -432,6 +432,21 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
     // have free requests to keep streaming.
     sc.bufferCount = prefer_dmabuf_ ? 12 : 8;
 
+    // Image flip via the ISP (zero CPU cost): hflip mirrors left-right,
+    // vflip flips top-bottom, both give a 180° rotation.  90°/270° are
+    // intentionally not offered — the Pi ISP cannot transpose.
+    // CameraConfiguration::orientation follows EXIF tag 274 (rotate
+    // clockwise first, then mirror horizontally), so a left-right mirror
+    // is Rotate0Mirror and a top-bottom flip is Rotate180Mirror.
+    Orientation orientation = Orientation::Rotate0;
+    if (cfg.hflip && cfg.vflip)
+        orientation = Orientation::Rotate180;
+    else if (cfg.hflip)
+        orientation = Orientation::Rotate0Mirror;
+    else if (cfg.vflip)
+        orientation = Orientation::Rotate180Mirror;
+    config->orientation = orientation;
+
     CameraConfiguration::Status validation = config->validate();
     if (validation == CameraConfiguration::Invalid) {
         if (err) *err = "Camera configuration invalid";
@@ -440,6 +455,14 @@ bool PiCameraImpl::init(const CaptureConfig& cfg, std::string* err) {
     if (validation == CameraConfiguration::Adjusted) {
         fprintf(stderr, "[CameraInternal] Config was adjusted to %ux%u\n",
                 sc.size.width, sc.size.height);
+    }
+    if (config->orientation != orientation) {
+        fprintf(stderr,
+                "[CameraInternal] requested flip (hflip=%d vflip=%d) was "
+                "rejected by the camera pipeline (orientation adjusted to "
+                "%d) — image will not be flipped as requested\n",
+                static_cast<int>(cfg.hflip), static_cast<int>(cfg.vflip),
+                static_cast<int>(config->orientation));
     }
     if (camera->configure(config.get()) < 0) {
         if (err) *err = "Camera configure failed";

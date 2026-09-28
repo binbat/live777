@@ -27,6 +27,12 @@ struct CaptureConfig {
     uint32_t fps;
     RawPixelFormat pixel_format;
     bool prefer_dmabuf = false;
+    // Image flip, applied by the ISP on the libcamera backend (zero CPU
+    // cost): hflip mirrors left-right, vflip flips top-bottom, both give a
+    // 180° rotation.  90°/270° are not offered — the Pi ISP cannot
+    // transpose.  Ignored by the V4L2 backends (validation rejects them).
+    bool hflip = false;
+    bool vflip = false;
 };
 
 // ---------------------------------------------------------------------------
