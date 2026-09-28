@@ -161,6 +161,13 @@ enabled = false
 # match wins. Nodes matching nothing get no limit.
 # pattern = "edge*"
 # sub_max = 1
+#
+# A catch-all last rule makes the default explicit — e.g. conservative:
+# unknown nodes may publish (act as sources) but never serve a viewer
+# directly, so cascades never land on an unrecognized node:
+# [[node_rules]]
+# pattern = "*"
+# sub_max = 0
 
 # [[nodes]]
 # alias = "static-1"

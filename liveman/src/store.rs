@@ -21,8 +21,6 @@ pub struct Server {
     #[serde(default)]
     pub url: String,
     #[serde(default = "u16_max_value")]
-    pub pub_max: u16,
-    #[serde(default = "u16_max_value")]
     pub sub_max: u16,
 }
 
@@ -89,7 +87,6 @@ impl From<(String, Node)> for Server {
             token: v.token,
             url: v.url,
             sub_max: v.sub_max.unwrap_or(u16::MAX),
-            ..Default::default()
         }
     }
 }
@@ -100,7 +97,6 @@ impl Default for Server {
             alias: String::default(),
             token: String::default(),
             url: String::default(),
-            pub_max: u16::MAX,
             sub_max: u16::MAX,
         }
     }
