@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **Subscriber-count limits moved from liveion's `[strategy]` to liveman's `[[nodes]]` config.** `each_stream_max_sub` was never enforced by liveion itself — it only existed so liveman could poll it back via `GET /api/strategy/` — so the field was removed from `api::strategy::Strategy` (the remaining fields are all liveion-local behavior). liveman now takes an optional `sub_max` per `[[nodes]]` entry (absent = unlimited) and uses it for WHEP routing and cascade target selection. Config files that still set `each_stream_max_sub` parse without error but the value is ignored — move the limit to liveman's `[[nodes]]` entries.
+
+### Added
+
+- New `conf/livenil/edge-cloud/` sample topology (run with `just run-edge-cloud`): two edge nodes simulate cameras (one provisioned stream each, `sub_max = 1`) and one cloud node is the central SFU, all behind a single liveman. The first WHEP viewer of a stream is proxied to the edge directly; a second viewer cascades the stream to the cloud (push mode) and the direct viewer is kicked (`close_other_sub = true`) so its player reconnects onto the cloud — the edge never sends more than one copy of the stream upstream. When the last cloud viewer leaves, the cloud destroys the leftover stream (`auto_delete_whep`) and liveman reaps the idle cascade, so the next viewer goes direct to the edge again.
+- liveman node updates via SSE are now used for livenil's in-process nodes, and livenil merges `[[nodes]]` entries declared in its `liveman.toml` with the in-process nodes by alias (declared entries contribute policy fields such as `sub_max`; the runtime contributes the listen address).
+
+### Fixed
+
+- liveman cascade target selection was nondeterministic (first element of a `HashSet` difference) and panicked when every node already hosted the stream. The destination is now the candidate with the largest remaining subscriber capacity (`sub_max`), ties broken by alias, and an empty candidate set returns `NoAvailableNode`.
+- liveman's idle-cascade reaper could never reap push-mode cascades: the cascade session's `target_url` points at liveman's node-pinned endpoint (`{public}/api/whip/{alias}/{stream}`), which the reaper tried to resolve as a node address. Target URLs are now resolved by alias for the node-pinned form and by origin for direct node addresses.
+- liveion sessions whose peer went `Disconnected` (or `Failed`) lingered as zombies: the watchdog's `pc.close()` aborts the webrtc driver task, so the `Closed` state event that normally drives session removal is never emitted. The watchdog and the `Failed` path now remove the session directly after closing (both removal paths are idempotent if the `Closed` event does fire).
+- `liveman` pull-mode cascade no longer kills its own hop when `cascade.close_other_sub` is enabled. The destination's outgoing pull arrives at the source node as an unmarked, ordinary subscriber and the cleanup deleted it along with the direct viewers; liveman now learns the hop's source-side session id from the destination's `cascade.session_url` and spares it, so no wire-level cascade marking is needed. The edge-cloud sample now uses `mode = "pull"` (the cloud WHEP-pulls from the edge), matching the camera topology it demonstrates.
+- liveman's subscriber-capacity accounting no longer counts `Closed` sessions (they linger in node snapshots for a 30 s display TTL), pinned-endpoint sessions (`/api/whip/{alias}/{stream}`, `/api/whep/{alias}/{stream}`) are now recorded eagerly like their unpinned counterparts, and sessions deleted through liveman's session proxy leave the routing table immediately instead of waiting for the next node snapshot.
+
 ## [0.10.1] - 2026-09-27
 
 ### Breaking Changes

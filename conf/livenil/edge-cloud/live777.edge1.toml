@@ -1,0 +1,9 @@
+# Edge camera node 1. Serves stream "cam1" to at most one direct viewer;
+# further viewers are cascaded to the cloud node by liveman. (The
+# one-viewer limit lives in liveman.toml: [[nodes]] sub_max = 1.)
+[http]
+listen = "127.0.0.1:7781"
+
+# The camera's stream is provisioned: always listed in the API/dashboard,
+# even before the camera starts publishing.
+[stream.cam1]

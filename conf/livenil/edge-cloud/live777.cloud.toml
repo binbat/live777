@@ -1,0 +1,15 @@
+# Cloud central SFU node. Receives cascaded streams from the edge nodes and
+# serves any number of viewers (no [[nodes]] sub_max entry = unlimited).
+[http]
+listen = "127.0.0.1:7782"
+
+[strategy]
+# Primary teardown for cascaded streams: shortly after the last viewer
+# leaves, destroy the stream. This also closes the edge's cascade push, so
+# the edge returns to zero outbound copies and the next viewer goes direct
+# to the edge again.
+auto_delete_whep = 5000
+# Safety net: if the cascade publisher is already gone (liveman reaped the
+# idle cascade, or the push dropped), destroy the leftover publisher-less
+# stream quickly so no viewer can land on an empty shell.
+auto_delete_whip = 1000
