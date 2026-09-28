@@ -195,6 +195,7 @@ jobs:
         if: ${{ matrix.job.nfpm }}
         run: |
           DESCRIBE=`git describe --tags`-
+          echo "NFPM_NAME=live777" >> $GITHUB_ENV
           echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
           echo "NFPM_TARGET=${{ matrix.job.target }}" >> $GITHUB_ENV
           echo "NFPM_VERSION=`echo ${DESCRIBE} | cut -d - -f 1`" >> $GITHUB_ENV
@@ -271,16 +272,18 @@ jobs:
 
 
   build-native:
-    name: aarch64-unknown-linux-gnu-${{ matrix.variant }} (ubuntu-24.04)
+    name: aarch64-unknown-linux-gnu-${{ matrix.job.variant }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        variant: [rkmpp, rpi]
+        job:
+          - { variant: rkmpp }
+          - { variant: rpi, nfpm: arm64 }
     env:
       TARGET: aarch64-unknown-linux-gnu
-      VARIANT: ${{ matrix.variant }}
-      CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-${{ matrix.variant }}:latest
+      VARIANT: ${{ matrix.job.variant }}
+      CROSS_IMAGE: ghcr.io/binbat/crossbuilder-aarch64-${{ matrix.job.variant }}:latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
@@ -331,12 +334,12 @@ jobs:
         shell: bash
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build ${{ matrix.variant }} live777
+      - name: Build ${{ matrix.job.variant }} live777
         shell: bash
         run: |
           CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui
 
-      - name: Create ${{ matrix.variant }} live777 tarball
+      - name: Create ${{ matrix.job.variant }} live777 tarball
         shell: bash
         run: |
           TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
@@ -350,15 +353,56 @@ jobs:
 
           echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
 
-      - name: Artifact Upload ${{ matrix.variant }} live777
+      - name: Artifact Upload ${{ matrix.job.variant }} live777
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_live777
           path: ${{ env.TAR_LIVE777_NAME }}
 
-      - name: Upload ${{ matrix.variant }} release archive
+      - name: Upload ${{ matrix.job.variant }} release archive
         shell: bash
         if: github.ref_type == 'tag'
         run: gh release upload ${{ env.VERSION }} ${{ env.TAR_LIVE777_NAME }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: |
+            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+            sudo apt update
+            sudo apt install nfpm
+
+      - name: Set nFPM environment
+        if: ${{ matrix.job.nfpm }}
+        run: |
+          DESCRIBE=`git describe --tags`-
+          echo "NFPM_NAME=live777-${{ matrix.job.variant }}" >> $GITHUB_ENV
+          echo "NFPM_ARCH=${{ matrix.job.nfpm }}" >> $GITHUB_ENV
+          echo "NFPM_TARGET=${TARGET}" >> $GITHUB_ENV
+          echo "NFPM_VERSION=`echo ${DESCRIBE} | cut -d - -f 1`" >> $GITHUB_ENV
+          echo "NFPM_RELEASE=`echo ${DESCRIBE} | cut -d - -f 2`" >> $GITHUB_ENV
+          echo "NFPM_PRERELEASE=`echo ${DESCRIBE} | cut -d - -f 3`" >> $GITHUB_ENV
+
+      - name: Build nFPM config
+        if: ${{ matrix.job.nfpm }}
+        run: envsubst < nfpm/live777.yaml > live777.yaml
+
+      - name: Use nFPM
+        if: ${{ matrix.job.nfpm }}
+        run: nfpm pkg --packager deb --config live777.yaml
+
+      - name: Artifact Upload deb package
+        uses: actions/upload-artifact@v7
+        if: ${{ matrix.job.nfpm }}
+        with:
+          name: ${{ env.VERSION }}_${{ env.TARGET }}_${{ env.VARIANT }}_deb
+          path: |
+              *.deb
+
+      - name: Upload release deb package
+        shell: bash
+        if: ${{ (github.ref_type == 'tag') && (matrix.job.nfpm) }}
+        run: gh release upload ${{ env.VERSION }} *.deb
         env:
           GH_TOKEN: ${{ github.token }}
