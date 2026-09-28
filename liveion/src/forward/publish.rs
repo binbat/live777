@@ -61,6 +61,7 @@ impl PublishRTCPeerConnection {
 
     /// Current peer connection state, mirrored from the driver's state
     /// channel.
+    #[cfg(feature = "cascade")]
     pub(crate) fn connection_state(&self) -> RTCPeerConnectionState {
         *self.connection_state_rx.borrow()
     }

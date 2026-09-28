@@ -1458,6 +1458,7 @@ impl PeerForwardInternal {
     /// attached through the media-generation machinery instead of dropping
     /// them with a publisher-leave teardown. A still-connected cascade-pull
     /// incumbent and any plain WHIP publisher keep their hard conflict.
+    #[cfg(feature = "cascade")]
     pub(crate) async fn replace_dead_cascade_pull_incumbent(&self) -> Result<Option<String>> {
         let dead = {
             let publish = self.publish.read().await;
