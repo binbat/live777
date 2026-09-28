@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The release pipeline now ships a `live777-rpi` Debian package (arm64) alongside the Raspberry Pi tarball, packaged from the same `native-rpi` build.
+- The release pipeline now ships `live777-rpi` / `live777-rkmpp` Debian packages (arm64) alongside the native tarballs, packaged from the same `native-rpi` / `native-rkmpp` builds.
 
 ## [0.10.1] - 2026-09-27
 

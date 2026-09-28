@@ -278,7 +278,7 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - { variant: rkmpp }
+          - { variant: rkmpp, nfpm: arm64 }
           - { variant: rpi, nfpm: arm64 }
     env:
       TARGET: aarch64-unknown-linux-gnu
