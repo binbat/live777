@@ -134,11 +134,13 @@ async fn whep_trickle_session(
     let mut cfg = liveion::config::Config::default();
     cfg.webrtc.ice_lite = ice_lite;
     if ice_lite {
-        // The shipped sample config sets a STUN server, and ICE Lite agents
-        // gather host candidates only — liveion must drop the configured
-        // servers before they reach the agent, which rejects URLs it cannot
-        // use. Exercise exactly that path.
-        cfg.ice_servers = iceserver::default_ice_servers();
+        // ICE Lite agents gather host candidates only — when a STUN server
+        // is configured, liveion must drop it before it reaches the agent,
+        // which rejects URLs it cannot use. Exercise exactly that path.
+        cfg.ice_servers = vec![iceserver::IceServer {
+            urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            ..Default::default()
+        }];
     }
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
 

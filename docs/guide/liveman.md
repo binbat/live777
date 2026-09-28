@@ -93,6 +93,12 @@ password = "live777-2"
 
 ## Extra `IceServers` {#extra-ice}
 
+By default neither liveman nor live777 advertises any ICE server: liveman
+adds none and only passes through the upstream liveion `Link` headers, and
+liveion itself defaults to an empty `[[ice_servers]]` list. An unconfigured
+deployment therefore stays fully on the LAN (host candidates only). Configure
+this section only for internet-facing deployments.
+
 This merge all `iceServers` in `WHIP`/`WHEP`
 
 ::: danger NOTE:
