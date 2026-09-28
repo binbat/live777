@@ -125,6 +125,14 @@ mod tests {
         Vec::new()
     }
 
+    fn sample_ice_servers() -> Vec<webrtc::peer_connection::RTCIceServer> {
+        vec![webrtc::peer_connection::RTCIceServer {
+            urls: vec!["stun:stun.example.com:19302".to_string()],
+            username: String::new(),
+            credential: String::new(),
+        }]
+    }
+
     #[test]
     fn non_synth_input_returns_none() {
         assert!(
@@ -180,7 +188,7 @@ mod tests {
             "synth://vp8?ice=&ice=stun:stun.example.com:3478",
             "http://x/whip/1".into(),
             None,
-            iceserver::default_rtc_ice_servers(),
+            sample_ice_servers(),
         )
         .unwrap()
         .expect("synth input should produce a publisher")
@@ -201,7 +209,7 @@ mod tests {
             "synth://vp8",
             "http://x/whip/1".into(),
             None,
-            iceserver::default_rtc_ice_servers(),
+            sample_ice_servers(),
         )
         .unwrap()
         .expect("synth input should produce a publisher")
@@ -214,7 +222,7 @@ mod tests {
         assert_eq!(config.ice_servers.len(), 1);
         assert_eq!(
             config.ice_servers[0].urls,
-            vec![iceserver::DEFAULT_ICE_SERVER_URL]
+            vec!["stun:stun.example.com:19302"]
         );
     }
 

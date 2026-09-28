@@ -11,10 +11,6 @@ use std::str::FromStr;
 use tracing::warn;
 use webrtc::error::Error;
 
-/// ICE server URL used when nothing is configured (a single public STUN
-/// server). Also the CLI default for the livetwo-based tools.
-pub const DEFAULT_ICE_SERVER_URL: &str = "stun:stun.l.google.com:19302";
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct IceServer {
     #[serde(default)]
@@ -165,14 +161,6 @@ pub fn format_iceserver(urls: Vec<String>, username: String, password: String) -
     }
 }
 
-pub fn default_ice_servers() -> Vec<IceServer> {
-    vec![IceServer {
-        urls: vec![DEFAULT_ICE_SERVER_URL.to_string()],
-        username: "".to_string(),
-        credential: "".to_string(),
-    }]
-}
-
 /// Convert configured ICE servers into runtime `RTCIceServer`s, dropping
 /// entries without URLs (an entry with no URLs disables ICE gathering).
 pub fn to_rtc_ice_servers(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
@@ -181,11 +169,6 @@ pub fn to_rtc_ice_servers(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
         .filter(|server| !server.urls.is_empty())
         .map(Into::into)
         .collect()
-}
-
-/// The default ICE servers as runtime `RTCIceServer`s.
-pub fn default_rtc_ice_servers() -> Vec<RTCIceServer> {
-    to_rtc_ice_servers(default_ice_servers())
 }
 
 // Shared `--ice-server` CLI flag for the livetwo-based tools, meant to be
@@ -583,12 +566,5 @@ mod tests {
         let rtc = to_rtc_ice_servers(servers);
         assert_eq!(rtc.len(), 1);
         assert_eq!(rtc[0].urls, vec!["stun:203.0.113.1:3478"]);
-    }
-
-    #[test]
-    fn default_rtc_ice_servers_is_public_stun() {
-        let rtc = default_rtc_ice_servers();
-        assert_eq!(rtc.len(), 1);
-        assert_eq!(rtc[0].urls, vec![DEFAULT_ICE_SERVER_URL]);
     }
 }

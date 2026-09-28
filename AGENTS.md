@@ -212,6 +212,11 @@ Configuration files:
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 `recorder.storage`, `strategy`, `net4mqtt`.
 
+There are no default ICE servers anywhere: liveion's `ice_servers` and
+liveman's `extra_ice` are empty unless configured, so an out-of-the-box
+deployment is LAN-only (host candidates only, no STUN/TURN advertised to
+clients via Link headers).
+
 ## Code Organization Conventions
 
 - Rust crate source lives in `src/` or `<crate>/src/`.

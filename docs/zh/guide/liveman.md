@@ -93,6 +93,11 @@ password = "live777-2"
 
 ## 使用外部的 `IceServers` {#extra-ice}
 
+默认情况下 liveman 和 live777 都不会下发任何 ICE server：liveman 自身不添加，
+只透传上游 liveion 的 `Link` 头，而 liveion 的 `[[ice_servers]]` 默认也是空列表。
+因此不做任何配置的部署完全运行在内网（仅 host candidate）。
+只有面向公网的部署才需要配置本节。
+
 使用 `WHIP`/`WHEP` 时会合并全部的 `iceServers`
 
 ::: danger 注意:
