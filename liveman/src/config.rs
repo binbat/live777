@@ -94,6 +94,12 @@ pub struct Node {
     pub url: String,
     #[serde(default)]
     pub mode: UpdateMode,
+    /// Per-stream subscriber capacity used by WHEP routing and cascade
+    /// target selection. `None` (or an absent entry) means unlimited.
+    /// This is a liveman-side scheduling policy: liveion does not enforce
+    /// it and no longer carries `each_stream_max_sub` for liveman's sake.
+    #[serde(default)]
+    pub sub_max: Option<u16>,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
@@ -444,5 +450,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(node.mode, UpdateMode::Sse);
+    }
+
+    #[test]
+    fn node_sub_max_defaults_to_unlimited() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.sub_max, None);
+    }
+
+    #[test]
+    fn node_sub_max_parses() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            sub_max = 1
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.sub_max, Some(1));
     }
 }

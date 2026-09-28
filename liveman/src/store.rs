@@ -33,6 +33,9 @@ pub struct Node {
     pub kind: NodeKind,
     pub url: String,
     pub mode: UpdateMode,
+    /// Liveman-side per-stream subscriber capacity from `[[nodes]] sub_max`
+    /// (`None` = unlimited).
+    pub sub_max: Option<u16>,
 
     streams: Vec<Stream>,
     pub strategy: Option<Strategy>,
@@ -82,10 +85,7 @@ impl From<(String, Node)> for Server {
             alias: k,
             token: v.token,
             url: v.url,
-            sub_max: match v.strategy {
-                Some(x) => x.each_stream_max_sub.0,
-                None => u16::MAX,
-            },
+            sub_max: v.sub_max.unwrap_or(u16::MAX),
             ..Default::default()
         }
     }
@@ -217,13 +217,18 @@ impl Storage {
             .ok_or_else(|| anyhow!("node not found"))?;
         node.streams = streams.clone();
 
-        // Rebuild stream/session indexes for the new snapshot.
+        // Rebuild stream/session indexes for the new snapshot. Closed
+        // sessions linger in the node listing for display (30 s TTL) but are
+        // not routable, so they stay out of the session index.
         for stream in streams {
             stream_map
                 .entry(stream.id.clone())
                 .or_default()
                 .push(alias.to_string());
             for session in stream.subscribe.sessions {
+                if session.state == api::response::RTCPeerConnectionState::Closed {
+                    continue;
+                }
                 session_map.insert(
                     api::path::session(&stream.id, &session.id),
                     alias.to_string(),
@@ -324,6 +329,17 @@ impl Storage {
             .clone();
 
         Ok((alias, node).into())
+    }
+
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
+    pub async fn session_remove(&self, session: &str) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
+        self.session
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .remove(session);
+        Ok(())
     }
 
     fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {
@@ -542,5 +558,27 @@ mod tests {
 
         let list = storage.get_do_strategy_update_list();
         assert!(!list.contains_key("static-0"));
+    }
+
+    #[test]
+    fn server_sub_max_comes_from_node_config() {
+        let mut limited = Node::new(
+            String::new(),
+            NodeKind::Static,
+            "http://127.0.0.1:7780".to_string(),
+            UpdateMode::Poll,
+        );
+        limited.sub_max = Some(1);
+        let server: Server = ("edge0".to_string(), limited).into();
+        assert_eq!(server.sub_max, 1);
+
+        let unlimited = Node::new(
+            String::new(),
+            NodeKind::Static,
+            "http://127.0.0.1:7782".to_string(),
+            UpdateMode::Poll,
+        );
+        let server: Server = ("cloud".to_string(), unlimited).into();
+        assert_eq!(server.sub_max, u16::MAX);
     }
 }

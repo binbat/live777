@@ -150,6 +150,10 @@ enabled = false
 # url = "http://127.0.0.1:7777"
 # Update mechanism: "poll" (default) or "sse"
 # mode = "sse"
+# Per-stream subscriber capacity for WHEP routing and cascade target
+# selection (absent = unlimited). This is a liveman-side scheduling policy;
+# liveion does not enforce it.
+# sub_max = 1
 
 # [[nodes]]
 # alias = "static-1"

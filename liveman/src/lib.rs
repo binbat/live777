@@ -95,10 +95,9 @@ where
     let cancel = CancellationToken::new();
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
-        nodes.write().unwrap().insert(
-            v.alias.clone(),
-            Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode),
-        );
+        let mut node = Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode);
+        node.sub_max = v.sub_max;
+        nodes.write().unwrap().insert(v.alias.clone(), node);
 
         if v.mode == UpdateMode::Sse {
             tokio::spawn(crate::sse::subscribe_streams(
