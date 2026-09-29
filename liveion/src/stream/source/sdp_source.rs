@@ -1,9 +1,7 @@
 use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, StreamSourceState};
 use anyhow::Result;
 use async_trait::async_trait;
-use std::net::SocketAddr;
-#[cfg(feature = "source")]
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, broadcast};
@@ -89,8 +87,10 @@ fn split_connection_token(token: &str) -> (String, Option<String>) {
     (addr, zone)
 }
 
+/// The wildcard bind address for the media-port sockets: IPv6 when the
+/// SDP connection address is an IP6 line, IPv4 otherwise.
 #[cfg(feature = "source")]
-type ParsedSdp = (Vec<(u8, u16)>, SdpMediaInfo, bool, Option<MulticastJoin>);
+type ParsedSdp = (Vec<(u8, u16)>, SdpMediaInfo, IpAddr, Option<MulticastJoin>);
 
 struct UdpReceiverContext {
     stream_id: String,
@@ -239,25 +239,19 @@ const BIND_JOIN_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_m
 #[cfg(feature = "source")]
 const BIND_JOIN_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Bind a media-port UDP socket, joining the multicast group when the SDP
-/// connection address named one.  Multicast receivers set SO_REUSEADDR so
-/// several receivers of the same group:port can coexist on one host (a
-/// second stream, a monitoring tool); SO_REUSEPORT would load-balance the
-/// datagrams instead of duplicating them.
+/// Bind a media-port UDP socket on the wildcard address of `bind_ip`'s
+/// family, joining the multicast group when the SDP connection address
+/// named one.  Multicast receivers set SO_REUSEADDR so several receivers
+/// of the same group:port can coexist on one host (a second stream, a
+/// monitoring tool); SO_REUSEPORT would load-balance the datagrams instead
+/// of duplicating them.
 #[cfg(feature = "source")]
 async fn bind_receiver_socket(
+    bind_ip: IpAddr,
     port: u16,
-    is_ipv6: bool,
     multicast: Option<MulticastJoin>,
 ) -> Result<UdpSocket> {
-    let bind_addr = SocketAddr::new(
-        if is_ipv6 {
-            Ipv6Addr::UNSPECIFIED.into()
-        } else {
-            Ipv4Addr::UNSPECIFIED.into()
-        },
-        port,
-    );
+    let bind_addr = SocketAddr::new(bind_ip, port);
 
     let Some(join) = multicast else {
         return UdpSocket::bind(bind_addr)
@@ -265,10 +259,9 @@ async fn bind_receiver_socket(
             .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket {bind_addr}: {e}"));
     };
 
-    let domain = if is_ipv6 {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
+    let domain = match bind_ip {
+        IpAddr::V4(_) => socket2::Domain::IPV4,
+        IpAddr::V6(_) => socket2::Domain::IPV6,
     };
     let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
     socket.set_reuse_address(true)?;
@@ -302,12 +295,12 @@ async fn bind_receiver_with_retry(
     stream_id: &str,
     channel: u8,
     port: u16,
-    is_ipv6: bool,
+    bind_ip: IpAddr,
     multicast: Option<MulticastJoin>,
 ) -> Result<UdpSocket> {
     let mut delay = BIND_JOIN_INITIAL_DELAY;
     for attempt in 1..=BIND_JOIN_MAX_ATTEMPTS {
-        match bind_receiver_socket(port, is_ipv6, multicast).await {
+        match bind_receiver_socket(bind_ip, port, multicast).await {
             Ok(socket) => {
                 match multicast {
                     Some(join) => info!(
@@ -319,7 +312,7 @@ async fn bind_receiver_with_retry(
                         stream_id,
                         port,
                         channel,
-                        if is_ipv6 { 6 } else { 4 }
+                        if bind_ip.is_ipv6() { 6 } else { 4 }
                     ),
                 }
                 return Ok(socket);
@@ -422,10 +415,10 @@ impl SdpSource {
         let mut video_rtcp_addr: Option<SocketAddr> = None;
         let mut audio_rtcp_addr: Option<SocketAddr> = None;
 
-        let is_ipv6 = connection_info
-            .as_ref()
-            .map(|ca| ca.is_ipv6())
-            .unwrap_or(false);
+        let bind_ip: IpAddr = match connection_info {
+            Some(ref ca) if ca.is_ipv6() => Ipv6Addr::UNSPECIFIED.into(),
+            _ => Ipv4Addr::UNSPECIFIED.into(),
+        };
 
         let multicast =
             multicast_join(&connection_info, self.config.multicast_interface.as_deref())?;
@@ -453,7 +446,7 @@ impl SdpSource {
                             && !no_rtcp
                         {
                             let rtcp_port = port + 1;
-                            let rtcp_addr_str = if is_ipv6 {
+                            let rtcp_addr_str = if bind_ip.is_ipv6() {
                                 format!("[{}]:{}", ca.addr(), rtcp_port)
                             } else {
                                 format!("{}:{}", ca.addr(), rtcp_port)
@@ -519,7 +512,7 @@ impl SdpSource {
             audio_rtcp_addr,
         };
 
-        Ok((ports, media_info, is_ipv6, multicast))
+        Ok((ports, media_info, bind_ip, multicast))
     }
 
     #[cfg(not(feature = "source"))]
@@ -753,13 +746,13 @@ impl StreamSource for SdpSource {
         }
 
         #[cfg(feature = "source")]
-        let (ports, media_info, is_ipv6, multicast) = self.parse_sdp()?;
+        let (ports, media_info, bind_ip, multicast) = self.parse_sdp()?;
 
         #[cfg(not(feature = "source"))]
         let ports = self.parse_sdp()?;
 
         #[cfg(not(feature = "source"))]
-        let is_ipv6 = false;
+        let bind_ip: IpAddr = Ipv4Addr::UNSPECIFIED.into();
 
         let ports_len = ports.len();
 
@@ -778,18 +771,11 @@ impl StreamSource for SdpSource {
         for (channel, port) in ports {
             #[cfg(feature = "source")]
             let socket =
-                bind_receiver_with_retry(&self.config.stream_id, channel, port, is_ipv6, multicast)
+                bind_receiver_with_retry(&self.config.stream_id, channel, port, bind_ip, multicast)
                     .await?;
 
             #[cfg(not(feature = "source"))]
-            let socket = {
-                let bind_addr: SocketAddr = if is_ipv6 {
-                    format!("[::]:{}", port).parse().unwrap()
-                } else {
-                    format!("0.0.0.0:{}", port).parse().unwrap()
-                };
-                UdpSocket::bind(bind_addr).await?
-            };
+            let socket = UdpSocket::bind(SocketAddr::new(bind_ip, port)).await?;
 
             sockets.push((channel, socket));
         }
@@ -838,7 +824,7 @@ impl StreamSource for SdpSource {
             "[{}] Started with {} receivers (IPv{})",
             self.config.stream_id,
             ports_len,
-            if is_ipv6 { 6 } else { 4 }
+            if bind_ip.is_ipv6() { 6 } else { 4 }
         );
         Ok(())
     }
@@ -1016,10 +1002,10 @@ mod tests {
                    a=rtpmap:111 opus/48000/2\r\n";
 
         let source = test_source(sdp);
-        let (ports, media_info, is_ipv6, multicast) = source.parse_sdp().unwrap();
+        let (ports, media_info, bind_ip, multicast) = source.parse_sdp().unwrap();
 
         assert_eq!(ports, vec![(0u8, 5004u16), (2u8, 5006u16)]);
-        assert!(!is_ipv6);
+        assert!(!bind_ip.is_ipv6());
         assert!(multicast.is_none(), "unicast address must not join");
         assert_eq!(media_info.video_rtcp_addr.unwrap().port(), 5005);
         assert_eq!(media_info.audio_rtcp_addr.unwrap().port(), 5007);
@@ -1041,10 +1027,10 @@ mod tests {
     #[test]
     fn multicast_group_joins_with_kernel_default_interface() {
         let source = test_source(MULTICAST_SDP);
-        let (ports, media_info, is_ipv6, multicast) = source.parse_sdp().unwrap();
+        let (ports, media_info, bind_ip, multicast) = source.parse_sdp().unwrap();
 
         assert_eq!(ports, vec![(0u8, 1720u16)]);
-        assert!(!is_ipv6);
+        assert!(!bind_ip.is_ipv6());
         // A multicast group is not a usable RTCP destination: the source
         // only receives, and hosts without a multicast sender route would
         // spam ENETUNREACH on every feedback packet.
@@ -1085,9 +1071,9 @@ mod tests {
     fn ipv6_multicast_group_takes_interface_index() {
         let sdp = MULTICAST_SDP.replace("c=IN IP4 230.1.1.1", "c=IN IP6 ff15::1");
         let source = test_source_with(&sdp, Some("2"));
-        let (_, _, is_ipv6, multicast) = source.parse_sdp().unwrap();
+        let (_, _, bind_ip, multicast) = source.parse_sdp().unwrap();
 
-        assert!(is_ipv6);
+        assert!(bind_ip.is_ipv6());
         match multicast {
             Some(MulticastJoin::V6 { group, interface }) => {
                 assert_eq!(group, "ff15::1".parse::<Ipv6Addr>().unwrap());
@@ -1118,9 +1104,9 @@ mod tests {
     fn ipv6_multicast_zone_defaults_the_interface() {
         let sdp = MULTICAST_SDP.replace("c=IN IP4 230.1.1.1", "c=IN IP6 ff12::1%3");
         let source = test_source(&sdp);
-        let (_, _, is_ipv6, multicast) = source.parse_sdp().unwrap();
+        let (_, _, bind_ip, multicast) = source.parse_sdp().unwrap();
 
-        assert!(is_ipv6);
+        assert!(bind_ip.is_ipv6());
         match multicast {
             Some(MulticastJoin::V6 { group, interface }) => {
                 assert_eq!(group, "ff12::1".parse::<Ipv6Addr>().unwrap());
