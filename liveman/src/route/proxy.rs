@@ -325,9 +325,13 @@ pub(crate) async fn request_proxy(
 
 async fn maximum_idle_node(
     mut state: AppState,
-    servers: Vec<Server>,
+    mut servers: Vec<Server>,
     stream: String,
 ) -> Option<Server> {
+    // Never route a viewer to an offline node: it has the largest apparent
+    // remaining capacity (its snapshot is stale) and the proxy would just
+    // fail.
+    state.storage.filter_online(&mut servers);
     if servers.is_empty() {
         return None;
     }

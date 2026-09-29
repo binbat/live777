@@ -62,7 +62,13 @@ where
         None
     };
 
-    let client_req = reqwest::Client::builder();
+    // Everything on `client_req` is a short request/response exchange
+    // (WHIP/WHEP proxying, session and cascade calls); SSE builds its own
+    // client in sse.rs. Bound it anyway so a node that accepts TCP but
+    // stalls cannot wedge the caller (notably the cascade supervisor).
+    let client_req = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30));
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_millis(1000));

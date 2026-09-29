@@ -314,7 +314,12 @@ fn resolve_cascade_target(
             .cloned()
             .map(|node| (node, stream.to_string())),
         ["whip", stream] | ["whep", stream] => {
-            let addr = format!("{}://{}:{}", url.scheme(), url.host_str()?, url.port()?);
+            let addr = format!(
+                "{}://{}:{}",
+                url.scheme(),
+                url.host_str()?,
+                url.port_or_known_default()?
+            );
             map_url_server
                 .get(&addr)
                 .cloned()

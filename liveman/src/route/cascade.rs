@@ -36,7 +36,9 @@ pub async fn cascade_new_node(
             .ok_or(AppError::NoAvailableNode);
     }
 
-    let set_all: HashSet<Server> = state.storage.nodes().await.into_iter().collect();
+    let mut all = state.storage.nodes().await;
+    state.storage.filter_online(&mut all);
+    let set_all: HashSet<Server> = all.into_iter().collect();
     let set_src: HashSet<Server> = nodes.clone().into_iter().collect();
 
     let server_src = nodes.first().unwrap().clone();
@@ -70,26 +72,56 @@ fn retry_delay(attempts: u32) -> Duration {
     (CASCADE_RETRY_INITIAL * 2u32.pow(shift)).min(CASCADE_RETRY_MAX)
 }
 
+/// What the supervisor loop should do with an intent after a pass.
+enum IntentOutcome {
+    /// Write the (possibly mutated) intent back, if it still exists.
+    Keep,
+    /// Remove the intent entirely (one of its nodes is gone).
+    Dropped,
+}
+
 /// Keeps every cascade intent's actual hop converged to the desired state:
 /// (re)issues the cascade with exponential backoff while the destination
 /// lacks a connected publisher for the stream, and runs the one-time
 /// `close_other_sub` cleanup when the hop first establishes. Health is read
 /// from the SSE/poll-fed storage snapshots — no extra HTTP probing.
-pub async fn cascade_supervisor(mut state: AppState) {
+///
+/// Intents are supervised concurrently: node calls have no bounded latency
+/// of their own, and one stalled node must not freeze the convergence of
+/// every other intent cluster-wide.
+pub async fn cascade_supervisor(state: AppState) {
     let notify = state.storage.cascade_notify_waiter();
     loop {
         tokio::select! {
             _ = notify.notified() => {}
             _ = tokio::time::sleep(SUPERVISOR_TICK) => {}
         }
-        for mut intent in state.storage.cascade_intents() {
-            supervise_intent(&mut state, &mut intent).await;
-            state.storage.cascade_intent_update(intent);
+        let mut set = tokio::task::JoinSet::new();
+        for intent in state.storage.cascade_intents() {
+            let state = state.clone();
+            set.spawn(async move {
+                let mut intent = intent;
+                let outcome = supervise_intent(&state, &mut intent).await;
+                (intent, outcome)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok((intent, outcome)) = joined else {
+                continue;
+            };
+            match outcome {
+                // Compare-and-store: an intent removed mid-pass (idle
+                // teardown, node gone) stays removed.
+                IntentOutcome::Keep => state.storage.cascade_intent_update(intent),
+                IntentOutcome::Dropped => {
+                    state.storage.cascade_intent_remove(&intent.stream);
+                }
+            }
         }
     }
 }
 
-async fn supervise_intent(state: &mut AppState, intent: &mut CascadeIntent) {
+async fn supervise_intent(state: &AppState, intent: &mut CascadeIntent) -> IntentOutcome {
     let map_server = state.storage.get_map_server();
     let (src, dst) = match (map_server.get(&intent.src), map_server.get(&intent.dst)) {
         (Some(src), Some(dst)) => (src.clone(), dst.clone()),
@@ -101,12 +133,12 @@ async fn supervise_intent(state: &mut AppState, intent: &mut CascadeIntent) {
                 "cascade intent dropped (node gone): stream {}, {} -> {}",
                 intent.stream, intent.src, intent.dst
             );
-            state.storage.cascade_intent_remove(&intent.stream);
-            return;
+            return IntentOutcome::Dropped;
         }
     };
 
-    let (healthy, has_viewers) = match state.storage.info_get(dst.alias.clone()).await {
+    let mut storage = state.storage.clone();
+    let (healthy, has_viewers) = match storage.info_get(dst.alias.clone()).await {
         Ok(streams) => match streams.iter().find(|s| s.id == intent.stream) {
             Some(s) => (
                 s.publish
@@ -128,22 +160,40 @@ async fn supervise_intent(state: &mut AppState, intent: &mut CascadeIntent) {
         intent.next_attempt = Instant::now();
         intent.was_healthy = true;
         if !intent.subs_closed && state.config.cascade.close_other_sub {
-            // Pull mode: the destination's outgoing pull arrives at the
-            // source as an unmarked, ordinary subscriber. Learn the hop's
-            // source-side session id from the destination's publish session
-            // (`cascade.session_url`) so the cleanup spares the hop itself.
-            // Push mode needs nothing: the source marks its own outgoing
-            // push session.
-            let known_hop = match state.config.cascade.mode {
+            match state.config.cascade.mode {
                 CascadeMode::Pull => {
-                    hop_session_on_source(state.client.clone(), dst.clone(), &intent.stream).await
+                    // Pull mode: the destination's outgoing pull arrives at
+                    // the source as an unmarked, ordinary subscriber. Learn
+                    // the hop's source-side session id from the
+                    // destination's publish session (`cascade.session_url`)
+                    // so the cleanup spares the hop itself. If that lookup
+                    // fails transiently, skip the cleanup and leave
+                    // `subs_closed` unset so a later healthy pass retries —
+                    // running it blind would delete the hop's own source
+                    // session along with the real subscribers.
+                    if let Some(hop) =
+                        hop_session_on_source(state.client.clone(), dst.clone(), &intent.stream)
+                            .await
+                    {
+                        cascade_close_other_sub(
+                            state.clone(),
+                            src,
+                            intent.stream.clone(),
+                            Some(hop),
+                        )
+                        .await;
+                        intent.subs_closed = true;
+                    }
                 }
-                CascadeMode::Push => None,
-            };
-            cascade_close_other_sub(state.clone(), src, intent.stream.clone(), known_hop).await;
-            intent.subs_closed = true;
+                // Push mode needs nothing: the source marks its own outgoing
+                // push session.
+                CascadeMode::Push => {
+                    cascade_close_other_sub(state.clone(), src, intent.stream.clone(), None).await;
+                    intent.subs_closed = true;
+                }
+            }
         }
-        return;
+        return IntentOutcome::Keep;
     }
 
     // Nobody is watching the destination and the hop was healthy before its
@@ -155,11 +205,11 @@ async fn supervise_intent(state: &mut AppState, intent: &mut CascadeIntent) {
     // a viewer-less stream and thrash with the destination's
     // auto_delete_whep.
     if intent.was_healthy && !has_viewers {
-        return;
+        return IntentOutcome::Keep;
     }
 
     if Instant::now() < intent.next_attempt {
-        return;
+        return IntentOutcome::Keep;
     }
     let mode = state.config.cascade.mode.clone();
     let result = match mode {
@@ -200,6 +250,7 @@ async fn supervise_intent(state: &mut AppState, intent: &mut CascadeIntent) {
             retry_delay(intent.attempts)
         ),
     }
+    IntentOutcome::Keep
 }
 
 /// Find the session id that a pull-mode cascade created on the source node.

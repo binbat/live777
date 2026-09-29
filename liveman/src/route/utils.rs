@@ -29,12 +29,13 @@ pub async fn cascade_push(
     .unwrap();
     trace!("{:?}", body);
 
-    let response = client
-        .post(url.clone())
-        .headers(headers)
-        .body(body)
-        .send()
-        .await?;
+    // The node's /api/cascade route sits behind liveion's auth middleware;
+    // without this every issue 401s once the node configures auth.tokens.
+    let mut req = client.post(url.clone()).headers(headers).body(body);
+    if !server_src.token.is_empty() {
+        req = req.bearer_auth(&server_src.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())
@@ -57,7 +58,11 @@ pub async fn session_delete(
 ) -> Result<(), Error> {
     let url = format!("{}/session/{}/{}", server.url, stream, session);
 
-    let response = client.delete(url).send().await?;
+    let mut req = client.delete(url);
+    if !server.token.is_empty() {
+        req = req.bearer_auth(&server.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())
@@ -86,12 +91,13 @@ pub async fn cascade_pull(
 
     trace!("cascade pull request: {:?}", body);
 
-    let response = client
-        .post(url.clone())
-        .headers(headers)
-        .body(body)
-        .send()
-        .await?;
+    // The POST goes to the destination node (its token authorizes the call);
+    // the source node's token travels in the body for the WHEP leg itself.
+    let mut req = client.post(url.clone()).headers(headers).body(body);
+    if !server_dst.token.is_empty() {
+        req = req.bearer_auth(&server_dst.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())

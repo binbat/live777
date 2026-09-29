@@ -216,6 +216,15 @@ impl Storage {
             .collect()
     }
 
+    /// Drop offline nodes from a routing candidate list (`Node::online` is
+    /// maintained by poll/SSE/net4mqtt contact health). Candidates built
+    /// from snapshots keep stale entries after a node departs; picking one
+    /// only produces proxy errors and permanently failing cascade intents.
+    pub fn filter_online(&self, servers: &mut Vec<Server>) {
+        let nodes = self.list.read().unwrap();
+        servers.retain(|s| nodes.get(&s.alias).map(|n| n.online).unwrap_or(false));
+    }
+
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
         self.get_cluster()
@@ -339,7 +348,11 @@ impl Storage {
 
         let mut result: Vec<Server> = vec![];
         for alias in streams {
-            if let Some(n) = nodes.get(&alias) {
+            // Offline nodes keep their last snapshot in the index; routing a
+            // viewer there only produces a proxy error, so leave them out.
+            if let Some(n) = nodes.get(&alias)
+                && n.online
+            {
                 result.push((alias, n.clone()).into());
             }
         }
@@ -405,12 +418,18 @@ impl Storage {
     }
 
     /// Write back supervisor-side progress (backoff, subs_closed) without
-    /// waking the supervisor.
+    /// waking the supervisor. Compare-and-store: if the intent was removed
+    /// after the supervisor snapshotted it (idle teardown, node gone), the
+    /// write-back is dropped instead of resurrecting the intent.
     pub fn cascade_intent_update(&self, intent: CascadeIntent) {
-        self.cascade_intents
+        if let Some(slot) = self
+            .cascade_intents
             .write()
             .unwrap()
-            .insert(intent.stream.clone(), intent);
+            .get_mut(&intent.stream)
+        {
+            *slot = intent;
+        }
     }
 
     pub fn cascade_intent_get(&self, stream: &str) -> Option<CascadeIntent> {
