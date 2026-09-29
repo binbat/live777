@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **DataChannel reconnect fallout: leaked forwarding tasks, dead UDP channel bridges, and spurious publish 409s.** A server-side `PeerConnection::close` aborts the webrtc driver, which never delivers the data-channel `OnClose` event — so every session torn down by the server (disconnect watchdog, publisher override, stream reset, session DELETE) leaked its data-channel read/write tasks, each holding the dead peer and a stream-bus sender. The leak also kept the stream's DataChannel bus open forever, which pinned the `[stream.x.channel]` UDP bridge of a reset provisioned stream: the re-init then failed to rebind the listen port (`EADDRINUSE`, logged as a warning only) and the bridge stayed dead until the process restarted. Sessions now carry a `CancellationToken` (cancelled when the session is dropped) that both loops select on; the UDP bridge is owned by the forward, whose `close` cancels it and awaits the socket release so the reset's rebind is deterministic (with a short bind retry on top); `on_data_channel` arriving from a replaced/already-removed session is dropped instead of registering forwarding for a ghost; subscriber-side sends are gated on the peer reaching `Connected` like the publisher side always was; and a WHIP publish that finds the incumbent already `Disconnected`/`Failed`/`Closed` displaces it even when `strategy.override_publisher = false`, so a fast reconnect no longer bounces off the zombie with a 409. On the client side, whepfrom's DataChannel↔UDP bridge now stops with its WHEP session (previously only with the process-wide token), so an in-process reconnect can rebind the same UDP port immediately. Regression coverage: unit tests for both forwarding loops and the override decision, and an end-to-end test that resets a provisioned stream (publisher session DELETE) and asserts the UDP channel bridge still round-trips afterwards.
+
 ## [0.10.2] - 2026-09-28
 
 ### Breaking Changes

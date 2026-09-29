@@ -7,6 +7,7 @@
 /// URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// Buffer size for incoming UDP packets.
@@ -60,11 +61,15 @@ pub fn parse_channel_url(url: &str) -> Option<(String, u16, String, u16)> {
 /// Spawn bidirectional DataChannel <-> UDP forwarding.
 /// `dc_recv`: messages received from liveion DataChannel
 /// `dc_send`: sender to write messages back to liveion DataChannel
+/// `ct`: session-scoped cancellation — the bridge must stop (releasing the
+/// listen socket) when the WHEP session ends, not only when the process-wide
+/// token fires, or an in-process reconnect finds the port still occupied.
 pub async fn spawn_channel(
     url: String,
     mut dc_recv: mpsc::UnboundedReceiver<Vec<u8>>,
     dc_send: mpsc::UnboundedSender<Vec<u8>>,
-) -> anyhow::Result<()> {
+    ct: CancellationToken,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let (listen_host, listen_port, target_host, target_port) =
         parse_channel_url(&url).ok_or_else(|| anyhow::anyhow!("invalid channel url: {}", url))?;
 
@@ -82,10 +87,15 @@ pub async fn spawn_channel(
         }
     };
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut buf = vec![0u8; UDP_BUF_SIZE];
         loop {
             tokio::select! {
+                biased;
+                _ = ct.cancelled() => {
+                    info!("whepfrom channel: session ended, releasing {}", listen);
+                    break;
+                }
                 // DataChannel -> UDP (messages from liveion WHIP group)
                 msg = dc_recv.recv() => {
                     match msg {
@@ -122,7 +132,7 @@ pub async fn spawn_channel(
         }
     });
 
-    Ok(())
+    Ok(task)
 }
 
 #[cfg(test)]
@@ -171,7 +181,10 @@ mod tests {
         let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (dc_send_tx, _dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        spawn_channel(url, dc_recv_rx, dc_send_tx).await.unwrap();
+        let ct = CancellationToken::new();
+        let handle = spawn_channel(url, dc_recv_rx, dc_send_tx, ct.clone())
+            .await
+            .unwrap();
 
         let msg = b"hello from datachannel";
         dc_recv_tx.send(msg.to_vec()).unwrap();
@@ -186,6 +199,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(&buf[..n], msg);
+
+        ct.cancel();
+        handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -196,7 +212,10 @@ mod tests {
         let (_dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (dc_send_tx, mut dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-        spawn_channel(url, dc_recv_rx, dc_send_tx).await.unwrap();
+        let ct = CancellationToken::new();
+        let handle = spawn_channel(url, dc_recv_rx, dc_send_tx, ct.clone())
+            .await
+            .unwrap();
 
         let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let msg = b"hello from udp";
@@ -211,5 +230,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(received, msg);
+
+        ct.cancel();
+        handle.await.unwrap();
+    }
+
+    /// The bridge must release its listen port when the session token is
+    /// cancelled, so an in-process reconnect can rebind the same port.
+    #[tokio::test]
+    async fn test_cancel_releases_listen_port() {
+        let listen_port = portpicker::pick_unused_port().unwrap();
+        let url = format!("udp://0.0.0.0:{}?host=127.0.0.1&port=19999", listen_port);
+
+        let (_dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (dc_send_tx, _dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+        let ct = CancellationToken::new();
+        let handle = spawn_channel(url, dc_recv_rx, dc_send_tx, ct.clone())
+            .await
+            .unwrap();
+
+        assert!(
+            UdpSocket::bind(format!("0.0.0.0:{}", listen_port))
+                .await
+                .is_err()
+        );
+        ct.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("channel task did not stop after cancel")
+            .unwrap();
+        assert!(
+            UdpSocket::bind(format!("0.0.0.0:{}", listen_port))
+                .await
+                .is_ok(),
+            "listen port still occupied after channel stopped"
+        );
     }
 }

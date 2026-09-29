@@ -100,11 +100,20 @@ pub async fn from_with_state(
     .await?;
     info!("WebRTC peer connection established");
 
-    // Start DataChannel <-> UDP forwarding if channel_url is configured
-    if let Some(url) = channel_url {
+    // Start DataChannel <-> UDP forwarding if channel_url is configured. The
+    // bridge runs on a session-scoped token: it stops — releasing its UDP
+    // listen port — when this session ends (any exit path, see
+    // `_session_guard`), not only when the caller's token fires. Without
+    // that, an in-process reconnect finds the old bridge still holding the
+    // port and fails to bind.
+    let session_ct = ct.child_token();
+    let _session_guard = CancelOnDrop(session_ct.clone());
+    let channel_handle = if let Some(url) = channel_url {
         debug!("Starting DataChannel <-> UDP forwarding: {}", url);
-        channel::spawn_channel(url, dc_recv_rx, dc_send_tx).await?;
-    }
+        Some(channel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone()).await?)
+    } else {
+        None
+    };
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
 
@@ -261,8 +270,25 @@ pub async fn from_with_state(
         },
     };
 
+    // Stop the channel bridge and wait for its listen socket to be released
+    // before returning, so a reconnect can rebind the same port immediately.
+    session_ct.cancel();
+    if let Some(handle) = channel_handle {
+        let _ = handle.await;
+    }
+
     graceful_shutdown("WHEP", &mut client, peer).await;
     transport_result
+}
+
+/// Cancels the wrapped token on drop, so every exit path of `from` — early
+/// error returns included — tears down session-scoped tasks.
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 /// Derive the negotiated track kinds from the WHEP answer SDP, so the codec
