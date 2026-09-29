@@ -63,7 +63,7 @@ public:
         EncoderConfig encoder_cfg = ecfg;
         // Use the format the capture backend actually delivers, not the
         // requested one: the generic V4L2 backend converts YUYV to
-        // YUV420P, passes UYVY through unchanged, and libcamera always
+        // NV12, passes UYVY through unchanged, and libcamera always
         // delivers YUV420P regardless of the configured pixel_format.
         encoder_cfg.input_format = capture_->outputFormat();
         // Zero-copy needs both sides: the user opts in via prefer_dmabuf on
