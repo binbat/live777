@@ -67,7 +67,7 @@ public:
     /// The pixel format of the frames this backend actually delivers,
     /// valid after a successful init().  May differ from
     /// `CaptureConfig::pixel_format` — e.g. the generic V4L2 backend
-    /// converts YUYV to YUV420P, and libcamera always delivers YUV420P.
+    /// converts YUYV to NV12, and libcamera always delivers YUV420P.
     virtual RawPixelFormat outputFormat() const = 0;
 
     /// Whether frames from this backend carry the deferred-requeue dmabuf

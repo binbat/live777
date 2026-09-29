@@ -25,9 +25,11 @@ const NAME: &str = "liveman";
     "capture-v4l2",
     "encoder-v4l2-m2m",
     "encoder-rdk",
+    "encoder-rkmpp",
     "native-rpi",
     "native-generic-v4l2",
     "native-rdk",
+    "native-rkmpp",
 ))]
 struct Args {
     /// Set config file path
