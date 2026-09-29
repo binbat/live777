@@ -80,9 +80,8 @@ Response: [200]
 
 - `alias`: String, 别名必须唯一
 - `url`: String, 节点 API 的 URL 地址
-- `pub_max`: Int16, 最大支持推流数
-- `sub_max`: Int16, 最大支持订阅数
-- `status`: StringEnum("running" | "stopped"), 节点状态
+- `status`: StringEnum("running" | "stopped"), 节点连通状态：`poll` 节点反映最近一次轮询结果（任何 HTTP 响应都视为可达），`sse` 节点反映 SSE 连接状态，net4mqtt 节点反映发现（presence）状态
+- `duration`: String, 最近一次轮询的往返耗时（如 `"12ms"`）；无轮询的节点（SSE / net4mqtt）为 `"-"`
 
 例如:
 
@@ -91,26 +90,59 @@ Response: [200]
   {
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "3ms"
   },
   {
     "alias": "buildin-1",
     "url": "http://127.0.0.1:55582",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "5ms"
   },
   {
     "alias": "buildin-2",
     "url": "http://127.0.0.1:55583",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "stopped",
+    "duration": "-"
   }
 ]
 ```
+
+## Source
+
+源管理接口按节点代理（`{alias}`）：liveman 将请求改写为对应节点上的相同路径，并注入该节点的 bearer token 转发，因此集群客户端只需通过 liveman 管理各节点的源。请求/响应体即为节点的 liveion 源 API —— 参见 [live777 API / 媒体源](/zh/guide/live777-api)。别名不存在时返回 [503]。
+
+`GET` `/api/sources/{alias}`
+
+列出该节点的源。
+
+`POST` `/api/sources/{alias}/{stream}`
+
+创建源。创建成功后 liveman 会立即登记 stream→node 映射，使 WHEP 路由在下一次节点快照之前即可生效。
+
+`GET` `/api/sources/{alias}/{stream}`
+
+获取源信息。
+
+`DELETE` `/api/sources/{alias}/{stream}`
+
+删除源。
+
+`GET` `/api/sources/{alias}/{stream}/state`
+
+获取源的运行状态。
+
+`GET` `/api/sources/{alias}/{stream}/bitrate`
+
+获取编码器码率遥测。
+
+`GET` `/api/sources/{alias}/{stream}/tier`
+
+获取源的质量档位。
+
+`POST` `/api/sources/{alias}/{stream}/tier`
+
+应用源的质量档位。
 
 ## Stream
 

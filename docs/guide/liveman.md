@@ -181,6 +181,36 @@ When `net4mqtt` is enabled, each Liveion node pushes a stream snapshot through `
 
 When Liveman merges the same stream across multiple nodes, the merged `stats` field is marked with `statsScope: "clusterNodeWork"`. It is a sum of node-level work, not cluster edge traffic: cascade hops are counted once on each relay node.
 
+## Node Capacity Policy {#node-capacity}
+
+Liveman uses a per-node subscriber capacity for WHEP routing and cascade target selection. This is a liveman-side scheduling policy only; liveion does not enforce it.
+
+Static nodes take an optional `sub_max` (absent = unlimited):
+
+```toml
+[[nodes]]
+alias = "edge-0"
+token = "live777"
+url = "http://127.0.0.1:7777"
+# Per-stream subscriber capacity for WHEP routing and cascade target
+# selection (absent = unlimited)
+sub_max = 1
+```
+
+Nodes without an explicit `[[nodes]]` entry — primarily dynamically discovered (net4mqtt) nodes — take their policy from the first matching `[[node_rules]]` glob (no match = unlimited). An explicit `[[nodes]] sub_max` always wins over the rules:
+
+```toml
+[[node_rules]]
+pattern = "edge-*"
+sub_max = 1
+
+# Catch-all: unknown nodes may publish (act as sources) but never serve a
+# viewer directly, so cascades never land on an unrecognized node
+[[node_rules]]
+pattern = "*"
+sub_max = 0
+```
+
 ## Cluster {#cluster}
 
 Cluster mode must liveman. We can use [`net4mqtt`](/guide/net4mqtt) extra network

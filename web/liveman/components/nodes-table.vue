@@ -7,16 +7,10 @@ import { useRefreshTimer } from "@/shared/hooks/use-refresh-timer";
 
 import { type Node, getNodes } from "../api";
 
-async function getNodesSorted(): Promise<Node[]> {
-    try {
-        const nodes = await getNodes();
-        return nodes.sort((a, b) => a.alias.localeCompare(b.alias));
-    } catch {
-        return [];
-    }
-}
-
-const { data: nodes, isRefreshing, updateData, toggleTimer } = useRefreshTimer<Node[]>([], getNodesSorted);
+const { data: nodes, isRefreshing, updateData, toggleTimer } = useRefreshTimer<Node[]>(
+    [],
+    () => getNodes().catch(() => []),
+);
 const token = useToken();
 
 // refresh when the token changes; immediate matches the original Preact
@@ -52,8 +46,20 @@ const SORT_FNS: Record<SortKey, (a: Node, b: Node) => number> = {
 
 // Component-side sorting keeps row order stable across auto-refresh
 // (the server's map order is not meaningful); alias is the tie-break.
-const sortKey = ref<SortKey>("alias");
-const sortAsc = ref(true);
+// The selection persists across page loads.
+const SORT_KEY_STORAGE = "liveman:nodes-table:sort-key";
+const SORT_ASC_STORAGE = "liveman:nodes-table:sort-asc";
+
+const storedSortKey = localStorage.getItem(SORT_KEY_STORAGE);
+const sortKey = ref<SortKey>(
+    SORT_COLUMNS.some(col => col.key === storedSortKey) ? (storedSortKey as SortKey) : "alias",
+);
+const sortAsc = ref(localStorage.getItem(SORT_ASC_STORAGE) !== "false");
+
+watch([sortKey, sortAsc], ([key, asc]) => {
+    localStorage.setItem(SORT_KEY_STORAGE, key);
+    localStorage.setItem(SORT_ASC_STORAGE, String(asc));
+});
 
 const sortedNodes = computed(() => {
     const cmp = SORT_FNS[sortKey.value];
@@ -92,7 +98,11 @@ const toggleSort = (key: SortKey) => {
         <table class="table">
             <thead>
                 <tr>
-                    <th v-for="col in SORT_COLUMNS" :key="col.key">
+                    <th
+                        v-for="col in SORT_COLUMNS"
+                        :key="col.key"
+                        :aria-sort="sortKey === col.key ? (sortAsc ? 'ascending' : 'descending') : 'none'"
+                    >
                         <button
                             class="inline-flex cursor-pointer select-none items-center gap-0.5"
                             @click="toggleSort(col.key)"

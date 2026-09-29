@@ -58,15 +58,6 @@ import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
 import NewStreamDialog, { type INewStreamDialog } from "./dialog-new-stream.vue";
 
-async function getStreamsSorted(): Promise<StreamType[]> {
-    try {
-        const streams = await getStreams();
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
-    } catch {
-        return [];
-    }
-}
-
 const ACTIVE_STATES: SessionConnectionState[] = ["new", "connecting", "connected"];
 
 function countActiveSessions(sessions: { state: SessionConnectionState }[]): number {
@@ -171,7 +162,7 @@ const {
     updateData,
     toggleTimer,
     connectionStatus,
-} = useStreamsDataSource(props.getStreams ?? getStreamsSorted, () => props.streamsSSEUrl);
+} = useStreamsDataSource(props.getStreams ?? (() => getStreams().catch(() => [])), () => props.streamsSSEUrl);
 
 const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
@@ -189,8 +180,20 @@ const previewDialogs = new Map<string, IPreviewDialog>();
 // Sorting lives in the component so it covers both data paths (SSE pushes
 // arrive in the server's map order, never sorted) and stays stable across
 // refreshes; the id tie-break means equal keys never reshuffle rows.
-const sortKey = ref<SortKey>("createdAt");
-const sortAsc = ref(true);
+// The selection persists across page loads.
+const SORT_KEY_STORAGE = "shared:streams-table:sort-key";
+const SORT_ASC_STORAGE = "shared:streams-table:sort-asc";
+
+const storedSortKey = localStorage.getItem(SORT_KEY_STORAGE);
+const sortKey = ref<SortKey>(
+    SORT_COLUMNS.some(col => col.key === storedSortKey) ? (storedSortKey as SortKey) : "createdAt",
+);
+const sortAsc = ref(localStorage.getItem(SORT_ASC_STORAGE) !== "false");
+
+watch([sortKey, sortAsc], ([key, asc]) => {
+    localStorage.setItem(SORT_KEY_STORAGE, key);
+    localStorage.setItem(SORT_ASC_STORAGE, String(asc));
+});
 
 const sortedStreams = computed(() => {
     const cmp = SORT_FNS[sortKey.value];
@@ -574,7 +577,11 @@ const handleCancelStop = () => {
         <table class="table whitespace-nowrap">
             <thead>
                 <tr>
-                    <th v-for="col in SORT_COLUMNS" :key="col.key">
+                    <th
+                        v-for="col in SORT_COLUMNS"
+                        :key="col.key"
+                        :aria-sort="sortKey === col.key ? (sortAsc ? 'ascending' : 'descending') : 'none'"
+                    >
                         <button
                             class="inline-flex cursor-pointer select-none items-center gap-0.5"
                             @click="toggleSort(col.key)"
