@@ -52,6 +52,7 @@ export const en: LocaleConfig = {
                             { text: 'FFmpeg', link: 'ffmpeg' },
                             { text: 'Gstreamer', link: 'gstreamer' },
                             { text: 'VLC', link: 'vlc' },
+                            { text: 'Unitree Go2', link: 'unitree' },
                         ]
                     },
                     {
