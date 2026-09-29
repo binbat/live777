@@ -21,6 +21,10 @@
 # password = "live777"
 
 # [extra_ice]
+# ICE servers are optional: by default liveman adds none and only proxies the
+# upstream liveion Link headers (liveion itself ships with none), so an
+# out-of-the-box cluster stays fully on the LAN. Configure this section only
+# for internet-facing deployments.
 # When WHIP/WHEP use liveman proxy
 # liveman override upstream liveion http header link ice_servers
 # override_upstream_ice_servers = false

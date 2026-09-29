@@ -22,6 +22,8 @@ pub(crate) struct CaptureConfigFFI {
     pub fps: u32,
     pub pixel_format: u32,
     pub prefer_dmabuf: u8,
+    pub hflip: u8,
+    pub vflip: u8,
 }
 
 #[repr(C)]

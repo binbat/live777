@@ -40,7 +40,7 @@ impl Default for ProbeConfig {
             video_codec: None,
             sprop_params: None,
             token: None,
-            ice_servers: iceserver::default_rtc_ice_servers(),
+            ice_servers: Vec::new(),
         }
     }
 }

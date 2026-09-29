@@ -88,7 +88,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 license = "MPL-2.0"
 authors = ["BinBat Ltd <hey@binbat.com>"]

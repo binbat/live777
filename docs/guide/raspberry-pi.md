@@ -54,6 +54,8 @@ height = 972
 fps = 30
 pixel_format = "yuv420"
 prefer_dmabuf = true  # DMA-BUF zero-copy capture → encode (optional)
+# hflip = true        # mirror / flip the image in the ISP (zero cost) —
+# vflip = true        # e.g. when the camera is mounted upside-down, set both
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"

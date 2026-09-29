@@ -328,7 +328,9 @@ impl PeerForward {
 
         // mediamtx-style override: the new publish displaces the incumbent
         // (`strategy.override_publisher`), unless the incumbent is a cascade
-        // pull or the stream opted out — those still conflict.
+        // pull — that always conflicts. An incumbent that is already
+        // disconnecting/failing is displaced even when the stream opted out,
+        // so a fast reconnect does not bounce off the zombie with a 409.
         self.internal.replace_publish().await?;
 
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);

@@ -1,13 +1,20 @@
 use std::{collections::HashMap, env, net::SocketAddr, str::FromStr};
 
-use iceserver::{IceServer, default_ice_servers};
+use iceserver::IceServer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub http: Http,
-    #[serde(default = "default_ice_servers")]
+    /// STUN/TURN servers advertised to WHIP/WHEP clients via
+    /// `Link: ...; rel="ice-server"` response headers and used by outgoing
+    /// peers (e.g. WHEP pull sources). Empty by default — nothing is
+    /// advertised and only host candidates are gathered, so an unconfigured
+    /// server stays fully on the LAN. Add entries only for internet-facing
+    /// deployments. Server-side sessions ignore this list while
+    /// `webrtc.ice_lite` is on (the default).
+    #[serde(default)]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
@@ -181,6 +188,16 @@ impl ChannelConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ice_servers_default_to_empty() {
+        // LAN-only out of the box: an omitted key must not pull in a public
+        // STUN server, and an explicit empty list stays empty.
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.ice_servers.is_empty());
+        let cfg: Config = toml::from_str("ice_servers = []").unwrap();
+        assert!(cfg.ice_servers.is_empty());
+    }
 
     #[test]
     fn test_channel_config_ipv4() {

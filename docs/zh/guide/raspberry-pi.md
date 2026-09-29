@@ -41,6 +41,8 @@ height = 972
 fps = 30
 pixel_format = "yuv420"
 prefer_dmabuf = true  # DMA-BUF 零拷贝采集→编码（可选）
+# hflip = true        # 在 ISP 中镜像/翻转画面（零开销）——
+# vflip = true        # 例如摄像头装倒/吊装时两个都设上
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"

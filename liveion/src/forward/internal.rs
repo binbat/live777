@@ -6,6 +6,7 @@ use chrono::Utc;
 #[cfg(feature = "cascade")]
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
+use tokio_util::sync::CancellationToken;
 #[cfg(feature = "cascade")]
 use tracing::error;
 use tracing::trace;
@@ -100,24 +101,34 @@ struct DataChannelForward {
 #[derive(Clone)]
 struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
+    /// The handler's own publish peer, filled by `set_peer` once the peer is
+    /// built. Events are attributed to *this* peer rather than whatever
+    /// publisher is current: after an override replace, the incumbent's late
+    /// events must not tear down — or register data channels onto — the new
+    /// session.
+    peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
     gather_complete: Arc<Notify>,
     connection_state_tx: watch::Sender<RTCPeerConnectionState>,
+}
+
+impl PublishPeerHandler {
+    async fn set_peer(&self, peer: std::sync::Weak<dyn PeerConnection>) {
+        *self.peer.lock().await = Some(peer);
+    }
+
+    async fn own_peer(&self) -> Option<Arc<dyn PeerConnection>> {
+        self.peer.lock().await.clone().and_then(|w| w.upgrade())
+    }
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PublishPeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        let _ = self.connection_state_tx.send(state);
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal
-                .publish_peer_ref
-                .lock()
-                .await
-                .clone()
-                .and_then(|w| w.upgrade());
-            let _ = self.connection_state_tx.send(state);
             internal.send_event();
 
-            if let Some(pc) = pc {
+            if let Some(pc) = self.own_peer().await {
                 info!(
                     "[{}] [publish] connection state changed: {}",
                     internal.stream, state
@@ -175,16 +186,9 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
     }
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
-        if let Some(internal) = self.internal.upgrade() {
-            let pc = internal
-                .publish_peer_ref
-                .lock()
-                .await
-                .clone()
-                .and_then(|w| w.upgrade());
-            if let Some(pc) = pc {
-                let _ = internal.publish_data_channel(pc, dc).await;
-            }
+        let pc = self.own_peer().await;
+        if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
+            let _ = internal.publish_data_channel(pc, dc).await;
         }
     }
 
@@ -809,6 +813,11 @@ pub(crate) struct PeerForwardInternal {
     stats_subscribe: MediaStats,
     #[cfg(feature = "source")]
     channel: Option<ChannelConfig>,
+    /// Running UDP <-> DataChannel bridge, if the stream configures one.
+    /// `close` stops it and waits for the listen socket to be released, so a
+    /// provisioned-stream reset can rebind the same port deterministically.
+    #[cfg(feature = "source")]
+    channel_task: Mutex<Option<super::channel::ChannelHandle>>,
     /// Effective strategy for this stream (global strategy merged with any
     /// per-stream override).
     pub(crate) strategy: api::strategy::Strategy,
@@ -858,6 +867,8 @@ impl PeerForwardInternal {
             stats_subscribe: MediaStats::new(),
             #[cfg(feature = "source")]
             channel,
+            #[cfg(feature = "source")]
+            channel_task: Mutex::new(None),
             strategy,
         }
     }
@@ -1209,6 +1220,18 @@ impl PeerForwardInternal {
     /// stream teardown the forward is dropped, and the handler's weak
     /// reference to this internal would fail before it could clean up.
     pub(crate) async fn close(&self) -> Result<()> {
+        // Stop the UDP channel bridge first and wait for its socket to be
+        // released: a provisioned-stream reset re-initializes the bridge
+        // right after this returns, and the rebind must not race the old
+        // socket.
+        #[cfg(feature = "source")]
+        {
+            let handle = self.channel_task.lock().await.take();
+            if let Some(handle) = handle {
+                handle.stop().await;
+            }
+        }
+
         let publish = self.publish.write().await.take();
         if let Some(publish) = publish {
             // The `publish` lock is released by the take above, so reading
@@ -1244,7 +1267,10 @@ impl PeerForwardInternal {
         if let Some(stream_cfg) = self.channel.clone() {
             let dc_rx = self.data_channel_forward.publish.subscribe();
             let dc_tx = self.data_channel_forward.subscribe.clone();
-            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
+            let handle =
+                super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg)
+                    .await?;
+            *self.channel_task.lock().await = Some(handle);
         }
         Ok(())
     }
@@ -1254,68 +1280,135 @@ impl PeerForwardInternal {
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
         connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
+        cancel: CancellationToken,
     ) {
         let dc_rx = dc.clone();
         let dc_tx = dc.clone();
 
-        tokio::spawn(async move {
-            loop {
-                match dc_rx.poll().await {
-                    Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
-                        if let Err(err) = sender.send(data.data.to_vec()) {
-                            debug!("send data channel err: {}", err);
+        tokio::spawn(dc_read_loop(
+            move || {
+                let dc = dc_rx.clone();
+                async move { dc.poll().await }
+            },
+            sender,
+            cancel.clone(),
+        ));
+
+        tokio::spawn(dc_write_loop(
+            receiver,
+            move |data| {
+                let dc = dc_tx.clone();
+                async move { dc.send(data).await }
+            },
+            connected_gate,
+            PUBLISH_CONNECTED_TIMEOUT,
+            cancel,
+        ));
+    }
+}
+
+/// Read loop of one data channel: forward incoming messages onto the stream
+/// bus until the channel closes or the owning session is cancelled. `poll` is
+/// a factory so the cancellation check wraps every await — the webrtc driver
+/// stops delivering events (and never drops the event sender) once the peer
+/// is closed server-side, so `OnClose`/`None` alone could never be observed
+/// and the task would leak, keeping the bus — and anything keyed on its
+/// closure, like the UDP channel bridge — alive forever.
+async fn dc_read_loop<P, Fut>(
+    mut poll: P,
+    sender: broadcast::Sender<Vec<u8>>,
+    cancel: CancellationToken,
+) where
+    P: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<webrtc::data_channel::DataChannelEvent>>,
+{
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                debug!("data channel read loop cancelled");
+                return;
+            }
+            event = poll() => match event {
+                Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
+                    if let Err(err) = sender.send(data.data.to_vec()) {
+                        debug!("send data channel err: {}", err);
+                        return;
+                    }
+                }
+                Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
+                    debug!("Data channel opened");
+                }
+                Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
+                    info!("Datachannel closed; Exit the read_loop");
+                    return;
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Write loop of one data channel: forward bus messages into the channel.
+/// Exits when the bus closes, the channel errors, the Connected gate fails,
+/// or the owning session is cancelled (including while parked on `recv()` or
+/// waiting out the gate).
+async fn dc_write_loop<S, Fut, E>(
+    mut receiver: broadcast::Receiver<Vec<u8>>,
+    send: S,
+    connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
+    gate_timeout: std::time::Duration,
+    cancel: CancellationToken,
+) where
+    S: Fn(bytes::BytesMut) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<(), E>>,
+    E: std::fmt::Display,
+{
+    let mut connected = connected_gate.is_none();
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                debug!("data channel write loop cancelled");
+                return;
+            }
+            msg = receiver.recv() => match msg {
+                Ok(msg) => msg,
+                // Data-channel messages must not silently stop
+                // forwarding on a lag burst.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("data channel receiver lagged, dropped {} messages", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+        };
+        if !connected {
+            if let Some(gate) = connected_gate.clone() {
+                let wait = wait_for_peer_connected(gate, gate_timeout, "data channel send");
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        debug!("data channel write loop cancelled");
+                        return;
+                    }
+                    result = wait => {
+                        if let Err(err) = result {
+                            info!(
+                                "data channel send stopped before Connected: {:?}",
+                                err
+                            );
                             return;
                         }
                     }
-                    Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
-                        debug!("Data channel opened");
-                    }
-                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
-                        info!("Datachannel closed; Exit the read_loop");
-                        return;
-                    }
-                    _ => {}
                 }
             }
-        });
-
-        tokio::spawn(async move {
-            let mut receiver = receiver;
-            let mut connected = connected_gate.is_none();
-            loop {
-                let msg = match receiver.recv().await {
-                    Ok(msg) => msg,
-                    // Data-channel messages must not silently stop
-                    // forwarding on a lag burst.
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("data channel receiver lagged, dropped {} messages", n);
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-                if !connected {
-                    if let Some(gate) = connected_gate.clone()
-                        && let Err(err) = wait_for_peer_connected(
-                            gate,
-                            PUBLISH_CONNECTED_TIMEOUT,
-                            "publish data channel send",
-                        )
-                        .await
-                    {
-                        info!(
-                            "publish data channel send stopped before Connected: {:?}",
-                            err
-                        );
-                        return;
-                    }
-                    connected = true;
-                }
-                if let Err(err) = dc_tx.send(bytes::BytesMut::from(&msg[..])).await {
-                    info!("write data channel err: {}", err);
-                    return;
-                }
-            }
-        });
+            connected = true;
+        }
+        if let Err(err) = send(bytes::BytesMut::from(&msg[..])).await {
+            info!("write data channel err: {}", err);
+            return;
+        }
     }
 }
 
@@ -1323,9 +1416,29 @@ impl PeerForwardInternal {
 /// Whether a new WHIP publish may displace the incumbent publisher:
 /// override must be enabled for the stream and the incumbent must be a
 /// plain WHIP session — a cascade pull is supervised and would fight the
-/// displacer by reconnecting, so it always conflicts instead.
-fn override_allowed(strategy: &api::strategy::Strategy, incumbent_is_cascade: bool) -> bool {
-    strategy.override_publisher && !incumbent_is_cascade
+/// displacer by reconnecting, so it always conflicts instead. One
+/// exception: a plain WHIP incumbent that is already disconnecting or
+/// failing is on its way out (the disconnected-watchdog bounds the wait), so
+/// a fresh publish — overwhelmingly the same client reconnecting after a
+/// network blip — may displace it even when the stream opted out of
+/// override, instead of failing with a 409 until the reaper catches up.
+fn override_allowed(
+    strategy: &api::strategy::Strategy,
+    incumbent_is_cascade: bool,
+    incumbent_state: RTCPeerConnectionState,
+) -> bool {
+    // A cascade pull is supervised and would fight the displacer by
+    // reconnecting, so it always conflicts here, whatever its state.
+    if incumbent_is_cascade {
+        return false;
+    }
+    strategy.override_publisher
+        || matches!(
+            incumbent_state,
+            RTCPeerConnectionState::Disconnected
+                | RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+        )
 }
 
 impl PeerForwardInternal {
@@ -1410,7 +1523,9 @@ impl PeerForwardInternal {
     /// (mediamtx-style override, `strategy.override_publisher`). Returns
     /// `Ok(None)` when no publisher is attached. A cascade-pull incumbent
     /// is never displaced, and a stream can opt out of override entirely;
-    /// both surface as the same conflict a duplicate publish got before.
+    /// both surface as the same conflict a duplicate publish got before —
+    /// unless the incumbent is already disconnecting/failing, in which case
+    /// the fresh publish always wins (see `override_allowed`).
     pub(crate) async fn replace_publish(&self) -> Result<Option<String>> {
         // Fast path for the common first-publish case: skip the stats
         // aggregation entirely when no publisher is attached.
@@ -1425,7 +1540,11 @@ impl PeerForwardInternal {
             let Some(current) = publish.as_ref() else {
                 return Ok(None);
             };
-            if !override_allowed(&self.strategy, current.cascade.is_some()) {
+            if !override_allowed(
+                &self.strategy,
+                current.cascade.is_some(),
+                current.connection_state(),
+            ) {
                 return Err(AppError::stream_already_exists(
                     "A connection has already been established",
                 ));
@@ -1434,7 +1553,7 @@ impl PeerForwardInternal {
             session_info.state = RTCPeerConnectionState::Closed;
             session_info.leave_at = Utc::now().timestamp_millis();
             let old = publish.take().unwrap();
-            (old.peer, session_info)
+            (old.peer.clone(), session_info)
         };
         let session_id = session_info.id.clone();
         info!(
@@ -1498,7 +1617,7 @@ impl PeerForwardInternal {
             session_info.state = RTCPeerConnectionState::Closed;
             session_info.leave_at = Utc::now().timestamp_millis();
             let old = publish.take().unwrap();
-            (old.peer, session_info)
+            (old.peer.clone(), session_info)
         };
         let session_id = session_info.id.clone();
         info!(
@@ -1760,6 +1879,7 @@ impl PeerForwardInternal {
         *self.publish_peer_state_rx.lock().await = Some(connection_state_rx.clone());
         let handler = PublishPeerHandler {
             internal: internal_weak,
+            peer: Arc::new(Mutex::new(None)),
             gather_complete: gather_complete.clone(),
             connection_state_tx,
         };
@@ -1768,12 +1888,13 @@ impl PeerForwardInternal {
                 .with_media_engine(m)
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
-                .with_handler(Arc::new(handler))
+                .with_handler(Arc::new(handler.clone()))
                 .with_udp_addrs(self.ice_udp_addrs.clone())
                 .with_configuration(config)
                 .build()
                 .await?,
         );
+        handler.set_peer(Arc::downgrade(&peer)).await;
         // Store weak ref so the handler can find the peer during events
         *self.publish_peer_ref.lock().await = Some(Arc::downgrade(&peer));
 
@@ -1862,13 +1983,30 @@ impl PeerForwardInternal {
 
     pub(crate) async fn publish_data_channel(
         &self,
-        _peer: Arc<dyn PeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
     ) -> Result<()> {
+        let (gate, cancel) = {
+            let publish = self.publish.read().await;
+            match publish.as_ref() {
+                Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
+                    (Some(p.connection_state_rx()), p.dc_cancel_token())
+                }
+                _ => {
+                    // A late `on_data_channel` from a publisher that was
+                    // replaced or torn down must not register forwarding
+                    // tasks on the stream bus.
+                    warn!(
+                        "[{}] [publish] ignoring data channel of a stale session",
+                        self.stream
+                    );
+                    return Ok(());
+                }
+            }
+        };
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        let connection_state_rx = self.publish_peer_state_rx.lock().await.clone();
-        Self::data_channel_forward(dc, sender, receiver, connection_state_rx);
+        Self::data_channel_forward(dc, sender, receiver, gate, cancel);
         Ok(())
     }
 
@@ -2375,12 +2513,28 @@ impl PeerForwardInternal {
 
     pub(crate) async fn subscribe_data_channel(
         &self,
-        _peer: Arc<dyn PeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
     ) -> Result<()> {
+        let (gate, cancel) = {
+            let subscribe_group = self.subscribe_group.read().await;
+            match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
+                Some(s) => (Some(s.connection_state_rx()), s.dc_cancel_token()),
+                None => {
+                    // A late `on_data_channel` from a session that was already
+                    // removed must not register forwarding tasks on the
+                    // stream bus.
+                    warn!(
+                        "[{}] [subscribe] ignoring data channel of a stale session",
+                        self.stream
+                    );
+                    return Ok(());
+                }
+            }
+        };
         let sender = self.data_channel_forward.publish.clone();
         let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(dc, sender, receiver, None);
+        Self::data_channel_forward(dc, sender, receiver, gate, cancel);
         Ok(())
     }
 
@@ -2455,5 +2609,474 @@ mod tests {
 
         assert!(error.contains("manual twcc"));
         assert!(error.contains("timed out"));
+    }
+}
+
+#[cfg(test)]
+mod dc_tests {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use tokio::sync::{broadcast, mpsc, watch};
+    use webrtc::data_channel::{DataChannelEvent, RTCDataChannelMessage};
+
+    use super::*;
+
+    fn on_message(data: &[u8]) -> Option<DataChannelEvent> {
+        Some(DataChannelEvent::OnMessage(RTCDataChannelMessage {
+            is_string: false,
+            data: bytes::BytesMut::from(data),
+        }))
+    }
+
+    /// Canned event source: yields the queued events, then pends forever —
+    /// mirroring a data channel whose peer died without `OnClose` (the
+    /// webrtc driver is aborted on close, so `poll()` never returns again).
+    fn canned_poll(
+        mut events: VecDeque<Option<DataChannelEvent>>,
+    ) -> impl FnMut() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<DataChannelEvent>> + Send>,
+    > {
+        move || {
+            let event = events.pop_front();
+            Box::pin(async move {
+                match event {
+                    Some(event) => event,
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    /// Sink for the write loop: collects everything `send` is asked to send.
+    type TestSend =
+        Box<dyn Fn(bytes::BytesMut) -> std::future::Ready<std::result::Result<(), String>> + Send>;
+    fn collect_sends() -> (mpsc::UnboundedReceiver<Vec<u8>>, TestSend) {
+        let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let send = Box::new(move |data: bytes::BytesMut| {
+            std::future::ready(tx.send(data.to_vec()).map_err(|e| e.to_string()))
+        });
+        (rx, send)
+    }
+
+    // ── read loop ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_loop_forwards_messages_until_close() {
+        let events = VecDeque::from([
+            on_message(b"a"),
+            on_message(b"b"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"a");
+        assert_eq!(rx.recv().await.unwrap(), b"b");
+        task.await.unwrap();
+        // The bus sender left with the task.
+        assert!(rx.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_loop_ignores_non_message_events() {
+        let events = VecDeque::from([
+            Some(DataChannelEvent::OnOpen),
+            Some(DataChannelEvent::OnError),
+            Some(DataChannelEvent::OnClosing),
+            Some(DataChannelEvent::OnBufferedAmountLow),
+            Some(DataChannelEvent::OnBufferedAmountHigh),
+            on_message(b"x"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"x");
+        task.await.unwrap();
+        assert!(rx.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_loop_exits_on_poll_none() {
+        let events = VecDeque::from([on_message(b"a"), None]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"a");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_loop_exits_when_bus_has_no_receivers() {
+        let (tx, rx) = broadcast::channel::<Vec<u8>>(1);
+        drop(rx);
+        let events = VecDeque::from([on_message(b"a")]);
+        let task = tokio::spawn(dc_read_loop(
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("read loop stuck after bus send failed")
+            .unwrap();
+    }
+
+    /// Regression: a dead peer never yields `OnClose`, so a poll that pends
+    /// forever must still be interruptible by session teardown.
+    #[tokio::test]
+    async fn read_loop_cancel_breaks_pending_poll() {
+        let (tx, _rx) = broadcast::channel::<Vec<u8>>(1);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_read_loop(
+            canned_poll(VecDeque::new()),
+            tx,
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!task.is_finished());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("read loop leaked on a pending poll")
+            .unwrap();
+    }
+
+    // ── write loop ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_loop_delivers_messages() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m1".to_vec()).unwrap();
+        bus_tx.send(b"m2".to_vec()).unwrap();
+        assert_eq!(sent.recv().await.unwrap(), b"m1");
+        assert_eq!(sent.recv().await.unwrap(), b"m2");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_continues_after_lag() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        // Overflow the ring before the loop starts: the first recv lags.
+        bus_tx.send(b"old".to_vec()).unwrap();
+        bus_tx.send(b"new".to_vec()).unwrap();
+
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        assert_eq!(sent.recv().await.unwrap(), b"new");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_exits_when_bus_closes() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let (_sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        ));
+
+        drop(bus_tx);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after bus closed")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_exits_on_send_error() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let send = |_| async { Err::<(), _>("boom".to_string()) };
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after send error")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_waits_for_connected() {
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(5),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            sent.try_recv().is_err(),
+            "message sent before the peer Connected"
+        );
+
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), sent.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            b"m"
+        );
+
+        // After the gate opens once, later messages flow without waiting.
+        bus_tx.send(b"m2".to_vec()).unwrap();
+        assert_eq!(sent.recv().await.unwrap(), b"m2");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_timeout_exits() {
+        let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_millis(20),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after gate timeout")
+            .unwrap();
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_terminal_state_exits() {
+        for state in [
+            RTCPeerConnectionState::Failed,
+            RTCPeerConnectionState::Closed,
+            RTCPeerConnectionState::Disconnected,
+        ] {
+            let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+            state_tx.send(state).unwrap();
+            let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+            let (mut sent, send) = collect_sends();
+            let task = tokio::spawn(dc_write_loop(
+                bus_rx,
+                send,
+                Some(state_rx),
+                Duration::from_secs(5),
+                CancellationToken::new(),
+            ));
+
+            bus_tx.send(b"m".to_vec()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("write loop stuck on terminal gate state")
+                .unwrap();
+            assert!(sent.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_dropped_state_channel_exits() {
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        drop(state_tx);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (_sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after state channel closed")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_cancel_during_gate_wait() {
+        let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (_sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(60),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck in gate wait after cancel")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_cancel_while_parked() {
+        let (_bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let (_sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!task.is_finished());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop leaked on a parked recv")
+            .unwrap();
+    }
+
+    // ── publish override decisions ────────────────────────────────────────
+
+    #[test]
+    fn override_allowed_decisions() {
+        use RTCPeerConnectionState as S;
+        let permissive = api::strategy::Strategy {
+            override_publisher: true,
+            ..Default::default()
+        };
+        let strict = api::strategy::Strategy {
+            override_publisher: false,
+            ..Default::default()
+        };
+
+        // Override on: a plain-WHIP incumbent always yields.
+        assert!(override_allowed(&permissive, false, S::Connected));
+        assert!(override_allowed(&permissive, false, S::New));
+
+        // A cascade-pull incumbent never yields, whatever the strategy or
+        // its state — its supervisor would reconnect and fight the
+        // displacer.
+        for state in [S::Connected, S::Disconnected, S::Failed, S::Closed] {
+            assert!(!override_allowed(&permissive, true, state));
+            assert!(!override_allowed(&strict, true, state));
+        }
+
+        // Override off + healthy incumbent: hard conflict (409).
+        for state in [S::New, S::Connecting, S::Connected] {
+            assert!(!override_allowed(&strict, false, state));
+        }
+        // Override off + dying plain-WHIP incumbent: replaceable, so a fast
+        // reconnect does not bounce off the zombie with a 409.
+        for state in [S::Disconnected, S::Failed, S::Closed] {
+            assert!(override_allowed(&strict, false, state));
+        }
+    }
+
+    // ── channel bridge lifecycle (P2 regression) ──────────────────────────
+
+    /// A closed forward must release the UDP bridge's listen port so the next
+    /// forward (provisioned-stream reset) can rebind it. Before the bridge
+    /// was tied to the forward lifecycle, the old bridge only exited when the
+    /// data-channel bus closed — which leaked data-channel tasks prevented
+    /// forever — and the reset's rebind failed with EADDRINUSE.
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn channel_bridge_rebinds_after_close() {
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let listen = probe.local_addr().unwrap();
+        drop(probe);
+
+        let channel = ChannelConfig {
+            listen,
+            target: "127.0.0.1:9".parse().unwrap(),
+        };
+        let new_internal = || {
+            let (lifecycle_tx, _rx) = broadcast::channel(1);
+            PeerForwardInternal::new(
+                "test",
+                vec![],
+                vec![],
+                false,
+                Some(channel.clone()),
+                api::strategy::Strategy::default(),
+                lifecycle_tx,
+            )
+        };
+
+        let first = new_internal();
+        first.try_init_udp_channel().await.unwrap();
+        assert!(
+            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            "bridge must hold its configured port"
+        );
+
+        first.close().await.unwrap();
+
+        let second = new_internal();
+        second
+            .try_init_udp_channel()
+            .await
+            .expect("rebind after close failed — the old bridge is still holding the port");
+        second.close().await.unwrap();
     }
 }

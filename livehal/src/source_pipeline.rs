@@ -358,6 +358,8 @@ fn build_ffi_config(
             fps: params.fps,
             pixel_format: params.capture_pixel_format,
             prefer_dmabuf: params.capture_prefer_dmabuf,
+            hflip: params.capture_hflip,
+            vflip: params.capture_vflip,
         },
         encoder: EncoderConfigFFI {
             backend: enc_backend.as_ptr(),
