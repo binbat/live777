@@ -111,6 +111,22 @@ on-demand 流在空闲时 Dashboard 显示 `standby` 徽标，源运行时显示
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
+当 SDP 文件源的连接地址是多播组时（例如 `c=IN IP4 230.1.1.1`)，
+源会在每个媒体端口上加入该多播组，而不仅仅是绑定端口——无人机、
+机器人相机等常开多播发送端可以直接接入 live777；配合
+`on_demand = true` 时，只有存在观看者期间才保持组成员关系：
+
+```toml
+[stream.robot-cam]
+on_demand = true
+
+[[stream.robot-cam.sources]]
+url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
+# 加入多播组使用的网卡:IPv4 组填 IPv4 地址,IPv6 组填网卡序号。
+# 不配置则由内核选择,只能收到默认路由网卡上的多播流量。
+multicast_interface = "192.168.123.11"
+```
+
 ### 结构化原生配置（libcamera / V4L2 / RDK）
 
 ```toml

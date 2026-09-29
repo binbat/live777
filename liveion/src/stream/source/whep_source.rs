@@ -875,6 +875,8 @@ mod tests {
             config: InternalSourceConfig {
                 stream_id: "test".to_string(),
                 url: String::new(),
+                #[cfg(feature = "source-sdp")]
+                multicast_interface: None,
             },
             net: SourceNetConfig::default(),
             rtp_tx,

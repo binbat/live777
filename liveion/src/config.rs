@@ -765,6 +765,15 @@ pub struct SourceConfig {
     #[serde(default)]
     pub url: Option<String>,
 
+    /// Interface for joining multicast groups (SDP file sources whose SDP
+    /// connection address is a multicast group, e.g. `c=IN IP4 230.1.1.1`).
+    /// An IPv4 address selects the interface for IPv4 groups, an interface
+    /// index selects it for IPv6 groups; unset lets the kernel choose, which
+    /// only receives traffic arriving on the default-route interface.
+    /// Ignored by non-SDP sources.
+    #[serde(default)]
+    pub multicast_interface: Option<String>,
+
     /// Capture config (required for structured native sources).
     #[cfg(feature = "native-source")]
     #[serde(default)]
@@ -820,6 +829,15 @@ impl SourceConfig {
         let url = self.url.as_deref().unwrap_or("");
         if url.is_empty() {
             anyhow::bail!("either url or capture must be set");
+        }
+
+        if let Some(iface) = self.multicast_interface.as_deref() {
+            let iface = iface.trim();
+            if iface.parse::<std::net::IpAddr>().is_err() && iface.parse::<u32>().is_err() {
+                anyhow::bail!(
+                    "multicast_interface must be an IP address or an interface index, got '{iface}'"
+                );
+            }
         }
 
         let url_lower = url.to_lowercase();

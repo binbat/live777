@@ -122,6 +122,24 @@ marked `config`.
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
+An SDP file source whose connection address is a multicast group (for
+example `c=IN IP4 230.1.1.1`) joins that group on each media port instead
+of only binding it, so always-on multicast senders (drone/robot cameras,
+encoders) can feed live777 directly — combined with `on_demand = true`
+the group membership only exists while someone is watching:
+
+```toml
+[stream.robot-cam]
+on_demand = true
+
+[[stream.robot-cam.sources]]
+url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
+# Interface used to join the group: an IPv4 address for IPv4 groups, an
+# interface index for IPv6 groups. Unset lets the kernel choose, which
+# only receives traffic arriving on the default-route interface.
+multicast_interface = "192.168.123.11"
+```
+
 ### Structured native (libcamera / V4L2 / RDK)
 
 ```toml

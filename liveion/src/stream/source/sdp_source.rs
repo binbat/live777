@@ -2,6 +2,8 @@ use super::{InternalSourceConfig, MediaPacket, StateChangeEvent, StreamSource, S
 use anyhow::Result;
 use async_trait::async_trait;
 use std::net::SocketAddr;
+#[cfg(feature = "source")]
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, broadcast};
@@ -16,8 +18,25 @@ use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 #[cfg(feature = "source")]
 type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>>>>;
 
+/// Multicast group membership for the receiver sockets, derived from the
+/// SDP connection address when it names a multicast group (e.g.
+/// `c=IN IP4 230.1.1.1`); unicast and unspecified addresses yield `None`.
 #[cfg(feature = "source")]
-type ParsedSdp = (Vec<(u8, u16)>, SdpMediaInfo, bool);
+#[derive(Debug, Clone, Copy)]
+enum MulticastJoin {
+    /// IPv4 group joined on the interface owning `interface`
+    /// (`0.0.0.0` lets the kernel choose).
+    V4 {
+        group: Ipv4Addr,
+        interface: Ipv4Addr,
+    },
+    /// IPv6 group joined on the interface with index `interface`
+    /// (`0` lets the kernel choose).
+    V6 { group: Ipv6Addr, interface: u32 },
+}
+
+#[cfg(feature = "source")]
+type ParsedSdp = (Vec<(u8, u16)>, SdpMediaInfo, bool, Option<MulticastJoin>);
 
 struct UdpReceiverContext {
     stream_id: String,
@@ -27,6 +46,8 @@ struct UdpReceiverContext {
     state: Arc<std::sync::RwLock<StreamSourceState>>,
     state_tx: broadcast::Sender<StateChangeEvent>,
     is_ipv6: bool,
+    #[cfg(feature = "source")]
+    multicast: Option<MulticastJoin>,
 }
 
 pub struct SdpSource {
@@ -52,15 +73,65 @@ struct SdpMediaInfo {
     audio_rtcp_addr: Option<SocketAddr>,
 }
 
-/// Whether the SDP connection address is unspecified (`0.0.0.0` / `::`).
+/// Whether the SDP connection address is missing a usable RTCP destination.
 /// Senders commonly write `c=IN IP4 0.0.0.0` (e.g. FFmpeg), which is not a
-/// usable RTCP destination.
+/// usable RTCP destination.  A multicast group is not one either: the
+/// source only receives from the group, and hosts without a multicast
+/// sender route would spam ENETUNREACH errors on every feedback packet.
 #[cfg(feature = "source")]
-fn addr_is_unspecified(connection_info: &Option<(String, bool)>) -> bool {
+fn addr_lacks_rtcp_destination(connection_info: &Option<(String, bool)>) -> bool {
     connection_info.as_ref().is_some_and(|(addr, _)| {
         addr.parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_unspecified())
+            .is_ok_and(|ip| ip.is_unspecified() || ip.is_multicast())
     })
+}
+
+/// Resolve the multicast join for the SDP connection address: `None` for
+/// unicast/unspecified addresses, an error when the address is a multicast
+/// group but `multicast_interface` does not fit its family (IPv4 groups
+/// take an interface address, IPv6 groups an interface index).
+#[cfg(feature = "source")]
+fn multicast_join(
+    connection_info: &Option<(String, bool)>,
+    multicast_interface: Option<&str>,
+) -> Result<Option<MulticastJoin>> {
+    let Some((addr, _)) = connection_info else {
+        return Ok(None);
+    };
+    let Ok(ip) = addr.parse::<std::net::IpAddr>() else {
+        // Hostnames and malformed addresses stay on the unicast path.
+        return Ok(None);
+    };
+    if !ip.is_multicast() {
+        return Ok(None);
+    }
+
+    let configured = multicast_interface.map(str::trim).filter(|s| !s.is_empty());
+
+    match ip {
+        std::net::IpAddr::V4(group) => {
+            let interface = match configured {
+                Some(v) => v.parse::<Ipv4Addr>().map_err(|_| {
+                    anyhow::anyhow!(
+                        "multicast_interface '{v}' must be an IPv4 address for IPv4 group {group}"
+                    )
+                })?,
+                None => Ipv4Addr::UNSPECIFIED,
+            };
+            Ok(Some(MulticastJoin::V4 { group, interface }))
+        }
+        std::net::IpAddr::V6(group) => {
+            let interface = match configured {
+                Some(v) => v.parse::<u32>().map_err(|_| {
+                    anyhow::anyhow!(
+                        "multicast_interface '{v}' must be an interface index for IPv6 group {group}"
+                    )
+                })?,
+                None => 0,
+            };
+            Ok(Some(MulticastJoin::V6 { group, interface }))
+        }
+    }
 }
 
 impl SdpSource {
@@ -143,6 +214,9 @@ impl SdpSource {
             .map(|(_, ipv6)| *ipv6)
             .unwrap_or(false);
 
+        let multicast =
+            multicast_join(&connection_info, self.config.multicast_interface.as_deref())?;
+
         // Scan `m=` lines for media ports and derive RTCP addresses
         // (port + 1) from the session connection address. Codec parsing is
         // delegated to the shared libs/rtsp SDP parser below.
@@ -157,13 +231,14 @@ impl SdpSource {
                     if let Ok(port) = parts[1].parse::<u16>() {
                         ports.push((channel, port));
 
-                        // An unspecified connection address (0.0.0.0 / ::)
-                        // carries no RTCP destination; skip it instead of
-                        // sending RTCP into the void (os error 65).
-                        let unspecified = addr_is_unspecified(&connection_info);
+                        // A connection address without a usable RTCP
+                        // destination (unspecified / multicast) gets none;
+                        // skip it instead of sending RTCP into the void
+                        // (os error 65 / 101).
+                        let no_rtcp = addr_lacks_rtcp_destination(&connection_info);
 
                         if let Some((ref addr, _)) = connection_info
-                            && !unspecified
+                            && !no_rtcp
                         {
                             let rtcp_port = port + 1;
                             let rtcp_addr_str = if is_ipv6 {
@@ -232,7 +307,7 @@ impl SdpSource {
             audio_rtcp_addr,
         };
 
-        Ok((ports, media_info, is_ipv6))
+        Ok((ports, media_info, is_ipv6, multicast))
     }
 
     #[cfg(not(feature = "source"))]
@@ -350,6 +425,41 @@ impl SdpSource {
                 return;
             }
         };
+
+        #[cfg(feature = "source")]
+        if let Some(join) = ctx.multicast {
+            let joined = match join {
+                MulticastJoin::V4 { group, interface } => socket
+                    .join_multicast_v4(group, interface)
+                    .map(|_| format!("{group} (interface {interface})")),
+                MulticastJoin::V6 { group, interface } => socket
+                    .join_multicast_v6(&group, interface)
+                    .map(|_| format!("{group} (interface index {interface})")),
+            };
+
+            match joined {
+                Ok(what) => {
+                    info!(
+                        "[{}] Joined multicast group {} on channel {}",
+                        ctx.stream_id, what, ctx.channel
+                    );
+                }
+                Err(e) => {
+                    error!("[{}] Failed to join multicast group: {}", ctx.stream_id, e);
+
+                    let mut s = ctx.state.write().unwrap();
+                    *s = StreamSourceState::Error;
+
+                    let _ = ctx.state_tx.send(StateChangeEvent {
+                        old_state: StreamSourceState::Initializing,
+                        new_state: StreamSourceState::Error,
+                        error: Some(format!("Failed to join multicast group: {}", e)),
+                    });
+
+                    return;
+                }
+            }
+        }
 
         let mut buf = vec![0u8; 2048];
         let mut packet_count = 0u64;
@@ -498,7 +608,7 @@ impl StreamSource for SdpSource {
         }
 
         #[cfg(feature = "source")]
-        let (ports, media_info, is_ipv6) = self.parse_sdp()?;
+        let (ports, media_info, is_ipv6, multicast) = self.parse_sdp()?;
 
         #[cfg(not(feature = "source"))]
         let ports = self.parse_sdp()?;
@@ -544,6 +654,8 @@ impl StreamSource for SdpSource {
                 state: self.state.clone(),
                 state_tx: self.state_tx.clone(),
                 is_ipv6,
+                #[cfg(feature = "source")]
+                multicast,
             };
 
             let shutdown_rx = shutdown_tx.subscribe();
@@ -624,16 +736,29 @@ mod tests {
     use super::*;
 
     fn test_source(sdp: &str) -> SdpSource {
+        test_source_with(sdp, None)
+    }
+
+    fn test_source_with(sdp: &str, multicast_interface: Option<&str>) -> SdpSource {
         SdpSource::new(
             InternalSourceConfig {
                 stream_id: "test".to_string(),
                 #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
                 url: "test.sdp".to_string(),
+                multicast_interface: multicast_interface.map(str::to_string),
             },
             sdp.to_string(),
         )
         .unwrap()
     }
+
+    const MULTICAST_SDP: &str = "v=0\r\n\
+                                 o=- 0 0 IN IP4 192.168.123.13\r\n\
+                                 s=unitree\r\n\
+                                 c=IN IP4 230.1.1.1\r\n\
+                                 t=0 0\r\n\
+                                 m=video 1720 RTP/AVP 96\r\n\
+                                 a=rtpmap:96 H264/90000\r\n";
 
     fn h265(vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>) -> rtsp::VideoCodecParams {
         rtsp::VideoCodecParams::H265 {
@@ -726,10 +851,11 @@ mod tests {
                    a=rtpmap:111 opus/48000/2\r\n";
 
         let source = test_source(sdp);
-        let (ports, media_info, is_ipv6) = source.parse_sdp().unwrap();
+        let (ports, media_info, is_ipv6, multicast) = source.parse_sdp().unwrap();
 
         assert_eq!(ports, vec![(0u8, 5004u16), (2u8, 5006u16)]);
         assert!(!is_ipv6);
+        assert!(multicast.is_none(), "unicast address must not join");
         assert_eq!(media_info.video_rtcp_addr.unwrap().port(), 5005);
         assert_eq!(media_info.audio_rtcp_addr.unwrap().port(), 5007);
 
@@ -745,5 +871,64 @@ mod tests {
         assert_eq!(audio.codec.to_lowercase(), "opus");
         assert_eq!(audio.clock_rate, 48000);
         assert_eq!(audio.channels, 2);
+    }
+
+    #[test]
+    fn multicast_group_joins_with_kernel_default_interface() {
+        let source = test_source(MULTICAST_SDP);
+        let (ports, media_info, is_ipv6, multicast) = source.parse_sdp().unwrap();
+
+        assert_eq!(ports, vec![(0u8, 1720u16)]);
+        assert!(!is_ipv6);
+        // A multicast group is not a usable RTCP destination: the source
+        // only receives, and hosts without a multicast sender route would
+        // spam ENETUNREACH on every feedback packet.
+        assert!(media_info.video_rtcp_addr.is_none());
+        match multicast {
+            Some(MulticastJoin::V4 { group, interface }) => {
+                assert_eq!(group, Ipv4Addr::new(230, 1, 1, 1));
+                assert_eq!(interface, Ipv4Addr::UNSPECIFIED);
+            }
+            other => panic!("expected IPv4 multicast join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multicast_interface_selects_join_interface() {
+        let source = test_source_with(MULTICAST_SDP, Some("192.168.123.11"));
+        let (_, _, _, multicast) = source.parse_sdp().unwrap();
+
+        match multicast {
+            Some(MulticastJoin::V4 { interface, .. }) => {
+                assert_eq!(interface, Ipv4Addr::new(192, 168, 123, 11));
+            }
+            other => panic!("expected IPv4 multicast join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multicast_interface_family_mismatch_errors() {
+        let source = test_source_with(MULTICAST_SDP, Some("not-an-ip"));
+        assert!(source.parse_sdp().is_err());
+
+        // An interface index is only meaningful for IPv6 groups.
+        let source = test_source_with(MULTICAST_SDP, Some("2"));
+        assert!(source.parse_sdp().is_err());
+    }
+
+    #[test]
+    fn ipv6_multicast_group_takes_interface_index() {
+        let sdp = MULTICAST_SDP.replace("c=IN IP4 230.1.1.1", "c=IN IP6 ff15::1");
+        let source = test_source_with(&sdp, Some("2"));
+        let (_, _, is_ipv6, multicast) = source.parse_sdp().unwrap();
+
+        assert!(is_ipv6);
+        match multicast {
+            Some(MulticastJoin::V6 { group, interface }) => {
+                assert_eq!(group, "ff15::1".parse::<Ipv6Addr>().unwrap());
+                assert_eq!(interface, 2);
+            }
+            other => panic!("expected IPv6 multicast join, got {other:?}"),
+        }
     }
 }

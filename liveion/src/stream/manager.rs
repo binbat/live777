@@ -1736,6 +1736,7 @@ mod tests {
     fn source_config(url: &str) -> crate::config::SourceConfig {
         crate::config::SourceConfig {
             url: Some(url.to_string()),
+            multicast_interface: None,
             #[cfg(feature = "native-source")]
             capture: None,
             #[cfg(feature = "native-source")]
@@ -1974,6 +1975,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path)),
+                        multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,
                         #[cfg(feature = "native-source")]
@@ -2171,6 +2173,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path.to_string_lossy())),
+                        multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,
                         #[cfg(feature = "native-source")]

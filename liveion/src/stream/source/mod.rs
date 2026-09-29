@@ -189,6 +189,9 @@ pub struct InternalSourceConfig {
     /// file source never reconnects.
     #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
     pub url: String,
+    /// Only the SDP file source joins multicast groups.
+    #[cfg(feature = "source-sdp")]
+    pub multicast_interface: Option<String>,
 }
 
 #[cfg(any(
@@ -198,13 +201,12 @@ pub struct InternalSourceConfig {
 ))]
 impl InternalSourceConfig {
     pub fn from_config(stream_id: &str, config: &crate::config::SourceConfig) -> Self {
-        #[cfg(not(any(feature = "source-rtsp", feature = "source-whep")))]
-        let _ = config;
-
         Self {
             stream_id: stream_id.to_string(),
             #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
             url: config.url.clone().unwrap_or_default(),
+            #[cfg(feature = "source-sdp")]
+            multicast_interface: config.multicast_interface.clone(),
         }
     }
 }
@@ -473,6 +475,8 @@ mod tests {
             InternalSourceConfig {
                 stream_id: "test".to_string(),
                 url: url.to_string(),
+                #[cfg(feature = "source-sdp")]
+                multicast_interface: None,
             }
         }
 
