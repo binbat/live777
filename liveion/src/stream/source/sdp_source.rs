@@ -3,6 +3,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+#[cfg(feature = "source")]
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, error, info, trace, warn};
@@ -163,7 +165,7 @@ fn resolve_v6_interface(value: &str, group: &Ipv6Addr) -> Result<u32> {
     }
     if_name_to_index(value).map_err(|e| {
         anyhow::anyhow!(
-            "multicast_interface '{value}' must be an interface index or name for IPv6 group {group}: {e:#}"
+            "multicast_interface '{value}' must be an interface index or name for IPv6 group {group}: {e}"
         )
     })
 }
@@ -231,9 +233,9 @@ fn multicast_join(
 #[cfg(feature = "source")]
 const BIND_JOIN_MAX_ATTEMPTS: u32 = 5;
 #[cfg(feature = "source")]
-const BIND_JOIN_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const BIND_JOIN_INITIAL_DELAY: Duration = Duration::from_millis(500);
 #[cfg(feature = "source")]
-const BIND_JOIN_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
+const BIND_JOIN_MAX_DELAY: Duration = Duration::from_secs(4);
 
 /// Bind a media-port UDP socket on the wildcard address of `bind_ip`'s
 /// family, joining the multicast group when the SDP connection address
@@ -320,7 +322,7 @@ async fn bind_receiver_with_retry(
                     return Err(e);
                 }
                 warn!(
-                    "[{}] channel {} bind/join failed (attempt {}/{}): {:#}; retrying in {:?}",
+                    "[{}] channel {} bind/join failed (attempt {}/{}): {}; retrying in {:?}",
                     stream_id, channel, attempt, BIND_JOIN_MAX_ATTEMPTS, e, delay
                 );
                 tokio::time::sleep(delay).await;
@@ -328,7 +330,7 @@ async fn bind_receiver_with_retry(
             }
         }
     }
-    unreachable!()
+    unreachable!("the loop returns on success and on the last attempt")
 }
 
 impl SdpSource {

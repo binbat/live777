@@ -317,6 +317,56 @@ mod tests {
         assert_eq!(spec.tiers.len(), 2);
         assert!(spec.encoder.adaptive.is_some());
     }
+
+    fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
+        SourceConfig {
+            url: Some(url.to_string()),
+            multicast_interface: multicast_interface.map(str::to_string),
+            #[cfg(feature = "native-source")]
+            capture: None,
+            #[cfg(feature = "native-source")]
+            encoder: None,
+            #[cfg(feature = "native-source")]
+            output: Default::default(),
+            #[cfg(feature = "native-source")]
+            tiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn multicast_interface_accepts_address_index_and_name() {
+        for iface in [
+            "192.168.123.11",
+            "0.0.0.0",
+            "2",
+            "eth0",
+            "vlan.100",
+            "br-lan",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_ok(), "'{iface}' must validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_rejects_garbage() {
+        for iface in [
+            "not an ip",
+            "99999999999999999999999",
+            "way-too-long-interface-name",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_err(), "'{iface}' must not validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_warns_but_validates_for_non_sdp_sources() {
+        // Set on an RTSP source it is ignored (only SDP file sources join
+        // multicast groups), but it is not a config error.
+        let cfg = url_source("rtsp://192.168.1.100:554/stream", Some("192.168.123.11"));
+        assert!(cfg.validate().is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -391,56 +441,6 @@ mod hook_tests {
     fn zero_timeout_disables_the_timeout() {
         let cfg: Config = toml::from_str("[hooks]\ntimeout_ms = 0\n").unwrap();
         assert_eq!(cfg.hooks.timeout_ms, 0);
-    }
-
-    fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
-        SourceConfig {
-            url: Some(url.to_string()),
-            multicast_interface: multicast_interface.map(str::to_string),
-            #[cfg(feature = "native-source")]
-            capture: None,
-            #[cfg(feature = "native-source")]
-            encoder: None,
-            #[cfg(feature = "native-source")]
-            output: Default::default(),
-            #[cfg(feature = "native-source")]
-            tiers: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn multicast_interface_accepts_address_index_and_name() {
-        for iface in [
-            "192.168.123.11",
-            "0.0.0.0",
-            "2",
-            "eth0",
-            "vlan.100",
-            "br-lan",
-        ] {
-            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
-            assert!(cfg.validate().is_ok(), "'{iface}' must validate");
-        }
-    }
-
-    #[test]
-    fn multicast_interface_rejects_garbage() {
-        for iface in [
-            "not an ip",
-            "99999999999999999999999",
-            "way-too-long-interface-name",
-        ] {
-            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
-            assert!(cfg.validate().is_err(), "'{iface}' must not validate");
-        }
-    }
-
-    #[test]
-    fn multicast_interface_warns_but_validates_for_non_sdp_sources() {
-        // Set on an RTSP source it is ignored (only SDP file sources join
-        // multicast groups), but it is not a config error.
-        let cfg = url_source("rtsp://192.168.1.100:554/stream", Some("192.168.123.11"));
-        assert!(cfg.validate().is_ok());
     }
 }
 

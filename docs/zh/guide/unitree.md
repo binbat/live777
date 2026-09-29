@@ -1,7 +1,7 @@
 # 宇树 Go2
 
 宇树 Go2 机器狗的相机以组播方式发送 H264/RTP 到 `230.1.1.1:1720`
-(15 fps,1280×720，水平视场角 100°、垂直 56°——见宇树
+（15 fps、1280×720，水平视场角 100°、垂直 56°——见宇树
 [多媒体服务](https://support.unitree.com/home/zh/developer/Multimedia_Services)
 文档）。SDP 文件源可以直接加入该组播组，live777 无需任何
 GStreamer/Python 桥接即可接入相机。
@@ -18,7 +18,7 @@ gst-launch-1.0 udpsrc address=230.1.1.1 port=1720 multicast-iface=eth0 ! \
 
 ## live777 配置
 
-把描述该组播流的 SDP 写到 `/etc/live777/unitree-go2.sdp`:
+把描述该组播流的 SDP 写到 `/etc/live777/unitree-go2.sdp`：
 
 ```
 v=0
@@ -34,20 +34,20 @@ a=rtpmap:96 H264/90000
 
 ```toml
 [stream.go2-cam]
-# 只在有人观看时加入组播组:最后一个观众离开后组成员关系
-# (部分机器狗上连 MCU 的编码器)都会停止。
+# 只在有人观看时加入组播组：最后一个观众离开后组成员关系
+# （部分机器狗上连 MCU 的编码器）都会停止。
 on_demand = true
 
 [[stream.go2-cam.sources]]
 url = "/etc/live777/unitree-go2.sdp"
-# 主机上连接机器狗的网卡地址(Go2 出厂子网为 192.168.123.0/24)。
-# 不配置则由内核选择,只能收到默认路由网卡上的组播流量。
+# 主机上连接机器狗的网卡地址（Go2 出厂子网为 192.168.123.0/24）。
+# 不配置则由内核选择，只能收到默认路由网卡上的组播流量。
 multicast_interface = "192.168.123.11"
 ```
 
 启动 live777 后观看：
 
-- Web UI:`http://<host>:7777/` —— 第一个观众触发按需启动前，
+- Web UI：`http://<host>:7777/` —— 第一个观众触发按需启动前，
   流显示 `standby` 徽标。
 - 播放器用 WHEP 端点：`http://<host>:7777/whep/go2-cam`
 
