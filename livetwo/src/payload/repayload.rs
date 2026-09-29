@@ -572,4 +572,79 @@ mod tests {
             "marker + Y=1 must drop the malformed temporal unit"
         );
     }
+
+    fn h264_packet(marker: bool, seq: u16, nal: &[u8]) -> Packet {
+        Packet {
+            header: rtc::rtp::header::Header {
+                version: 2,
+                marker,
+                payload_type: 96,
+                sequence_number: seq,
+                timestamp: 1000,
+                ssrc: 0x1234,
+                ..Default::default()
+            },
+            payload: Bytes::from(nal.to_vec()),
+        }
+    }
+
+    /// Senders that write SPS/PPS inline only on their own cadence (robot
+    /// cameras, raw-RTP appliances): the repayloader must cache the first
+    /// inline sets and re-inject them ahead of every later IDR, so a
+    /// subscriber joining mid-GOP decodes from the next IDR instead of
+    /// waiting for the sender's parameter-set cadence (live777#464).
+    #[test]
+    fn h264_params_learned_from_stream_injected_before_later_idr() {
+        const SPS: [u8; 5] = [0x67, 0x42, 0x00, 0x1f, 0xaa];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x3c, 0x80];
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+        const SLICE: [u8; 3] = [0x41, 0x9a, 0x22];
+
+        let mut codec = RePayloadCodec::new(MIME_TYPE_H264.to_owned());
+
+        // Frame 1: SPS + PPS + IDR inline — establishes the cache.
+        assert!(codec.payload(&h264_packet(false, 1, &SPS)).is_empty());
+        assert!(codec.payload(&h264_packet(false, 2, &PPS)).is_empty());
+        let frame1 = codec.payload(&h264_packet(true, 3, &IDR));
+        assert!(!frame1.is_empty(), "frame 1 must be emitted");
+
+        // Frame 2: a plain non-IDR slice passes through untouched.
+        let frame2 = codec.payload(&h264_packet(true, 4, &SLICE));
+        let frame2_payload: Vec<u8> = frame2
+            .iter()
+            .flat_map(|p| p.payload.iter().copied())
+            .collect();
+        assert_eq!(frame2_payload, SLICE);
+
+        // Frame 3: an IDR without inline parameter sets — the cached
+        // SPS/PPS must be injected ahead of it.
+        let frame3 = codec.payload(&h264_packet(true, 5, &IDR));
+        let frame3_payload: Vec<u8> = frame3
+            .iter()
+            .flat_map(|p| p.payload.iter().copied())
+            .collect();
+        let find = |needle: &[u8]| {
+            frame3_payload
+                .windows(needle.len())
+                .position(|w| w == needle)
+        };
+        let (sps_at, pps_at, idr_at) = (find(&SPS), find(&PPS), find(&IDR));
+        assert!(
+            sps_at.is_some() && pps_at.is_some(),
+            "cached SPS/PPS must be injected: {frame3_payload:02x?}"
+        );
+        assert!(
+            sps_at < idr_at && pps_at < idr_at,
+            "parameter sets must precede the IDR: {frame3_payload:02x?}"
+        );
+
+        // Outbound sequence numbers stay continuous across the injection.
+        let seqs: Vec<u16> = [&frame1, &frame2, &frame3]
+            .into_iter()
+            .flatten()
+            .map(|p| p.header.sequence_number)
+            .collect();
+        let expected: Vec<u16> = (0..seqs.len() as u16).collect();
+        assert_eq!(seqs, expected);
+    }
 }
