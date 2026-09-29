@@ -5,11 +5,11 @@ listen = "127.0.0.1:7782"
 
 [strategy]
 # Primary teardown for cascaded streams: shortly after the last viewer
-# leaves, destroy the stream. This also closes the edge's cascade push, so
-# the edge returns to zero outbound copies and the next viewer goes direct
-# to the edge again.
+# leaves, destroy the stream. This also ends the cloud's outgoing WHEP pull
+# (the edge's inbound subscriber session), so the edge returns to zero
+# outbound copies and the next viewer goes direct to the edge again.
 auto_delete_whep = 5000
-# Safety net: if the cascade publisher is already gone (liveman reaped the
-# idle cascade, or the push dropped), destroy the leftover publisher-less
-# stream quickly so no viewer can land on an empty shell.
-auto_delete_whip = 1000
+# Do NOT set a small auto_delete_whip here: that reaper destroys the stream
+# once the publisher has been gone for the timeout, regardless of attached
+# viewers, and rebuilding a supervised pull hop after a transient failure
+# routinely takes longer — every cloud viewer would be dropped.
