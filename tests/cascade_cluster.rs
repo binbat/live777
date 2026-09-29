@@ -26,13 +26,14 @@ mod cascade_cluster {
     use std::time::Duration;
 
     use tokio::net::TcpListener;
-    use tokio::sync::watch;
+    use tokio::sync::{Notify, oneshot, watch};
     use webrtc::media_stream::MediaStreamTrack;
     use webrtc::media_stream::track_local::TrackLocal;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
     use webrtc::peer_connection::{
         MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-        RTCConfigurationBuilder, RTCPeerConnectionState, RTCSessionDescription,
+        RTCConfigurationBuilder, RTCIceGatheringState, RTCPeerConnectionState,
+        RTCSessionDescription,
     };
     use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
@@ -68,6 +69,8 @@ mod cascade_cluster {
         liveman: SocketAddr,
         edge0: SocketAddr,
         cloud: SocketAddr,
+        /// Kept alive for the cluster's lifetime; dropping it stops liveman.
+        _liveman_shutdown: oneshot::Sender<()>,
     }
 
     async fn boot_liveion(strategy_edit: impl FnOnce(&mut liveion::config::Config)) -> SocketAddr {
@@ -81,24 +84,16 @@ mod cascade_cluster {
         addr
     }
 
-    /// Two edge nodes (subscriber-capped via liveman's `sub_max`) plus one
-    /// cloud node behind a single liveman. Nodes update liveman over SSE so
-    /// routing decisions see fresh state.
-    async fn boot_cluster(mode: CascadeMode) -> Cluster {
-        let edge0 = boot_liveion(|_| {}).await;
-        let edge1 = boot_liveion(|_| {}).await;
-        let cloud = boot_liveion(|cfg| {
-            // Torn-down cascaded streams must vanish quickly so the next
-            // viewer goes direct to the edge again.
-            cfg.strategy.auto_delete_whep = api::strategy::AutoDestrayTime(500);
-        })
-        .await;
-
-        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-            .await
-            .unwrap();
-        let liveman = listener.local_addr().unwrap();
-
+    /// Build the liveman config for the three-node edge+cloud topology. The
+    /// listener is bound separately so a test can restart liveman (new port,
+    /// independent shutdown) against the same nodes.
+    fn liveman_config(
+        mode: CascadeMode,
+        liveman: SocketAddr,
+        edge0: SocketAddr,
+        edge1: SocketAddr,
+        cloud: SocketAddr,
+    ) -> liveman::config::Config {
         let mut cfg = liveman::config::Config::default();
         cfg.http.listen = liveman;
         cfg.database.url = "sqlite::memory:".to_string();
@@ -129,18 +124,57 @@ mod cascade_cluster {
         cfg.cascade.check_tick_time = CheckCascadeTickTime(1000);
         cfg.cascade.maximum_idle_time = 1000;
         cfg.validate().unwrap();
+        cfg
+    }
 
-        tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+    /// Spawn a liveman on an ephemeral port; the returned shutdown sender
+    /// stops just this instance when dropped (the nodes keep running).
+    async fn boot_liveman(
+        mode: CascadeMode,
+        edge0: SocketAddr,
+        edge1: SocketAddr,
+        cloud: SocketAddr,
+    ) -> (SocketAddr, oneshot::Sender<()>) {
+        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Bound first: `http.public` (the pinned cascade endpoint nodes push
+        // to) is derived from the real address by validate().
+        let cfg = liveman_config(mode, addr, edge0, edge1, cloud);
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(liveman::serve(cfg, listener, async {
+            let _ = rx.await;
+        }));
+        (addr, tx)
+    }
+
+    /// Two edge nodes (subscriber-capped via liveman's `sub_max`) plus one
+    /// cloud node behind a single liveman. Nodes update liveman over SSE so
+    /// routing decisions see fresh state.
+    async fn boot_cluster(mode: CascadeMode) -> Cluster {
+        let edge0 = boot_liveion(|_| {}).await;
+        let edge1 = boot_liveion(|_| {}).await;
+        let cloud = boot_liveion(|cfg| {
+            // Torn-down cascaded streams must vanish quickly so the next
+            // viewer goes direct to the edge again.
+            cfg.strategy.auto_delete_whep = api::strategy::AutoDestrayTime(500);
+        })
+        .await;
+
+        let (liveman, shutdown) = boot_liveman(mode, edge0, edge1, cloud).await;
         Cluster {
             liveman,
             edge0,
             cloud,
+            _liveman_shutdown: shutdown,
         }
     }
 
     #[derive(Clone)]
     struct StateHandler {
         state_tx: watch::Sender<RTCPeerConnectionState>,
+        gather_complete: Arc<Notify>,
     }
 
     #[async_trait::async_trait]
@@ -148,14 +182,24 @@ mod cascade_cluster {
         async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
             let _ = self.state_tx.send(state);
         }
+        async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+            if state == RTCIceGatheringState::Complete {
+                self.gather_complete.notify_one();
+            }
+        }
     }
 
     async fn build_peer() -> (
         Arc<dyn PeerConnection>,
         watch::Receiver<RTCPeerConnectionState>,
+        Arc<Notify>,
     ) {
         let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
-        let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(StateHandler { state_tx });
+        let gather_complete = Arc::new(Notify::new());
+        let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(StateHandler {
+            state_tx,
+            gather_complete: gather_complete.clone(),
+        });
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs().unwrap();
         let peer: Arc<dyn PeerConnection> = Arc::new(
@@ -168,7 +212,15 @@ mod cascade_cluster {
                 .await
                 .unwrap(),
         );
-        (peer, state_rx)
+        (peer, state_rx, gather_complete)
+    }
+
+    /// Wait for local ICE gathering to complete (bounded) so the offer
+    /// carries candidates — no fixed sleeps.
+    async fn gather_fully(gather_complete: &Notify) {
+        tokio::time::timeout(Duration::from_secs(5), gather_complete.notified())
+            .await
+            .expect("ICE gathering did not complete");
     }
 
     async fn wait_connected(mut state_rx: watch::Receiver<RTCPeerConnectionState>, who: &str) {
@@ -206,8 +258,17 @@ mod cascade_cluster {
     }
 
     /// A WHEP viewer attached through liveman (never directly to a node).
-    async fn whep_viewer(cluster: &Cluster, stream: &str, who: &str) -> Arc<dyn PeerConnection> {
-        let (peer, state_rx) = build_peer().await;
+    /// The returned state receiver lets callers assert what the viewer's own
+    /// peer observes later (e.g. being kicked).
+    async fn whep_viewer(
+        cluster: &Cluster,
+        stream: &str,
+        who: &str,
+    ) -> (
+        Arc<dyn PeerConnection>,
+        watch::Receiver<RTCPeerConnectionState>,
+    ) {
+        let (peer, state_rx, gather_complete) = build_peer().await;
         peer.add_transceiver_from_kind(
             RtpCodecKind::Video,
             Some(RTCRtpTransceiverInit {
@@ -221,7 +282,7 @@ mod cascade_cluster {
         let offer = peer.create_offer(None).await.unwrap();
         peer.set_local_description(offer).await.unwrap();
         // Gather fully so the offer carries candidates (no trickle needed).
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        gather_fully(&gather_complete).await;
         let offer_sdp = peer.local_description().await.unwrap().sdp;
 
         let answer = post_sdp(
@@ -233,14 +294,14 @@ mod cascade_cluster {
         peer.set_remote_description(RTCSessionDescription::answer(answer).unwrap())
             .await
             .unwrap();
-        wait_connected(state_rx, who).await;
-        peer
+        wait_connected(state_rx.clone(), who).await;
+        (peer, state_rx)
     }
 
     /// The camera: a WHIP publisher pinned to its edge node through liveman,
     /// so a new stream can never land on the cloud directly.
     async fn whip_publish(cluster: &Cluster, alias: &str, stream: &str) -> Arc<dyn PeerConnection> {
-        let (peer, state_rx) = build_peer().await;
+        let (peer, state_rx, gather_complete) = build_peer().await;
         let track: Arc<dyn TrackLocal> = Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
             stream.to_string(),
             format!("{stream}-video"),
@@ -264,7 +325,7 @@ mod cascade_cluster {
         peer.add_track(track.clone()).await.unwrap();
         let offer = peer.create_offer(None).await.unwrap();
         peer.set_local_description(offer).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        gather_fully(&gather_complete).await;
         let offer_sdp = peer.local_description().await.unwrap().sdp;
 
         let answer = post_sdp(
@@ -314,7 +375,12 @@ mod cascade_cluster {
     }
 
     async fn streams_of(addr: SocketAddr) -> Vec<api::response::Stream> {
-        reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}{}", api::path::streams("")))
+            .send()
             .await
             .unwrap()
             .json()
@@ -370,18 +436,10 @@ mod cascade_cluster {
         assert_eq!(http::StatusCode::NO_CONTENT, res.status());
     }
 
-    async fn run_edge_cloud_loop(mode: CascadeMode) {
-        init_test_environment();
-        let pull = matches!(mode, CascadeMode::Pull);
-        let cluster = boot_cluster(mode).await;
-        let stream = "cam0";
-
-        // --- camera publishes to its edge node (pinned through liveman) ---
-        let publisher = whip_publish(&cluster, "edge0", stream).await;
-
-        // liveman learns the stream over SSE before the first viewer.
+    /// liveman learns a stream exists (on any node) via SSE/poll snapshots.
+    async fn wait_liveman_sees(cluster: &Cluster, stream: &str) {
         wait_until(
-            "liveman sees cam0 on edge0",
+            "liveman sees the stream",
             Duration::from_secs(10),
             || async {
                 let res = reqwest::get(format!(
@@ -396,9 +454,22 @@ mod cascade_cluster {
             },
         )
         .await;
+    }
+
+    async fn run_edge_cloud_loop(mode: CascadeMode) {
+        init_test_environment();
+        let pull = matches!(mode, CascadeMode::Pull);
+        let cluster = boot_cluster(mode).await;
+        let stream = "cam0";
+
+        // --- camera publishes to its edge node (pinned through liveman) ---
+        let publisher = whip_publish(&cluster, "edge0", stream).await;
+
+        // liveman learns the stream over SSE before the first viewer.
+        wait_liveman_sees(&cluster, stream).await;
 
         // --- viewer 1 goes direct to the edge ---
-        let v1 = whep_viewer(&cluster, stream, "viewer1").await;
+        let (v1, mut v1_state) = whep_viewer(&cluster, stream, "viewer1").await;
         wait_until(
             "edge0 has exactly one direct viewer",
             Duration::from_secs(10),
@@ -417,7 +488,7 @@ mod cascade_cluster {
         );
 
         // --- viewer 2 overflows the edge: cascade to the cloud, kick viewer 1 ---
-        let v2 = whep_viewer(&cluster, stream, "viewer2").await;
+        let (v2, _) = whep_viewer(&cluster, stream, "viewer2").await;
         wait_until(
             "cloud has the cascaded stream with a connected publisher",
             Duration::from_secs(20),
@@ -468,8 +539,31 @@ mod cascade_cluster {
             assert!(hop[0].cascade.is_some());
         }
 
+        // The kicked viewer's own peer must observe the disconnect — a kick
+        // that only updates server-side listings would leave the player
+        // silently stuck instead of reconnecting onto the cloud.
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                v1_state.changed().await.unwrap();
+                if matches!(
+                    *v1_state.borrow(),
+                    RTCPeerConnectionState::Closed
+                        | RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Disconnected
+                ) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(
+            observed.is_ok(),
+            "kicked viewer1 never observed a terminal state; last state: {:?}",
+            v1_state.borrow()
+        );
+
         // --- viewer 3 (e.g. viewer1's player reconnecting) lands on the cloud ---
-        let v3 = whep_viewer(&cluster, stream, "viewer3").await;
+        let (v3, _) = whep_viewer(&cluster, stream, "viewer3").await;
         wait_until(
             "cloud serves both viewers",
             Duration::from_secs(10),
@@ -508,7 +602,8 @@ mod cascade_cluster {
                 .map(|s| s.id.clone())
                 .expect("the hop is the only active subscriber on the edge");
             let pre_kill_publish = find_stream(&streams_of(cluster.cloud).await, stream)
-                .and_then(|s| s.publish.sessions.first().map(|p| p.id.clone()));
+                .and_then(|s| s.publish.sessions.first().map(|p| p.id.clone()))
+                .expect("cloud must have a publish session before the kill");
             let res = reqwest::Client::new()
                 .delete(format!(
                     "http://{}/session/{}/{}",
@@ -527,7 +622,7 @@ mod cascade_cluster {
                     match find_stream(&streams, stream) {
                         Some(s) => s.publish.sessions.iter().any(|p| {
                             p.state == api::response::RTCPeerConnectionState::Connected
-                                && Some(&p.id) != pre_kill_publish.as_ref()
+                                && p.id != pre_kill_publish
                         }),
                         None => false,
                     }
@@ -577,7 +672,7 @@ mod cascade_cluster {
         .await;
 
         // --- the next viewer goes direct to the edge again ---
-        let v4 = whep_viewer(&cluster, stream, "viewer4").await;
+        let (v4, _) = whep_viewer(&cluster, stream, "viewer4").await;
         wait_until(
             "viewer4 is direct on the edge",
             Duration::from_secs(10),
@@ -616,22 +711,7 @@ mod cascade_cluster {
         let stream = "cam0";
         let publisher = whip_publish(&cluster, "edge0", stream).await;
 
-        wait_until(
-            "liveman sees cam0 on edge0",
-            Duration::from_secs(10),
-            || async {
-                let res = reqwest::get(format!(
-                    "http://{}{}",
-                    cluster.liveman,
-                    api::path::streams("")
-                ))
-                .await
-                .unwrap();
-                let body: Vec<serde_json::Value> = res.json().await.unwrap();
-                body.iter().any(|s| s["id"] == stream)
-            },
-        )
-        .await;
+        wait_liveman_sees(&cluster, stream).await;
 
         // Create a WHEP source on the cloud through liveman (alias-pinned).
         let res = reqwest::Client::new()
@@ -676,7 +756,7 @@ mod cascade_cluster {
 
         // Eager registration: a viewer through liveman lands on the cloud
         // (whose source-bridge publish beats the edge's capped capacity).
-        let viewer = whep_viewer(&cluster, stream, "source-viewer").await;
+        let (viewer, _) = whep_viewer(&cluster, stream, "source-viewer").await;
         wait_until(
             "cloud serves the viewer through its source",
             Duration::from_secs(10),
@@ -716,5 +796,230 @@ mod cascade_cluster {
         .await;
 
         let _ = publisher.close().await;
+    }
+
+    /// Two viewers arriving inside the same snapshot-propagation window must
+    /// not both win direct routing to the capped edge: WHEP admission is
+    /// serialized per stream and eagerly-recorded sessions count toward
+    /// capacity, so the second viewer overflows to the cloud immediately.
+    /// Runs in push mode, where the hop is self-marked and direct viewers
+    /// stay distinguishable.
+    #[tokio::test]
+    async fn concurrent_viewers_never_oversubscribe_the_edge() {
+        init_test_environment();
+        let cluster = boot_cluster(CascadeMode::Push).await;
+        let stream = "cam0";
+        let publisher = whip_publish(&cluster, "edge0", stream).await;
+        wait_liveman_sees(&cluster, stream).await;
+
+        let ((v1, _), (v2, _)) = tokio::join!(
+            whep_viewer(&cluster, stream, "race-viewer-1"),
+            whep_viewer(&cluster, stream, "race-viewer-2"),
+        );
+
+        // At no instant may the edge carry two direct (unmarked) viewers —
+        // before serialized admission, both raced viewers landed on the edge.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let streams = streams_of(cluster.edge0).await;
+            if let Some(s) = find_stream(&streams, stream) {
+                let direct = s
+                    .subscribe
+                    .sessions
+                    .iter()
+                    .filter(|x| {
+                        x.state != api::response::RTCPeerConnectionState::Closed
+                            && x.cascade.is_none()
+                    })
+                    .count();
+                assert!(
+                    direct <= 1,
+                    "edge oversubscribed with {direct} direct viewers"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // And the overflow viewer did land on the cloud (through the hop).
+        wait_until(
+            "cloud serves a raced viewer",
+            Duration::from_secs(20),
+            || async {
+                let streams = streams_of(cluster.cloud).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => !active_subs(s).is_empty(),
+                    None => false,
+                }
+            },
+        )
+        .await;
+
+        for peer in [publisher, v1, v2] {
+            let _ = peer.close().await;
+        }
+    }
+
+    /// After a liveman restart, a hop found on the nodes without an intent
+    /// is adopted while viewers remain (nobody tears it down), and once the
+    /// last viewer leaves the adopted intent is reaped like any other.
+    #[tokio::test]
+    async fn liveman_restart_adopts_live_hop_and_reaps_it_when_idle() {
+        init_test_environment();
+        let edge0 = boot_liveion(|_| {}).await;
+        let edge1 = boot_liveion(|_| {}).await;
+        let cloud = boot_liveion(|cfg| {
+            // No auto_delete_whep here: the assertions below must measure
+            // liveman's reaping, not the node's own stream teardown.
+            cfg.strategy.auto_delete_whep = api::strategy::AutoDestrayTime(-1);
+        })
+        .await;
+        let stream = "cam0";
+
+        // --- first liveman: publish, overflow, establish the push hop ---
+        let (liveman, shutdown) = boot_liveman(CascadeMode::Push, edge0, edge1, cloud).await;
+        let cluster1 = Cluster {
+            liveman,
+            edge0,
+            cloud,
+            _liveman_shutdown: shutdown,
+        };
+        let publisher = whip_publish(&cluster1, "edge0", stream).await;
+        wait_liveman_sees(&cluster1, stream).await;
+
+        let (v1, _) = whep_viewer(&cluster1, stream, "viewer1").await;
+        wait_until(
+            "viewer1 direct on the edge",
+            Duration::from_secs(10),
+            || async {
+                let streams = streams_of(edge0).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => active_subs(s).len() == 1,
+                    None => false,
+                }
+            },
+        )
+        .await;
+        let (v2, _) = whep_viewer(&cluster1, stream, "viewer2").await;
+        let hop_on_edge = |streams: &[api::response::Stream]| {
+            find_stream(streams, stream)
+                .map(|s| {
+                    s.subscribe
+                        .sessions
+                        .iter()
+                        .filter(|x| x.state != api::response::RTCPeerConnectionState::Closed)
+                        .any(|x| x.cascade.is_some())
+                })
+                .unwrap_or(false)
+        };
+        wait_until(
+            "push hop established on the edge (self-marked)",
+            Duration::from_secs(20),
+            || async { hop_on_edge(&streams_of(edge0).await) },
+        )
+        .await;
+
+        // --- kill liveman; the hop and the viewers are unaffected ---
+        drop(cluster1);
+        // --- a fresh liveman on a new port adopts the live hop ---
+        let (liveman, shutdown) = boot_liveman(CascadeMode::Push, edge0, edge1, cloud).await;
+        let _cluster2 = Cluster {
+            liveman,
+            edge0,
+            cloud,
+            _liveman_shutdown: shutdown,
+        };
+        // Several reaper ticks pass (check_tick_time = 1s); with adoption
+        // the hop survives all of them — without it, the untracked-hop
+        // reaper deletes it at the first tick.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(
+            hop_on_edge(&streams_of(edge0).await),
+            "the hop must survive the liveman restart (adopted)"
+        );
+        let streams = streams_of(cloud).await;
+        assert_eq!(
+            active_subs(find_stream(&streams, stream).unwrap()).len(),
+            1,
+            "viewer2 must still be attached to the cloud"
+        );
+
+        // --- the last viewer leaves: the adopted intent is reaped ---
+        let _ = v2.close().await;
+        wait_until(
+            "the adopted hop is reaped once viewer-less",
+            Duration::from_secs(20),
+            || async { !hop_on_edge(&streams_of(edge0).await) },
+        )
+        .await;
+
+        let _ = publisher.close().await;
+        let _ = v1.close().await;
+    }
+
+    /// A viewer that overflows the edge and immediately leaves must not
+    /// cause create/destroy thrash: the supervisor may build the hop once,
+    /// but the idle reaper tears it down and the edge settles back to a
+    /// single outbound copy — and stays there.
+    #[tokio::test]
+    async fn viewer_churn_does_not_thrash_the_cascade() {
+        init_test_environment();
+        let cluster = boot_cluster(CascadeMode::Pull).await;
+        let stream = "cam0";
+        let publisher = whip_publish(&cluster, "edge0", stream).await;
+        wait_liveman_sees(&cluster, stream).await;
+
+        let (v1, _) = whep_viewer(&cluster, stream, "viewer1").await;
+        wait_until(
+            "viewer1 direct on the edge",
+            Duration::from_secs(10),
+            || async {
+                let streams = streams_of(cluster.edge0).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => active_subs(s).len() == 1,
+                    None => false,
+                }
+            },
+        )
+        .await;
+
+        // Overflow, then leave before the hop establishes.
+        let (v2, _) = whep_viewer(&cluster, stream, "churn-viewer").await;
+        let _ = v2.close().await;
+
+        // Within a few idle/reaper cycles the cascade (if it was ever built)
+        // is torn down and the edge settles back to the one direct viewer.
+        wait_until(
+            "cascade settled after churn",
+            Duration::from_secs(20),
+            || async {
+                let streams = streams_of(cluster.edge0).await;
+                match find_stream(&streams, stream) {
+                    Some(s) => active_subs(s).len() == 1,
+                    None => false,
+                }
+            },
+        )
+        .await;
+        // No late re-establishment: still exactly one outbound copy seconds
+        // later.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let streams = streams_of(cluster.edge0).await;
+        assert_eq!(
+            active_subs(find_stream(&streams, stream).unwrap()).len(),
+            1,
+            "the edge must keep exactly one outbound copy (no re-cascade)"
+        );
+        // The leftover cloud stream is reaped too — liveman's idle teardown
+        // kills the hop, and the node's own auto_delete_whep / orphan reaper
+        // removes the empty stream after its grace.
+        wait_until(
+            "the cloud holds no leftover shell after churn",
+            Duration::from_secs(20),
+            || async { find_stream(&streams_of(cluster.cloud).await, stream).is_none() },
+        )
+        .await;
+
+        let _ = publisher.close().await;
+        let _ = v1.close().await;
     }
 }
