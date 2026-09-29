@@ -356,6 +356,7 @@ impl Config {
 /// resolves a rule on every presence message). Invalid patterns are dropped
 /// here; `Config::validate` rejects them earlier, so this is defense in
 /// depth.
+#[cfg(feature = "net4mqtt")]
 pub(crate) fn compile_node_rules(rules: &[NodeRule]) -> Vec<(glob::Pattern, Option<u16>)> {
     rules
         .iter()
@@ -364,6 +365,7 @@ pub(crate) fn compile_node_rules(rules: &[NodeRule]) -> Vec<(glob::Pattern, Opti
 }
 
 /// `resolve_sub_max` with pre-compiled rules (first match wins).
+#[cfg(feature = "net4mqtt")]
 pub(crate) fn resolve_sub_max_compiled(
     nodes: &[Node],
     rules: &[(glob::Pattern, Option<u16>)],
