@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 /// (they govern this node's own session/stream lifecycle). Subscriber-count
 /// limits are a cluster-routing concern and belong to liveman
 /// (`[[nodes]] sub_max`), not to this block.
+///
+/// `deny_unknown_fields` is deliberate: the removed `each_stream_max_sub`
+/// knob must fail loudly at startup instead of being silently ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Strategy {
     #[serde(default)]
     pub cascade_push_close_sub: bool,

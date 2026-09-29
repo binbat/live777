@@ -373,19 +373,27 @@ impl PeerForward {
         result
     }
 
+    /// Ensure the publish slot is free for a cascade pull: a dead
+    /// cascade-pull incumbent (its hop lost the network) is replaced instead
+    /// of fought — liveman's supervisor re-issues the pull, and replacing
+    /// keeps subscribers attached via the media-generation machinery. A live
+    /// incumbent is supervised and would fight its way back, so anything
+    /// else publishing is a hard conflict.
     #[cfg(feature = "cascade")]
-    pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
-        // A dead cascade-pull incumbent (its hop lost the network) is
-        // replaced instead of fought: liveman's supervisor re-issues the
-        // pull, and replacing keeps subscribers attached via the media
-        // generation machinery. A live incumbent is supervised and would
-        // fight its way back, so it remains a hard conflict.
+    async fn ensure_publish_slot_for_pull(&self) -> Result<()> {
         self.internal.replace_dead_cascade_pull_incumbent().await?;
         if self.internal.publish_is_some().await {
             return Err(AppError::stream_already_exists(
                 "A connection has already been established",
             ));
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "cascade")]
+    pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
+        // Fast path before taking the lock.
+        self.ensure_publish_slot_for_pull().await?;
 
         // Held for the whole handshake, as in `set_publish`. The only
         // displacement a cascade pull performs is replacing a *dead*
@@ -393,12 +401,7 @@ impl PeerForward {
         // hard conflict.
         let _publish_guard = self.publish_lock.lock().await;
 
-        self.internal.replace_dead_cascade_pull_incumbent().await?;
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        self.ensure_publish_slot_for_pull().await?;
 
         let media_info = MediaInfo {
             _codec: vec![],

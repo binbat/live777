@@ -240,7 +240,9 @@ pub(crate) async fn wait_for_peer_connected(
 }
 
 /// How long a peer may stay `Disconnected` before we stop waiting for ICE
-/// recovery and close it (teardown then follows the normal `Closed` path).
+/// recovery and close it. Teardown does NOT follow a `Closed` event —
+/// `close()` aborts the webrtc driver, so the watchdog removes the session
+/// directly after closing.
 const DISCONNECTED_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Give a `Disconnected` peer time to recover (transient network blip, ICE
@@ -284,7 +286,14 @@ fn spawn_disconnected_watchdog(
                 if let Some(internal) = internal.upgrade() {
                     let result = match role {
                         "publish" => internal.remove_publish(peer).await,
-                        _ => internal.remove_subscribe(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
                     };
                     if let Err(err) = result {
                         warn!(
@@ -343,7 +352,14 @@ fn spawn_establish_watchdog(
                     // for publish, replaced) the session.
                     let result = match role {
                         "publish" => internal.remove_publish(peer).await,
-                        _ => internal.remove_subscribe(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
                     };
                     if let Err(err) = result {
                         warn!(
