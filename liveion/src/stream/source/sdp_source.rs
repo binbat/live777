@@ -65,10 +65,6 @@ impl ConnectionAddress {
             ConnectionAddress::V4 { addr } | ConnectionAddress::V6 { addr, .. } => addr,
         }
     }
-
-    fn is_ipv6(&self) -> bool {
-        matches!(self, ConnectionAddress::V6 { .. })
-    }
 }
 
 /// Split a `c=` address token into the bare address and an optional IPv6
@@ -386,21 +382,16 @@ impl SdpSource {
     fn parse_connection_address(&self) -> Option<ConnectionAddress> {
         for line in self.sdp_content.lines() {
             let line = line.trim();
-            let is_ipv6 = if line.starts_with("c=IN IP4 ") {
-                false
-            } else if line.starts_with("c=IN IP6 ") {
-                true
-            } else {
-                continue;
-            };
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let (addr, zone) = split_connection_token(parts[2]);
-                return Some(if is_ipv6 {
-                    ConnectionAddress::V6 { addr, zone }
-                } else {
-                    ConnectionAddress::V4 { addr }
-                });
+            if let Some(rest) = line.strip_prefix("c=IN IP4 ")
+                && let Some(token) = rest.split_whitespace().next()
+            {
+                let (addr, _) = split_connection_token(token);
+                return Some(ConnectionAddress::V4 { addr });
+            } else if let Some(rest) = line.strip_prefix("c=IN IP6 ")
+                && let Some(token) = rest.split_whitespace().next()
+            {
+                let (addr, zone) = split_connection_token(token);
+                return Some(ConnectionAddress::V6 { addr, zone });
             }
         }
         None
@@ -416,7 +407,7 @@ impl SdpSource {
         let mut audio_rtcp_addr: Option<SocketAddr> = None;
 
         let bind_ip: IpAddr = match connection_info {
-            Some(ref ca) if ca.is_ipv6() => Ipv6Addr::UNSPECIFIED.into(),
+            Some(ConnectionAddress::V6 { .. }) => Ipv6Addr::UNSPECIFIED.into(),
             _ => Ipv4Addr::UNSPECIFIED.into(),
         };
 
