@@ -42,7 +42,7 @@ mod cascade_cluster {
         RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
     };
 
-    use liveman::config::{CascadeCheckAttempts, CascadeMode, CheckCascadeTickTime};
+    use liveman::config::{CascadeMode, CheckCascadeTickTime};
 
     use crate::common::shutdown_signal;
 
@@ -126,7 +126,6 @@ mod cascade_cluster {
         ];
         cfg.cascade.mode = mode;
         cfg.cascade.close_other_sub = true;
-        cfg.cascade.check_attempts = CascadeCheckAttempts(10);
         cfg.cascade.check_tick_time = CheckCascadeTickTime(1000);
         cfg.cascade.maximum_idle_time = 1000;
         cfg.validate().unwrap();

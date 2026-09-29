@@ -297,8 +297,6 @@ pub enum CascadeMode {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cascade {
     #[serde(default)]
-    pub check_attempts: CascadeCheckAttempts,
-    #[serde(default)]
     pub check_tick_time: CheckCascadeTickTime,
     #[serde(default = "default_reforward_maximum_idle_time")]
     pub maximum_idle_time: u64,
@@ -307,15 +305,6 @@ pub struct Cascade {
 
     #[serde(default)]
     pub mode: CascadeMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CascadeCheckAttempts(pub u8);
-
-impl Default for CascadeCheckAttempts {
-    fn default() -> Self {
-        CascadeCheckAttempts(5)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
