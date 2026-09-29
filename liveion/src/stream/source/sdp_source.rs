@@ -49,17 +49,28 @@ impl std::fmt::Display for MulticastJoin {
     }
 }
 
-/// The session-level SDP connection address (`c=IN IP4/IP6 <addr>`) with
-/// the RFC 4566 suffixes stripped: IPv4 addresses may carry `/ttl` or
-/// `/ttl/count`, IPv6 addresses a `/count`, and an IPv6 address may carry
-/// a `%zone` (interface index or name) that defaults the multicast join
-/// interface.
+/// The session-level SDP connection address (`c=IN IP4/IP6 <addr>`), keyed
+/// by the address family declared on the line.  The bare address is kept
+/// as written (it may be a hostname); RFC 4566 suffixes (`/ttl`, `/count`)
+/// are stripped, and an IPv6 address may carry a `%zone` (interface index
+/// or name) that defaults the multicast join interface.
 #[cfg(feature = "source")]
-struct ConnectionAddress {
-    /// The bare address as written (may be a hostname).
-    addr: String,
-    is_ipv6: bool,
-    zone: Option<String>,
+enum ConnectionAddress {
+    V4 { addr: String },
+    V6 { addr: String, zone: Option<String> },
+}
+
+#[cfg(feature = "source")]
+impl ConnectionAddress {
+    fn addr(&self) -> &str {
+        match self {
+            ConnectionAddress::V4 { addr } | ConnectionAddress::V6 { addr, .. } => addr,
+        }
+    }
+
+    fn is_ipv6(&self) -> bool {
+        matches!(self, ConnectionAddress::V6 { .. })
+    }
 }
 
 /// Split a `c=` address token into the bare address and an optional IPv6
@@ -119,7 +130,7 @@ struct SdpMediaInfo {
 #[cfg(feature = "source")]
 fn addr_lacks_rtcp_destination(connection_info: &Option<ConnectionAddress>) -> bool {
     connection_info.as_ref().is_some_and(|ca| {
-        ca.addr
+        ca.addr()
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_unspecified() || ip.is_multicast())
     })
@@ -173,11 +184,11 @@ fn multicast_join(
     let Some(ca) = connection_info else {
         return Ok(None);
     };
-    let Ok(ip) = ca.addr.parse::<std::net::IpAddr>() else {
+    let Ok(ip) = ca.addr().parse::<std::net::IpAddr>() else {
         // Hostnames and malformed addresses stay on the unicast path.
         warn!(
             "SDP connection address '{}' is not an IP literal; treated as unicast (no multicast join)",
-            ca.addr
+            ca.addr()
         );
         return Ok(None);
     };
@@ -203,7 +214,11 @@ fn multicast_join(
             // An explicit config wins; otherwise the address's own zone
             // (`c=IN IP6 ff12::1%eth0`) picks the interface; otherwise the
             // kernel — which cannot choose for link-local groups.
-            let interface = match configured.or(ca.zone.as_deref()) {
+            let zone = match ca {
+                ConnectionAddress::V6 { zone, .. } => zone.as_deref(),
+                ConnectionAddress::V4 { .. } => None,
+            };
+            let interface = match configured.or(zone) {
                 Some(v) => resolve_v6_interface(v, &group)?,
                 None => 0,
             };
@@ -388,10 +403,10 @@ impl SdpSource {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 let (addr, zone) = split_connection_token(parts[2]);
-                return Some(ConnectionAddress {
-                    addr,
-                    is_ipv6,
-                    zone,
+                return Some(if is_ipv6 {
+                    ConnectionAddress::V6 { addr, zone }
+                } else {
+                    ConnectionAddress::V4 { addr }
                 });
             }
         }
@@ -409,7 +424,7 @@ impl SdpSource {
 
         let is_ipv6 = connection_info
             .as_ref()
-            .map(|ca| ca.is_ipv6)
+            .map(|ca| ca.is_ipv6())
             .unwrap_or(false);
 
         let multicast =
@@ -439,9 +454,9 @@ impl SdpSource {
                         {
                             let rtcp_port = port + 1;
                             let rtcp_addr_str = if is_ipv6 {
-                                format!("[{}]:{}", ca.addr, rtcp_port)
+                                format!("[{}]:{}", ca.addr(), rtcp_port)
                             } else {
-                                format!("{}:{}", ca.addr, rtcp_port)
+                                format!("{}:{}", ca.addr(), rtcp_port)
                             };
 
                             if let Ok(rtcp_addr) = rtcp_addr_str.parse() {
