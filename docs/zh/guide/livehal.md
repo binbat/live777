@@ -122,10 +122,20 @@ on_demand = true
 
 [[stream.robot-cam.sources]]
 url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
-# 加入多播组使用的网卡:IPv4 组填 IPv4 地址,IPv6 组填网卡序号。
-# 不配置则由内核选择,只能收到默认路由网卡上的多播流量。
+# 加入多播组使用的网卡:IPv4 组填 IPv4 地址,IPv6 组填网卡序号或名称
+# (此项未配置时,取 SDP 地址自带的 `%zone`,如 `c=IN IP6 ff12::1%eth0`)。
+# 不配置则由内核选择,只能收到默认路由网卡上的多播流量——链路本地
+# IPv6 组(ff02::/16、ff12::/16)必须显式指定网卡。
 multicast_interface = "192.168.123.11"
 ```
+
+连接地址的 RFC 4566 后缀（`c=IN IP4 230.1.1.1/64`、`c=IN IP6 ff15::1/3`)
+会被正确识别。接收 socket 设置了 `SO_REUSEADDR`，同一台主机上可以有
+多个接收者同时收同一个 group:port（另一条流、监控工具）。绑定/加入
+失败会先按退避重试若干次再判定源启动失败——但对于常开的（非
+`on_demand`）多播流，仍应确保 live777 在网卡地址分配完成后再启动
+(systemd:`After=network-online.target`)，因为较长的 DHCP 延迟会
+超过重试窗口。
 
 ### 结构化原生配置（libcamera / V4L2 / RDK）
 

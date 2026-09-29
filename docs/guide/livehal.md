@@ -135,10 +135,22 @@ on_demand = true
 [[stream.robot-cam.sources]]
 url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
 # Interface used to join the group: an IPv4 address for IPv4 groups, an
-# interface index for IPv6 groups. Unset lets the kernel choose, which
-# only receives traffic arriving on the default-route interface.
+# interface index or name for IPv6 groups (a `%zone` on the SDP address,
+# e.g. `c=IN IP6 ff12::1%eth0`, is honored when this is unset). Unset
+# lets the kernel choose, which only receives traffic arriving on the
+# default-route interface — link-local IPv6 groups (ff02::/16, ff12::/16)
+# always need an explicit interface.
 multicast_interface = "192.168.123.11"
 ```
+
+RFC 4566 suffixes on the connection address (`c=IN IP4 230.1.1.1/64`,
+`c=IN IP6 ff15::1/3`) are accepted. The receiver sockets set
+`SO_REUSEADDR`, so several receivers of the same group:port (another
+stream, a monitoring tool) can coexist on one host. A failed bind/join is
+retried with backoff before the source start fails — for always-on
+(non-`on_demand`) multicast streams, still make sure live777 starts after
+the interface address is assigned (systemd: `After=network-online.target`),
+since a long DHCP delay outlasts the retries.
 
 ### Structured native (libcamera / V4L2 / RDK)
 

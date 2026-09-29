@@ -392,6 +392,56 @@ mod hook_tests {
         let cfg: Config = toml::from_str("[hooks]\ntimeout_ms = 0\n").unwrap();
         assert_eq!(cfg.hooks.timeout_ms, 0);
     }
+
+    fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
+        SourceConfig {
+            url: Some(url.to_string()),
+            multicast_interface: multicast_interface.map(str::to_string),
+            #[cfg(feature = "native-source")]
+            capture: None,
+            #[cfg(feature = "native-source")]
+            encoder: None,
+            #[cfg(feature = "native-source")]
+            output: Default::default(),
+            #[cfg(feature = "native-source")]
+            tiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn multicast_interface_accepts_address_index_and_name() {
+        for iface in [
+            "192.168.123.11",
+            "0.0.0.0",
+            "2",
+            "eth0",
+            "vlan.100",
+            "br-lan",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_ok(), "'{iface}' must validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_rejects_garbage() {
+        for iface in [
+            "not an ip",
+            "99999999999999999999999",
+            "way-too-long-interface-name",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_err(), "'{iface}' must not validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_warns_but_validates_for_non_sdp_sources() {
+        // Set on an RTSP source it is ignored (only SDP file sources join
+        // multicast groups), but it is not a config error.
+        let cfg = url_source("rtsp://192.168.1.100:554/stream", Some("192.168.123.11"));
+        assert!(cfg.validate().is_ok());
+    }
 }
 
 fn default_log_level() -> String {
@@ -767,9 +817,12 @@ pub struct SourceConfig {
 
     /// Interface for joining multicast groups (SDP file sources whose SDP
     /// connection address is a multicast group, e.g. `c=IN IP4 230.1.1.1`).
-    /// An IPv4 address selects the interface for IPv4 groups, an interface
-    /// index selects it for IPv6 groups; unset lets the kernel choose, which
-    /// only receives traffic arriving on the default-route interface.
+    /// An IPv4 address selects the interface for IPv4 groups; IPv6 groups
+    /// take an interface index or name (a `%zone` on the SDP address, e.g.
+    /// `c=IN IP6 ff12::1%eth0`, is the fallback). Unset lets the kernel
+    /// choose, which only receives traffic arriving on the default-route
+    /// interface and cannot pick link-local IPv6 groups (ff02::/16,
+    /// ff12::/16) — those always need an explicit interface.
     /// Ignored by non-SDP sources.
     #[serde(default)]
     pub multicast_interface: Option<String>,
@@ -793,6 +846,18 @@ pub struct SourceConfig {
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub tiers: Vec<crate::stream::source::source_config::TierSpec>,
+}
+
+/// Whether `s` can be a network interface name: kernel names are at most
+/// 15 bytes (IFNAMSIZ-1) and conventionally use this charset (`eth0`,
+/// `vlan.100`, `br-lan`).  Looser than the kernel on purpose — validation
+/// only needs to catch mistyped IPs/indexes; a bogus name fails with a
+/// clear error when the source resolves it at start.
+fn is_plausible_interface_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 15
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 impl SourceConfig {
@@ -823,6 +888,11 @@ impl SourceConfig {
             if encoder.bitrate == 0 {
                 anyhow::bail!("encoder.bitrate must be non-zero");
             }
+            if self.multicast_interface.is_some() {
+                tracing::warn!(
+                    "multicast_interface is only used by SDP file sources; it is ignored for this source"
+                );
+            }
             return Ok(());
         }
 
@@ -831,16 +901,26 @@ impl SourceConfig {
             anyhow::bail!("either url or capture must be set");
         }
 
+        let url_lower = url.to_lowercase();
+
         if let Some(iface) = self.multicast_interface.as_deref() {
             let iface = iface.trim();
-            if iface.parse::<std::net::IpAddr>().is_err() && iface.parse::<u32>().is_err() {
+            if iface.parse::<std::net::IpAddr>().is_err()
+                && iface.parse::<u32>().is_err()
+                && !is_plausible_interface_name(iface)
+            {
                 anyhow::bail!(
-                    "multicast_interface must be an IP address or an interface index, got '{iface}'"
+                    "multicast_interface must be an IP address, an interface index, or an interface name, got '{iface}'"
+                );
+            }
+            let is_sdp_source = url_lower.starts_with("file://") || url_lower.ends_with(".sdp");
+            if !is_sdp_source {
+                tracing::warn!(
+                    "multicast_interface is only used by SDP file sources; it is ignored for this source"
                 );
             }
         }
 
-        let url_lower = url.to_lowercase();
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("whep://")
