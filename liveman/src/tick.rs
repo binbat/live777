@@ -63,7 +63,7 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
             .map(|t| t.elapsed().as_millis() as u64 >= state.config.cascade.maximum_idle_time)
             .unwrap_or(false);
         if !src_hosts || idle_expired {
-            teardown_intent(&mut state, &intent).await;
+            teardown_intent(&mut state, &intent, !src_hosts).await;
         } else {
             state.storage.cascade_intent_update(intent);
         }
@@ -90,11 +90,18 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
                 let Some(target_url) = cascade_info.target_url.clone() else {
                     continue;
                 };
-                let Some((dst, stream)) =
+                let Some((dst, stream, form)) =
                     resolve_cascade_target(&target_url, &map_server, &map_url_server)
                 else {
                     continue;
                 };
+                // Adopt/reap only liveman's own pinned-form hops: a
+                // direct-form push may be a liveion static target whose own
+                // supervisor would re-establish it after any teardown here,
+                // causing a reap/recreate thrash.
+                if form != CascadeUrlForm::Pinned {
+                    continue;
+                }
                 if state.storage.cascade_intent_get(&stream).is_some() {
                     continue;
                 }
@@ -139,7 +146,7 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
                 let Some(source_url) = cascade_info.source_url.clone() else {
                     continue;
                 };
-                let Some((src, stream)) =
+                let Some((src, stream, _)) =
                     resolve_cascade_target(&source_url, &map_server, &map_url_server)
                 else {
                     continue;
@@ -172,6 +179,11 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
                         Ok(_) => {}
                         Err(e) => error!("cascade session delete error: {:?}", e),
                     }
+                    // The pull hop auto-created its destination stream; reap
+                    // the leftover shell too (no-op while anything is left
+                    // on it), so it cannot keep winning WHEP routing with no
+                    // publisher.
+                    delete_stream_if_idle(&mut state, node, &stream_info.id, &publish.id).await;
                 }
             }
         }
@@ -180,26 +192,39 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
     Ok(())
 }
 
-/// Tear down an intent's hop wherever it is visible — the source side of a
-/// push (marked subscribe session) and the destination side of a pull
-/// (marked publish session) are both covered — then drop the intent.
-async fn teardown_intent(state: &mut AppState, intent: &CascadeIntent) {
+/// Tear down an intent's own hop wherever it is visible — on the source
+/// side of a push and the destination side of a pull, matched by the hop
+/// URL resolving to *this* intent's counterpart (never every marked
+/// session, which could belong to another intent or a static target) —
+/// then drop the intent.
+///
+/// `force_stream_delete` is set when the source no longer hosts the stream
+/// at all: any viewers left on the destination are zombies waiting on a
+/// publisher that is gone, so the destination stream is deleted outright
+/// instead of only when idle.
+async fn teardown_intent(state: &mut AppState, intent: &CascadeIntent, force_stream_delete: bool) {
     info!(
         "cascade intent teardown: stream {}, {} -> {}",
         intent.stream, intent.src, intent.dst
     );
     let map_server = state.storage.get_map_server();
+    let mut map_url_server = HashMap::new();
+    for s in map_server.values() {
+        map_url_server.insert(s.url.clone(), s.clone());
+    }
     if let Some(src) = map_server.get(&intent.src).cloned()
         && let Ok(streams) = state.storage.info_get(src.alias.clone()).await
     {
         for stream_info in streams.iter().filter(|s| s.id == intent.stream) {
             for sub in &stream_info.subscribe.sessions {
-                if sub
+                let resolves_here = sub
                     .cascade
                     .as_ref()
                     .and_then(|c| c.target_url.as_ref())
-                    .is_some()
-                {
+                    .and_then(|url| resolve_cascade_target(url, &map_server, &map_url_server))
+                    .map(|(node, stream, _)| node.alias == intent.dst && stream == intent.stream)
+                    .unwrap_or(false);
+                if resolves_here {
                     let _ = session_delete(
                         state.client.clone(),
                         src.clone(),
@@ -216,12 +241,16 @@ async fn teardown_intent(state: &mut AppState, intent: &CascadeIntent) {
         if let Ok(streams) = state.storage.info_get(dst.alias.clone()).await {
             for stream_info in streams.iter().filter(|s| s.id == intent.stream) {
                 for publish in &stream_info.publish.sessions {
-                    if publish
+                    let resolves_here = publish
                         .cascade
                         .as_ref()
                         .and_then(|c| c.source_url.as_ref())
-                        .is_some()
-                    {
+                        .and_then(|url| resolve_cascade_target(url, &map_server, &map_url_server))
+                        .map(|(node, stream, _)| {
+                            node.alias == intent.src && stream == intent.stream
+                        })
+                        .unwrap_or(false);
+                    if resolves_here {
                         pull_hop_id = Some(publish.id.clone());
                         let _ = session_delete(
                             state.client.clone(),
@@ -234,12 +263,17 @@ async fn teardown_intent(state: &mut AppState, intent: &CascadeIntent) {
                 }
             }
         }
-        // A pull hop's destination stream is auto-created with the hop; once
-        // it has neither publisher nor viewers it would still host the stream
-        // and win routing with its huge remaining capacity, stranding the
-        // next viewer on an empty shell. Delete it (best-effort; a
-        // provisioned stream refuses with 409, which is correct).
-        if let Some(hop_id) = pull_hop_id {
+        if force_stream_delete {
+            // The source is gone: viewers left on the destination can never
+            // receive media again — kick them by deleting the stream
+            // outright (best-effort; a provisioned stream refuses with 409,
+            // which is correct).
+            delete_stream(state, &dst, &intent.stream).await;
+        } else if let Some(hop_id) = pull_hop_id {
+            // A pull hop's destination stream is auto-created with the hop;
+            // once it has neither publisher nor viewers it would still host
+            // the stream and win routing with its huge remaining capacity,
+            // stranding the next viewer on an empty shell.
             delete_stream_if_idle(state, &dst, &intent.stream, &hop_id).await;
         }
     }
@@ -272,13 +306,16 @@ async fn delete_stream_if_idle(
     if has_pub || has_sub {
         return;
     }
+    delete_stream(state, node, stream).await;
+}
+
+/// Best-effort DELETE of a stream on a node; a provisioned stream refuses
+/// with 409, which is correct.
+async fn delete_stream(state: &AppState, node: &Server, stream: &str) {
     let url = format!("{}{}", node.url, api::path::streams(stream));
     let mut req = state.client.delete(url);
     if !node.token.is_empty() {
-        req = req.header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", node.token),
-        );
+        req = req.bearer_auth(&node.token);
     }
     let _ = req.send().await;
 }
@@ -305,14 +342,14 @@ fn resolve_cascade_target(
     target_url: &str,
     map_server: &HashMap<String, Server>,
     map_url_server: &HashMap<String, Server>,
-) -> Option<(Server, String)> {
+) -> Option<(Server, String, CascadeUrlForm)> {
     let url = Url::parse(target_url).ok()?;
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
     match segments.as_slice() {
         ["api", "whip", alias, stream] => map_server
             .get(*alias)
             .cloned()
-            .map(|node| (node, stream.to_string())),
+            .map(|node| (node, stream.to_string(), CascadeUrlForm::Pinned)),
         ["whip", stream] | ["whep", stream] => {
             let addr = format!(
                 "{}://{}:{}",
@@ -323,10 +360,22 @@ fn resolve_cascade_target(
             map_url_server
                 .get(&addr)
                 .cloned()
-                .map(|node| (node, stream.to_string()))
+                .map(|node| (node, stream.to_string(), CascadeUrlForm::Direct))
         }
         _ => None,
     }
+}
+
+/// Whether a cascade URL is liveman's own node-pinned form
+/// (`{public}/api/whip/{alias}/{stream}`) or a direct node address
+/// (`{node}/whip|whep/{stream}`). Only pinned-form hops are provably
+/// liveman-issued: direct-form pushes may be liveion static
+/// `[[stream.<name>.targets]]` or operator cascades, whose own supervisors
+/// would fight any adoption or teardown here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CascadeUrlForm {
+    Pinned,
+    Direct,
 }
 
 /// Liveman Auto Record Check
@@ -813,7 +862,7 @@ mod tests {
     #[test]
     fn resolve_pinned_push_target_by_alias() {
         let (map_server, map_url_server) = maps();
-        let (node, stream) = resolve_cascade_target(
+        let (node, stream, form) = resolve_cascade_target(
             "http://127.0.0.1:8890/api/whip/cloud/cam0",
             &map_server,
             &map_url_server,
@@ -821,12 +870,13 @@ mod tests {
         .unwrap();
         assert_eq!(node.alias, "cloud");
         assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Pinned);
     }
 
     #[test]
     fn resolve_direct_push_target_by_origin() {
         let (map_server, map_url_server) = maps();
-        let (node, stream) = resolve_cascade_target(
+        let (node, stream, form) = resolve_cascade_target(
             "http://127.0.0.1:7782/whip/cam0",
             &map_server,
             &map_url_server,
@@ -834,12 +884,13 @@ mod tests {
         .unwrap();
         assert_eq!(node.alias, "cloud");
         assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Direct);
     }
 
     #[test]
     fn resolve_pull_source_by_origin() {
         let (map_server, map_url_server) = maps();
-        let (node, stream) = resolve_cascade_target(
+        let (node, stream, form) = resolve_cascade_target(
             "http://127.0.0.1:7782/whep/cam0",
             &map_server,
             &map_url_server,
@@ -847,6 +898,7 @@ mod tests {
         .unwrap();
         assert_eq!(node.alias, "cloud");
         assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Direct);
     }
 
     #[test]

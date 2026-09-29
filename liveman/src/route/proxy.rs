@@ -120,9 +120,16 @@ async fn record_session_location(
         .unwrap();
     state
         .storage
-        .session_put(location, alias.to_string())
+        .session_put(location.clone(), alias.to_string())
         .await
         .unwrap();
+    // Overlay the session on capacity accounting until the next snapshot
+    // makes it authoritative (publishers don't consume subscriber capacity).
+    if op == "WHEP" {
+        state
+            .storage
+            .pending_sub_add(location, alias.to_string(), stream.to_string());
+    }
 }
 
 /// Pull the fields `record_session_location` needs out of a proxied
@@ -227,6 +234,10 @@ async fn whep(
     Query(query_extract): Query<QueryExtract>,
     req: Request,
 ) -> Result<Response> {
+    // Serialize admission per stream: the capacity check below and the
+    // session creation it justifies must be atomic, or two concurrent
+    // viewers both pass a sub_max = 1 check before either session exists.
+    let _admission = state.whep_lock(&stream).lock_owned().await;
     let mut servers = state.storage.stream_get(stream.clone()).await.unwrap();
     if !query_extract.nodes.is_empty() {
         servers.retain(|x| query_extract.nodes.contains(&x.alias));
@@ -354,17 +365,37 @@ async fn maximum_idle_node(
             if s.alias == alias {
                 let remain = match i.clone() {
                     Some(x) => {
-                        // Closed sessions linger in the node snapshot for
-                        // display (a 30 s TTL); they no longer hold capacity.
-                        let active = x
-                            .subscribe
+                        // A publisher-less, non-provisioned stream is a shell
+                        // left behind by a torn-down cascade: no media to
+                        // offer, so it must never win routing (remain = 0 is
+                        // never picked). Provisioned standby streams (e.g.
+                        // on-demand) are exempt — their source starts when a
+                        // viewer arrives.
+                        let has_publisher = x
+                            .publish
                             .sessions
                             .iter()
-                            .filter(|s| s.state != api::response::RTCPeerConnectionState::Closed)
-                            .count();
-                        s.sub_max as i32 - active as i32
+                            .any(|p| p.state != api::response::RTCPeerConnectionState::Closed);
+                        if !x.provisioned && !has_publisher {
+                            0
+                        } else {
+                            // Closed sessions linger in the node snapshot for
+                            // display (a 30 s TTL); they no longer hold capacity.
+                            let active = x
+                                .subscribe
+                                .sessions
+                                .iter()
+                                .filter(|s| {
+                                    s.state != api::response::RTCPeerConnectionState::Closed
+                                })
+                                .count()
+                                + state.storage.pending_sub_count(&alias, &stream);
+                            s.sub_max as i32 - active as i32
+                        }
                     }
-                    None => s.sub_max as i32,
+                    None => {
+                        s.sub_max as i32 - state.storage.pending_sub_count(&alias, &stream) as i32
+                    }
                 };
 
                 if remain > max {

@@ -179,7 +179,7 @@ where
 
             let cancel_discovery = cancel.clone();
             let discovery_nodes = cfg.nodes.clone();
-            let discovery_rules = cfg.node_rules.clone();
+            let discovery_rules = crate::config::compile_node_rules(&cfg.node_rules);
             std::thread::spawn(move || {
                 let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
@@ -207,7 +207,7 @@ where
                                                     UpdateMode::default(),
                                                 );
                                                 node.online = true;
-                                                node.sub_max = crate::config::resolve_sub_max(
+                                                node.sub_max = crate::config::resolve_sub_max_compiled(
                                                     &discovery_nodes,
                                                     &discovery_rules,
                                                     &agent_id,
@@ -278,6 +278,7 @@ where
         storage: store,
         database: database_service,
         record_sync_cursor: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        whep_locks: Arc::new(std::sync::RwLock::new(HashMap::new())),
         #[cfg(feature = "recorder")]
         file_storage,
     };
@@ -364,6 +365,22 @@ struct AppState {
     storage: Storage,
     database: DatabaseService,
     record_sync_cursor: Arc<tokio::sync::RwLock<HashMap<String, i64>>>,
+    /// Per-stream WHEP admission locks: the capacity check and the session
+    /// creation it justifies must be one critical section, or two
+    /// concurrent viewers can both pass a `sub_max = 1` check before either
+    /// session exists in any snapshot.
+    whep_locks: Arc<std::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     #[cfg(feature = "recorder")]
     file_storage: Option<opendal::Operator>,
+}
+
+impl AppState {
+    fn whep_lock(&self, stream: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.whep_locks
+            .write()
+            .unwrap()
+            .entry(stream.to_string())
+            .or_default()
+            .clone()
+    }
 }

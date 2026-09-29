@@ -39,7 +39,13 @@ async fn proxy_sources(
     path: &str,
     mut req: Request,
 ) -> Result<Response> {
-    *req.uri_mut() = Uri::try_from(path).unwrap();
+    // Keep the original query string, and fail with a 4xx instead of
+    // panicking on percent-decoded names that don't form a valid URI.
+    let path = match req.uri().query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    };
+    *req.uri_mut() = Uri::try_from(path).map_err(|_| AppError::RequestProxyError)?;
     match state.storage.get_map_server().get(alias).cloned() {
         Some(server) => super::proxy::request_proxy(state, req, &server).await,
         None => Err(AppError::NoAvailableNode),
@@ -87,7 +93,19 @@ async fn delete_source(
     Path((alias, stream)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response> {
-    proxy_sources(state, &alias, &format!("/api/sources/{stream}"), req).await
+    let res = proxy_sources(
+        state.clone(),
+        &alias,
+        &format!("/api/sources/{stream}"),
+        req,
+    )
+    .await?;
+    // Mirror create_source's eager registration so WHEP routing stops
+    // pointing at this node before the next node snapshot.
+    if res.status().is_success() {
+        state.storage.stream_remove(&stream, &alias).await?;
+    }
+    Ok(res)
 }
 
 async fn get_source_state(
