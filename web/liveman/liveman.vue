@@ -73,8 +73,9 @@ watch(currentView, () => {
 
 const getStreams = async () => {
     try {
-        const streams = await livemanApi.getStreams(filterNodes.value);
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
+        // Ordering is owned by the table's sortable computed; no fetch-time
+        // sort here (it would be dead work and fight the stable row order).
+        return await livemanApi.getStreams(filterNodes.value);
     } catch {
         return [];
     }
