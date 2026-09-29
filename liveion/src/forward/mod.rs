@@ -734,13 +734,19 @@ impl PeerForward {
                 .await?;
             // Propagate a bad answer instead of reporting an established
             // session that cannot carry media: the error path closes the
-            // peer, and the session cleanup above removes it again.
+            // peer and removes the registered session directly.
             peer.set_remote_description(target_sdp).await?;
             Ok(session_id)
         }
         .await;
         if result.is_err() {
             let _ = peer.close().await;
+            // close() does not reliably surface the Closed event (the driver
+            // task is aborted first), so a session registered above would
+            // linger as a New-state zombie, leaking REFORWARD capacity and
+            // pinning the stream. Remove it directly; idempotent when
+            // registration never happened or cleanup already ran.
+            let _ = self.internal.remove_subscribe(peer.clone()).await;
         }
         result
     }

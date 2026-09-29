@@ -200,6 +200,8 @@ impl Manager {
             stream_map.clone(),
             send.clone(),
             provisioned.clone(),
+            #[cfg(feature = "source")]
+            source_manager.clone(),
             cancel.clone(),
         ));
         tokio::spawn(Self::subscribe_check_tick(
@@ -311,6 +313,7 @@ impl Manager {
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         event_sender: broadcast::Sender<Event>,
         provisioned: Arc<HashSet<String>>,
+        #[cfg(feature = "source")] source_manager: SourceManager,
         cancel: CancellationToken,
     ) {
         loop {
@@ -326,6 +329,15 @@ impl Manager {
                 // Provisioned streams are never auto-deleted; an idle
                 // provisioned stream is a standby stream, not a leak.
                 if provisioned.contains(stream) {
+                    continue;
+                }
+                // Same exemption as subscribe_check_tick: a stream with a
+                // registered source has a standing producer, so
+                // auto_delete_whip must not reclaim it just because a real
+                // WHIP publisher left earlier — the source bridge may be
+                // actively feeding it.
+                #[cfg(feature = "source")]
+                if source_manager.has_source(stream).await {
                     continue;
                 }
                 let timeout = forward.strategy().auto_delete_whip.0;

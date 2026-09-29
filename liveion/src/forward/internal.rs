@@ -298,6 +298,65 @@ fn spawn_disconnected_watchdog(
     });
 }
 
+/// Backstop for sessions that never reach `Connected` at all: the `Failed`
+/// and `Disconnected` paths only fire once ICE actually ran, so a client
+/// that dies after the answer but before connectivity checks would
+/// otherwise sit in `New`/`Connecting` forever — pinning the stream against
+/// both auto-delete reapers and, for a publisher, rejecting every later
+/// publisher with 409. Once the state leaves New/Connecting in any
+/// direction (`Connected`, `Failed`, `Closed`, or `Disconnected`, which its
+/// own watchdog bounds), this task exits quietly.
+fn spawn_establish_watchdog(
+    stream: String,
+    role: &'static str,
+    mut connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
+) {
+    let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
+    tokio::spawn(async move {
+        let established = async {
+            while matches!(
+                *connection_state_rx.borrow(),
+                RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting
+            ) {
+                if connection_state_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        if tokio::time::timeout(PUBLISH_CONNECTED_TIMEOUT, established)
+            .await
+            .is_err()
+        {
+            warn!(
+                "[{}] [{}] connection not established after {}s, closing",
+                stream,
+                role,
+                PUBLISH_CONNECTED_TIMEOUT.as_secs()
+            );
+            if let Some(peer) = peer.upgrade() {
+                let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    // Idempotent no-op when another path already removed (or,
+                    // for publish, replaced) the session.
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        _ => internal.remove_subscribe(peer).await,
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] establish watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[derive(Clone)]
 struct SubscribePeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
@@ -1897,6 +1956,13 @@ impl PeerForwardInternal {
         handler.set_peer(Arc::downgrade(&peer)).await;
         // Store weak ref so the handler can find the peer during events
         *self.publish_peer_ref.lock().await = Some(Arc::downgrade(&peer));
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "publish",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         let mut transceiver_kinds = vec![];
         if media_info.video_transceiver.0 > 0 {
@@ -2124,6 +2190,13 @@ impl PeerForwardInternal {
                 .await?,
         );
         handler.set_peer(Arc::downgrade(&peer)).await;
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "subscribe",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         // The session ID is allocated up front (not in `add_subscribe`) so
         // the sender-setup logs below can already be attributed to it.
