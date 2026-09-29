@@ -28,6 +28,10 @@ pub async fn cascade_new_node(
     // A stream cascades to at most one destination; an existing intent pins
     // the choice so rapid successive viewers never spawn duplicate hops.
     if let Some(intent) = state.storage.cascade_intent_get(&stream) {
+        // A viewer just arrived: that's demand — reopen the supervisor's
+        // no-viewers gates so the hop is (re)established immediately instead
+        // of waiting out the idle reaper.
+        state.storage.cascade_intent_demand(&stream);
         return state
             .storage
             .get_map_server()
@@ -59,10 +63,13 @@ pub async fn cascade_new_node(
 /// Pick the cascade destination among the nodes that do not host the stream
 /// yet: the one with the largest subscriber capacity (`sub_max` comes from
 /// the node's `[[nodes]] sub_max` config), ties broken by alias so the
-/// choice is deterministic across calls.
+/// choice is deterministic across calls. `sub_max = 0` nodes never serve a
+/// viewer directly (the catch-all `[[node_rules]]` idiom for unrecognized
+/// nodes), so they are pointless as cascade destinations too.
 fn pick_cascade_target(set_all: &HashSet<Server>, set_src: &HashSet<Server>) -> Option<Server> {
     set_all
         .difference(set_src)
+        .filter(|s| s.sub_max > 0)
         .max_by(|a, b| a.sub_max.cmp(&b.sub_max).then(a.alias.cmp(&b.alias)))
         .cloned()
 }
@@ -365,6 +372,18 @@ mod tests {
     fn pick_target_none_when_every_node_hosts_the_stream() {
         let all: HashSet<_> = [server("edge0", 1)].into_iter().collect();
         let src = all.clone();
+        assert!(pick_cascade_target(&all, &src).is_none());
+    }
+
+    #[test]
+    fn pick_target_skips_sub_max_zero_nodes() {
+        // The catch-all `[[node_rules]]` idiom gives unrecognized nodes
+        // sub_max = 0: they may publish but must never serve a viewer, so a
+        // cascade must not land on them either.
+        let all: HashSet<_> = [server("edge0", 1), server("stranger", 0)]
+            .into_iter()
+            .collect();
+        let src: HashSet<_> = [server("edge0", 1)].into_iter().collect();
         assert!(pick_cascade_target(&all, &src).is_none());
     }
 

@@ -545,6 +545,23 @@ impl Storage {
         self.cascade_intents.write().unwrap().remove(stream)
     }
 
+    /// Mark demand on an existing intent: a viewer just arrived for its
+    /// stream. Reopens the no-viewers gates (idle mark, `was_healthy`) and
+    /// allows an immediate (re)issue — without this, a dead hop whose
+    /// destination stream is also gone (e.g. the destination restarted with
+    /// `auto_create_whep = false`, so the viewer's WHEP keeps 404ing) would
+    /// wait out the idle reaper before anyone rebuilt it.
+    pub fn cascade_intent_demand(&self, stream: &str) {
+        let mut intents = self.cascade_intents.write().unwrap();
+        if let Some(intent) = intents.get_mut(stream) {
+            intent.idle_since = None;
+            intent.was_healthy = false;
+            intent.next_attempt = Instant::now();
+        }
+        drop(intents);
+        self.cascade_notify.notify_one();
+    }
+
     pub fn cascade_intents(&self) -> Vec<CascadeIntent> {
         self.cascade_intents
             .read()

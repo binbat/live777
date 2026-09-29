@@ -68,6 +68,7 @@ mod cascade_cluster {
     struct Cluster {
         liveman: SocketAddr,
         edge0: SocketAddr,
+        edge1: SocketAddr,
         cloud: SocketAddr,
         /// Kept alive for the cluster's lifetime; dropping it stops liveman.
         _liveman_shutdown: oneshot::Sender<()>,
@@ -166,6 +167,7 @@ mod cascade_cluster {
         Cluster {
             liveman,
             edge0,
+            edge1,
             cloud,
             _liveman_shutdown: shutdown,
         }
@@ -880,6 +882,7 @@ mod cascade_cluster {
         let cluster1 = Cluster {
             liveman,
             edge0,
+            edge1,
             cloud,
             _liveman_shutdown: shutdown,
         };
@@ -925,6 +928,7 @@ mod cascade_cluster {
         let _cluster2 = Cluster {
             liveman,
             edge0,
+            edge1,
             cloud,
             _liveman_shutdown: shutdown,
         };
@@ -954,6 +958,69 @@ mod cascade_cluster {
 
         let _ = publisher.close().await;
         let _ = v1.close().await;
+    }
+
+    /// Cascade intents are keyed by stream: two streams on two edges
+    /// overflow independently, each cascades to the cloud, and neither
+    /// edge ever carries the other's stream.
+    #[tokio::test]
+    async fn per_stream_cascade_intents_are_isolated() {
+        init_test_environment();
+        let cluster = boot_cluster(CascadeMode::Pull).await;
+        let pub0 = whip_publish(&cluster, "edge0", "cam0").await;
+        let pub1 = whip_publish(&cluster, "edge1", "cam1").await;
+        wait_liveman_sees(&cluster, "cam0").await;
+        wait_liveman_sees(&cluster, "cam1").await;
+
+        // One direct viewer per stream fills each edge; the next viewer of
+        // each stream overflows it.
+        let (v0, _) = whep_viewer(&cluster, "cam0", "cam0-viewer1").await;
+        let (v1, _) = whep_viewer(&cluster, "cam1", "cam1-viewer1").await;
+        let (w0, _) = whep_viewer(&cluster, "cam0", "cam0-viewer2").await;
+        let (w1, _) = whep_viewer(&cluster, "cam1", "cam1-viewer2").await;
+
+        // Both streams cascade to the cloud with connected publishers.
+        for stream in ["cam0", "cam1"] {
+            wait_until(
+                "cloud has the cascaded stream with a connected publisher",
+                Duration::from_secs(20),
+                || async {
+                    let streams = streams_of(cluster.cloud).await;
+                    match find_stream(&streams, stream) {
+                        Some(s) => {
+                            s.publish.sessions.iter().any(|p| {
+                                p.state == api::response::RTCPeerConnectionState::Connected
+                            })
+                        }
+                        None => false,
+                    }
+                },
+            )
+            .await;
+        }
+
+        // Each edge settles at exactly one outbound copy (its own hop), and
+        // neither edge ever carries the other stream.
+        for (addr, stream) in [(cluster.edge0, "cam0"), (cluster.edge1, "cam1")] {
+            wait_until(
+                "edge carries exactly one outbound copy of its own stream",
+                Duration::from_secs(15),
+                || async {
+                    let streams = streams_of(addr).await;
+                    match find_stream(&streams, stream) {
+                        Some(s) => active_subs(s).len() == 1,
+                        None => false,
+                    }
+                },
+            )
+            .await;
+        }
+        assert!(find_stream(&streams_of(cluster.edge0).await, "cam1").is_none());
+        assert!(find_stream(&streams_of(cluster.edge1).await, "cam0").is_none());
+
+        for peer in [pub0, pub1, v0, v1, w0, w1] {
+            let _ = peer.close().await;
+        }
     }
 
     /// A viewer that overflows the edge and immediately leaves must not
