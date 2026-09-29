@@ -2,7 +2,7 @@
 
 宇树 Go2 机器狗的相机以组播方式发送 H264/RTP 到 `230.1.1.1:1720`
 (15 fps,1280×720，水平视场角 100°、垂直 56°——见宇树
-[多媒体服务](https://support.unitree.com/home/en/developer/Multimedia_Services)
+[多媒体服务](https://support.unitree.com/home/zh/developer/Multimedia_Services)
 文档）。SDP 文件源可以直接加入该组播组，live777 无需任何
 GStreamer/Python 桥接即可接入相机。
 
