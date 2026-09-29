@@ -124,6 +124,8 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "yuv420"
+# hflip = true           # 左右镜像；仅 libcamera（ISP 完成，零 CPU 开销）
+# vflip = true           # 上下翻转；hflip + vflip = 旋转 180°
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
@@ -142,6 +144,13 @@ clock_rate = 90000
 ```
 
 `pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`capture` + `encoder` 与 `url` 互斥，源类型由 `capture.backend` 推导（`device` 对 libcamera 是 camera ID，对 v4l2 是设备路径）。
+
+`capture.hflip` / `capture.vflip`（默认均为 `false`）用于画面翻转——
+分别是左右镜像和上下翻转；两者同时开启即旋转 180°。**仅 libcamera 后端
+支持**：翻转由 ISP 完成，零 CPU 开销。`v4l2` 后端在启动校验时会直接
+报错——它的视频节点（unicam）只做 DMA 搬运、没有图像处理能力，而翻转
+control 只存在于 sensor 子设备节点上，绕开 libcamera 手动设置会与 ISP
+的 Bayer 顺序失配。不提供 90°/270° 旋转：树莓派 ISP 硬件不支持转置。
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 

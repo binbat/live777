@@ -24,6 +24,11 @@ pub struct NativeSourceParams {
     pub payload_type: u32,
     pub clock_rate: u32,
     pub capture_prefer_dmabuf: u8,
+    /// Mirror the captured image left-right (libcamera only; applied by the
+    /// ISP).  Both flips together give a 180° rotation.
+    pub capture_hflip: u8,
+    /// Flip the captured image top-bottom (libcamera only).
+    pub capture_vflip: u8,
     pub encoder_prefer_dmabuf: u8,
     /// Codec name for SDP (e.g. "H264", "H265"). Used by liveion's
     /// `get_video_codec()` when constructing RTCRtpCodecParameters.

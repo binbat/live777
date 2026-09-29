@@ -270,6 +270,8 @@ static CaptureConfig to_capture_config(const CaptureConfigFFI* ffi) {
     cfg.fps = ffi->fps;
     cfg.pixel_format = static_cast<RawPixelFormat>(ffi->pixel_format);
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
+    cfg.hflip = (ffi->hflip != 0);
+    cfg.vflip = (ffi->vflip != 0);
     return cfg;
 }
 
