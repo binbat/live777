@@ -1,6 +1,6 @@
 <script lang="ts">
 export interface ISourceDialog {
-    show(streamId: string): void;
+    show(streamId: string, nodeAliases?: string[]): void;
 }
 </script>
 
@@ -19,6 +19,11 @@ import { formatBitrate } from "../utils";
 const dialogEl = useTemplateRef<HTMLDialogElement>("dialogEl");
 
 const streamId = ref("");
+// Cluster mode (liveman): the stream is hosted by one or more nodes and
+// the encoder source lives on exactly one of them. Empty = talking to a
+// single liveion directly.
+const nodeAliases = ref<string[]>([]);
+const activeNode = ref<string | null>(null);
 const status = ref<SourceBitrateStatus | null>(null);
 const tierStatus = ref<SourceTierStatus | null>(null);
 const loading = ref(false);
@@ -31,8 +36,10 @@ const MODE_LABELS: Record<string, string> = {
     fixed: "Fixed",
 };
 
-const show = (id: string) => {
+const show = (id: string, aliases?: string[]) => {
     streamId.value = id;
+    nodeAliases.value = aliases ?? [];
+    activeNode.value = null;
     status.value = null;
     tierStatus.value = null;
     noSource.value = false;
@@ -59,9 +66,37 @@ const refresh = async () => {
     errorMessage.value = "";
     noSource.value = false;
     try {
-        status.value = await getSourceBitrate(streamId.value);
+        if (nodeAliases.value.length > 0 && activeNode.value === null) {
+            // Find which candidate node owns the source: the first whose
+            // bitrate endpoint answers. The candidate list order is not
+            // meaningful (it comes from a server map), so guessing instead
+            // of probing would land on "no source" half the time. A
+            // remembered non-404 failure is preferred over a bare
+            // "no source" when no candidate answers.
+            let firstError: unknown = null;
+            for (const alias of nodeAliases.value) {
+                try {
+                    status.value = await getSourceBitrate(streamId.value, alias);
+                    activeNode.value = alias;
+                    break;
+                } catch (error: unknown) {
+                    if ((error as { status?: number })?.status !== 404 && firstError === null) {
+                        firstError = error;
+                    }
+                }
+            }
+            if (activeNode.value === null) {
+                if (firstError !== null) {
+                    throw firstError;
+                }
+                noSource.value = true;
+                return;
+            }
+        } else {
+            status.value = await getSourceBitrate(streamId.value, activeNode.value ?? undefined);
+        }
         // Tiers are optional: a source can exist without defining any.
-        tierStatus.value = await getSourceTier(streamId.value).catch(() => null);
+        tierStatus.value = await getSourceTier(streamId.value, activeNode.value ?? undefined).catch(() => null);
     } catch (error: unknown) {
         status.value = null;
         tierStatus.value = null;
@@ -72,6 +107,14 @@ const refresh = async () => {
         }
     } finally {
         loading.value = false;
+    }
+};
+
+const handleNodeChange = (event: Event) => {
+    const alias = (event.target as HTMLSelectElement).value;
+    if (alias && alias !== activeNode.value) {
+        activeNode.value = alias;
+        void refresh();
     }
 };
 
@@ -88,7 +131,7 @@ const runAction = async (action: () => Promise<unknown>) => {
     }
 };
 
-const handleSelectTier = (tier: string) => runAction(() => applySourceTier(streamId.value, tier));
+const handleSelectTier = (tier: string) => runAction(() => applySourceTier(streamId.value, tier, activeNode.value ?? undefined));
 </script>
 
 <template>
@@ -97,6 +140,17 @@ const handleSelectTier = (tier: string) => runAction(() => applySourceTier(strea
             <div class="w-full text-xl mb-2">
                 <h3 class="font-bold">Source ({{ streamId }})</h3>
             </div>
+            <label v-if="nodeAliases.length > 0" class="form-control">
+                <label class="label px-0">Node:</label>
+                <select
+                    class="select select-bordered select-sm"
+                    :value="activeNode ?? ''"
+                    @change="handleNodeChange"
+                >
+                    <option v-if="activeNode === null" value="" disabled>-</option>
+                    <option v-for="alias in nodeAliases" :key="alias" :value="alias">{{ alias }}</option>
+                </select>
+            </label>
             <div v-if="loading && !status" class="py-4 text-sm opacity-70">Loading…</div>
             <div v-else-if="noSource" class="py-4 text-sm opacity-70">
                 This stream has no adjustable encoder source.
