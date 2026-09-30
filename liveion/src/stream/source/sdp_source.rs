@@ -539,6 +539,36 @@ impl SdpSource {
         Ok(ports)
     }
 
+    /// Bind the RTCP sender socket dual-stack (`[::]:0`, `IPV6_V6ONLY`
+    /// off), so a unicast IP6 SDP connection address is a reachable RTCP
+    /// destination; hosts without IPv6 fall back to an IPv4 socket.  The
+    /// bool reports whether sends must map v4 destinations to v4-mapped
+    /// IPv6 (an AF_INET6 socket rejects a plain AF_INET destination).
+    #[cfg(feature = "source")]
+    async fn rtcp_sender_socket() -> Result<(UdpSocket, bool)> {
+        let dual_stack = || -> Result<UdpSocket> {
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV6,
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )?;
+            socket.set_only_v6(false)?;
+            socket.set_nonblocking(true)?;
+            socket.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).into())?;
+            Ok(UdpSocket::from_std(socket.into())?)
+        };
+        match dual_stack() {
+            Ok(socket) => Ok((socket, true)),
+            Err(e) => {
+                debug!("dual-stack UDP socket unavailable ({e}); falling back to IPv4");
+                Ok((
+                    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).await?,
+                    false,
+                ))
+            }
+        }
+    }
+
     #[cfg(feature = "source")]
     async fn rtcp_sender_task(
         stream_id: String,
@@ -547,8 +577,8 @@ impl SdpSource {
     ) {
         info!("[{}] RTCP sender task started", stream_id);
 
-        let socket = match UdpSocket::bind("0.0.0.0:0").await {
-            Ok(s) => s,
+        let (socket, dual_stack) = match Self::rtcp_sender_socket().await {
+            Ok(ok) => ok,
             Err(e) => {
                 error!("[{}] Failed to create RTCP socket: {}", stream_id, e);
                 return;
@@ -567,7 +597,14 @@ impl SdpSource {
                         stream_id, addr, data.len()
                     );
 
-                    match socket.send_to(&data, addr).await {
+                    let target = match addr {
+                        SocketAddr::V4(v4) if dual_stack => {
+                            SocketAddr::new(IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port())
+                        }
+                        other => other,
+                    };
+
+                    match socket.send_to(&data, target).await {
                         Ok(sent) => {
                             info!(
                                 "[{}] RTCP sent successfully ({} bytes to {})",
@@ -1251,5 +1288,53 @@ mod tests {
         }
 
         source.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rtcp_sender_reaches_ipv4_and_ipv6_destinations() {
+        // The RTCP sender socket is dual-stack: a unicast IP6 connection
+        // address in the SDP is a reachable RTCP destination, and v4
+        // destinations go out as v4-mapped on the same socket.
+        let (rtcp_tx, rtcp_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let task = tokio::spawn(SdpSource::rtcp_sender_task(
+            "test".to_string(),
+            rtcp_rx,
+            shutdown_rx,
+        ));
+
+        let v4_listener = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .unwrap();
+        // Hosts without an IPv6 loopback (some containers) skip the v6
+        // leg; the v4 leg still passes through the fallback socket there.
+        let v6_listener = UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0))
+            .await
+            .ok();
+
+        rtcp_tx
+            .send((v4_listener.local_addr().unwrap(), b"v4".to_vec()))
+            .unwrap();
+        let mut buf = [0u8; 16];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(5), v4_listener.recv_from(&mut buf))
+            .await
+            .expect("v4 RTCP must arrive")
+            .unwrap();
+        assert_eq!(&buf[..n], b"v4");
+
+        if let Some(v6_listener) = v6_listener {
+            rtcp_tx
+                .send((v6_listener.local_addr().unwrap(), b"v6".to_vec()))
+                .unwrap();
+            let (n, _) =
+                tokio::time::timeout(Duration::from_secs(5), v6_listener.recv_from(&mut buf))
+                    .await
+                    .expect("v6 RTCP must arrive when the host has IPv6")
+                    .unwrap();
+            assert_eq!(&buf[..n], b"v6");
+        }
+
+        shutdown_tx.send(()).unwrap();
+        task.await.unwrap();
     }
 }
