@@ -321,6 +321,8 @@ where
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
 
+    tokio::spawn(tick::node_info_check(app_state.clone()));
+
     tokio::spawn(route::cascade::cascade_supervisor(app_state.clone()));
 
     tokio::spawn(tick::auto_record_check(app_state.clone()));

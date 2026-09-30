@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::service::recordings_index::RecordingsIndexService;
-use crate::store::{CascadeIntent, Server};
+use crate::store::{CascadeIntent, Node, Server};
 use crate::{AppState, result::Result, route::utils::session_delete};
 
 use api::recorder::{
@@ -376,6 +376,77 @@ fn resolve_cascade_target(
 enum CascadeUrlForm {
     Pinned,
     Direct,
+}
+
+/// How often the node-info pass runs.
+const NODE_INFO_TICK: Duration = Duration::from_secs(10);
+/// Even without a reconnect, a node's build info is refetched once it is
+/// this old (a safety net; offline transitions already force a re-fetch).
+const NODE_INFO_TTL: Duration = Duration::from_secs(300);
+
+/// Refresh every reachable node's `GET /api/info` (version/git hash/build
+/// time/features) for the dashboard nodes table. The first pass runs
+/// immediately, and a node coming online without a fresh fetch wakes a
+/// pass via the store's notify. Info is display-only, so a fetch failure
+/// leaves the old value (or `None`) in place and is retried on the next
+/// pass — it never affects the node's observed reachability.
+pub async fn node_info_check(state: AppState) {
+    let notify = state.storage.info_notify_waiter();
+    loop {
+        do_node_info_check(&state).await;
+        tokio::select! {
+            _ = tokio::time::sleep(NODE_INFO_TICK) => {}
+            _ = notify.notified() => {}
+        }
+    }
+}
+
+async fn do_node_info_check(state: &AppState) {
+    let stale: Vec<(String, Node)> = state
+        .storage
+        .get_map_nodes()
+        .into_iter()
+        .filter(|(_, node)| {
+            node.online
+                && node
+                    .info_fetched_at
+                    .map(|at| at.elapsed() >= NODE_INFO_TTL)
+                    .unwrap_or(true)
+        })
+        .collect();
+
+    // Fetches run concurrently so one stalling node cannot delay the rest;
+    // bodies are read inside the spawned tasks like the streams poll does.
+    let handles = stale
+        .into_iter()
+        .map(|(alias, node)| {
+            let client = state.client.clone();
+            tokio::spawn(async move {
+                let mut req = client.get(format!(
+                    "{}{}",
+                    node.url.trim_end_matches('/'),
+                    api::path::INFO
+                ));
+                if !node.token.is_empty() {
+                    req = req.bearer_auth(node.token);
+                }
+                let info = req
+                    .send()
+                    .await
+                    .ok()?
+                    .json::<api::response::ServerInfo>()
+                    .await
+                    .ok()?;
+                Some((alias, info))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        if let Ok(Some((alias, info))) = handle.await {
+            state.storage.node_set_info(&alias, info);
+        }
+    }
 }
 
 /// Liveman Auto Record Check

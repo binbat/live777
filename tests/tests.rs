@@ -123,6 +123,62 @@ async fn test_liveion_info() {
 }
 
 #[tokio::test]
+async fn test_liveman_nodes_carry_node_build_info() {
+    // A liveion node behind a poll-mode liveman: the nodes API must carry
+    // the node's own `GET /api/info` (version/git hash/build time) once
+    // liveman's node-info pass has fetched it.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    // The node-info pass runs at startup and is woken whenever a node comes
+    // online without a fresh fetch; the nodes-API request itself drives the
+    // first streams poll that marks the node online, so the info shows up
+    // within a poll round.
+    let nodes_url = format!("http://{liveman_addr}/api/nodes/");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let info = loop {
+        let nodes = reqwest::get(&nodes_url)
+            .await
+            .unwrap()
+            .json::<Vec<serde_json::Value>>()
+            .await
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["alias"], "node0");
+        if let Some(info) = nodes[0].get("info") {
+            break info.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node build info did not show up in /api/nodes/"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+
+    let info: api::response::ServerInfo = serde_json::from_value(info).unwrap();
+    assert!(!info.version.is_empty());
+    assert!(!info.git_hash.is_empty());
+    assert!(!info.build_time.is_empty());
+}
+
+#[tokio::test]
 async fn test_liveion_ipv6() {
     let cfg = liveion::config::Config::default();
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);

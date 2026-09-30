@@ -41,6 +41,14 @@ pub struct Node {
     streams: Vec<Stream>,
     /// Round-trip time of the last successful poll contact.
     pub duration: Option<Duration>,
+    /// Build/version info fetched from the node's `GET /api/info` by
+    /// `tick::node_info_check`; `None` until the first successful fetch.
+    pub info: Option<api::response::ServerInfo>,
+    /// When `info` was last fetched. Cleared on offline transitions so a
+    /// node that restarts (possibly into a new build) is re-fetched on its
+    /// next contact instead of waiting out the refresh TTL.
+    #[serde(skip)]
+    pub info_fetched_at: Option<Instant>,
 }
 
 impl Node {
@@ -150,6 +158,10 @@ pub struct Storage {
     /// attempt is immediate instead of waiting for a tick.
     cascade_intents: Arc<RwLock<HashMap<String, CascadeIntent>>>,
     cascade_notify: Arc<tokio::sync::Notify>,
+    /// Wakes `tick::node_info_check` when a node comes online without a
+    /// fresh build-info fetch, so the dashboard shows its version
+    /// immediately instead of waiting for a tick.
+    info_notify: Arc<tokio::sync::Notify>,
 }
 
 /// A desired inter-node cascade hop for one stream. Nodes are referenced by
@@ -212,6 +224,7 @@ impl Storage {
             update_lock: Arc::new(tokio::sync::Mutex::new(())),
             cascade_intents: Arc::new(RwLock::new(HashMap::new())),
             cascade_notify: Arc::new(tokio::sync::Notify::new()),
+            info_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -578,12 +591,35 @@ impl Storage {
     /// Mark a node's reachability, and on success remember the contact RTT
     /// for the dashboard.
     pub fn node_set_online(&self, alias: &str, online: bool, rtt: Option<Duration>) {
+        let mut need_info = false;
         if let Some(node) = self.list.write().unwrap().get_mut(alias) {
             node.online = online;
             if online && let Some(rtt) = rtt {
                 node.duration = Some(rtt);
             }
+            if !online {
+                // Force a re-fetch on the next contact: a node that
+                // restarted may come back running a different build. The
+                // last known info is kept for display while offline.
+                node.info_fetched_at = None;
+            }
+            need_info = online && node.info_fetched_at.is_none();
         }
+        if need_info {
+            self.info_notify.notify_one();
+        }
+    }
+
+    /// Cache a node's `GET /api/info` response for the dashboard.
+    pub fn node_set_info(&self, alias: &str, info: api::response::ServerInfo) {
+        if let Some(node) = self.list.write().unwrap().get_mut(alias) {
+            node.info = Some(info);
+            node.info_fetched_at = Some(Instant::now());
+        }
+    }
+
+    pub fn info_notify_waiter(&self) -> Arc<tokio::sync::Notify> {
+        self.info_notify.clone()
     }
 
     async fn update(&mut self) {

@@ -82,6 +82,7 @@ Response: [200]
 - `url`: String, 节点 API 的 URL 地址
 - `status`: StringEnum("running" | "stopped"), 节点连通状态：`poll` 节点反映最近一次轮询结果（任何 HTTP 响应都视为可达），`sse` 节点反映 SSE 连接状态，net4mqtt 节点反映发现（presence）状态
 - `duration`: String, 最近一次轮询的往返耗时（如 `"12ms"`）；无轮询的节点（SSE / net4mqtt）为 `"-"`
+- `info`: Object, 可选 — 节点自身 `GET /api/info` 的构建信息（`version`、`gitHash`、`buildTime`、`features`），由 liveman 缓存并在节点重连时刷新；首次拉取成功前不出现该字段
 
 例如:
 
@@ -91,7 +92,13 @@ Response: [200]
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
     "status": "running",
-    "duration": "3ms"
+    "duration": "3ms",
+    "info": {
+      "version": "v0.10.2",
+      "gitHash": "b789a64",
+      "buildTime": "2026-09-28T10:00:00+00:00",
+      "features": ["webui", "cascade", "recorder", "source-all"]
+    }
   },
   {
     "alias": "buildin-1",
