@@ -23,7 +23,12 @@
 //! - Audio (and anything else) is forwarded untouched.
 //!
 //! Ports follow the RTP/AVP convention: video goes to the URL's port, audio
-//! to port + 2 (port + 1 stays reserved for RTCP).
+//! to port + 2 (port + 1 stays reserved for RTCP). The video payload type
+//! defaults to the publisher's negotiated PT (96 for dynamic codecs) and can
+//! be pinned from the config; audio always keeps the automatic choice. On
+//! request a receiver-side SDP file is written when sending starts
+//! (ffmpeg's `-sdp_file` behavior), directly consumable by live777's own
+//! SDP file source.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -39,6 +44,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::TargetConfig;
 use crate::event::{Event, StreamDeleteReason};
+use crate::forward::message::Codec;
 use crate::forward::track::PublishTrackRemote;
 use crate::forward::{PeerForward, rtcp::RtcpMessage};
 use crate::reconnect::reconnect_delay;
@@ -91,6 +97,11 @@ pub(crate) fn validate_rtp_target(target: &TargetConfig) -> anyhow::Result<()> {
         && ttl > 255
     {
         anyhow::bail!("rtp:// target ttl must be <= 255, got {ttl}");
+    }
+    if let Some(pt) = target.payload_type
+        && !(96..=127).contains(&pt)
+    {
+        anyhow::bail!("rtp:// target payload_type must be in 96..=127 (dynamic range), got {pt}");
     }
     if !dest.ip().is_multicast() && (target.multicast_interface.is_some() || target.ttl.is_some()) {
         anyhow::bail!("multicast_interface and ttl are only valid with a multicast rtp:// target");
@@ -242,6 +253,11 @@ struct RtpTargetContext {
     dest: SocketAddr,
     multicast_interface: Option<String>,
     ttl: Option<u32>,
+    /// Optional payload type stamped on the video track (audio keeps the
+    /// automatic choice).
+    payload_type: Option<u32>,
+    /// Optional receiver-side SDP written when sending starts.
+    sdp_file: Option<String>,
     cancel: CancellationToken,
 }
 
@@ -251,6 +267,14 @@ impl RtpTargetContext {
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTP target: {}", stream, e))?;
         if dest.port() == 0 {
             anyhow::bail!("[{}] invalid RTP target: port must be non-zero", stream);
+        }
+        if let Some(pt) = target.payload_type
+            && !(96..=127).contains(&pt)
+        {
+            anyhow::bail!(
+                "[{}] invalid RTP target: payload_type must be in 96..=127, got {pt}",
+                stream
+            );
         }
         // A multicast-only option on a unicast destination would silently do
         // nothing; reject it here (config validation already reports it, this
@@ -270,6 +294,8 @@ impl RtpTargetContext {
             dest,
             multicast_interface: target.multicast_interface,
             ttl: target.ttl,
+            payload_type: target.payload_type,
+            sdp_file: target.sdp_file,
             cancel,
         })
     }
@@ -442,8 +468,16 @@ impl RtpTargetContext {
             self.ttl,
         )?);
 
-        let epoch = CancellationToken::new();
-        let mut count = 0usize;
+        // Select the first video and the first audio track; every other
+        // track is ignored. Per-track resolved payload type and destination
+        // ride along: the video PT may be overridden from the config, audio
+        // always keeps the automatic choice (one value cannot fit both
+        // media), and audio rides port + 2 (RTP/AVP: port + 1 stays
+        // reserved for RTCP). The port overflow is checked here, not at
+        // config time, because whether the stream has audio is only known
+        // once the tracks exist.
+        let mut selected: Vec<(PublishTrackRemote, RtpCodecKind, Codec, u8, SocketAddr)> =
+            Vec::new();
         let mut video_seen = false;
         let mut audio_seen = false;
         for track in &tracks {
@@ -463,9 +497,14 @@ impl RtpTargetContext {
                 continue;
             }
 
-            // Audio rides port + 2 (RTP/AVP: port + 1 stays reserved for
-            // RTCP). Checked here, not at config time, because whether the
-            // stream has audio is only known once the tracks exist.
+            let codec = track.codec();
+            let payload_type = if is_video {
+                self.payload_type
+                    .map(|pt| pt as u8)
+                    .unwrap_or_else(|| codec.sdp_payload_type())
+            } else {
+                codec.sdp_payload_type()
+            };
             let dest = if is_video {
                 self.dest
             } else {
@@ -477,12 +516,42 @@ impl RtpTargetContext {
                 };
                 SocketAddr::new(self.dest.ip(), port)
             };
+            selected.push((track.clone(), kind, codec, payload_type, dest));
+        }
 
+        if selected.is_empty() {
+            anyhow::bail!("no video or audio publish tracks yet");
+        }
+
+        // Receiver-side SDP, rewritten on every send start (ffmpeg's
+        // -sdp_file behavior): the file describes a multicast group or a
+        // unicast placeholder address that stays valid while the sender is
+        // away. A write failure must never stop the media: it is an aid,
+        // not a precondition.
+        if let Some(path) = &self.sdp_file {
+            let sdp = build_receiver_sdp(
+                &self.stream,
+                self.dest,
+                &selected
+                    .iter()
+                    .map(|(_, kind, codec, pt, _)| (*kind, codec.clone(), *pt))
+                    .collect::<Vec<_>>(),
+            );
+            if let Err(e) = tokio::fs::write(path, sdp).await {
+                warn!(
+                    "[target] [{}] failed to write receiver SDP to {}: {:?}",
+                    self.stream, path, e
+                );
+            }
+        }
+
+        let epoch = CancellationToken::new();
+        for (track, kind, codec, payload_type, dest) in &selected {
             // Nudge the publisher towards an IDR so receivers joining now
             // get a decodable frame (and the SPS/PPS injector a frame to
             // attach the parameter sets to) without waiting for the sender's
             // own keyframe cadence.
-            if is_video {
+            if *kind == RtpCodecKind::Video {
                 let ssrc = track.source_ssrc().await;
                 if ssrc != 0
                     && let Err(e) = forward
@@ -496,26 +565,27 @@ impl RtpTargetContext {
             tokio::spawn(track_send_task(
                 track.clone(),
                 socket.clone(),
-                dest,
+                *dest,
+                *payload_type,
+                codec.kind == "video",
                 epoch.child_token(),
                 exit_tx.clone(),
             ));
-            count += 1;
-        }
-
-        if count == 0 {
-            anyhow::bail!("no video or audio publish tracks yet");
         }
 
         if self.dest.ip().is_multicast() {
             info!(
                 "[target] [{}] multicasting to {} ({} track(s))",
-                self.stream, self.dest, count
+                self.stream,
+                self.dest,
+                selected.len()
             );
         } else {
             info!(
                 "[target] [{}] sending to {} ({} track(s))",
-                self.stream, self.dest, count
+                self.stream,
+                self.dest,
+                selected.len()
             );
         }
 
@@ -531,16 +601,85 @@ impl RtpTargetContext {
     }
 }
 
+/// Build a receiver-side SDP describing a target's output: the multicast
+/// group as the connection address for multicast destinations (a unicast
+/// destination gets a `127.0.0.1` placeholder the receiver must replace),
+/// video on the URL's port, audio on port + 2, and the resolved payload
+/// types. The result parses with `rtsp::parse_media_info_from_sdp`, so
+/// another live777 can consume it directly as an SDP file source, like
+/// ffmpeg's `-sdp_file` output.
+fn build_receiver_sdp(
+    stream: &str,
+    dest: SocketAddr,
+    tracks: &[(RtpCodecKind, Codec, u8)],
+) -> String {
+    let connection = match dest.ip() {
+        IpAddr::V4(v4) if v4.is_multicast() => format!("c=IN IP4 {v4}"),
+        IpAddr::V6(v6) if v6.is_multicast() => format!("c=IN IP6 {v6}"),
+        // Unicast receivers must point the connection address at themselves.
+        IpAddr::V4(_) => "c=IN IP4 127.0.0.1".to_string(),
+        IpAddr::V6(_) => "c=IN IP6 ::1".to_string(),
+    };
+
+    let mut lines = vec![
+        "v=0".to_string(),
+        "o=- 0 0 IN IP4 127.0.0.1".to_string(),
+        format!("s=live777-{stream}"),
+        connection,
+        "t=0 0".to_string(),
+    ];
+
+    for (kind, codec, pt) in tracks {
+        let (media, port, channels) = match kind {
+            RtpCodecKind::Video => ("video", dest.port(), None),
+            RtpCodecKind::Audio => (
+                "audio",
+                dest.port().saturating_add(2),
+                Some(codec.channels as u8),
+            ),
+            _ => continue,
+        };
+        let (media, clock_rate, channels) = match codec.codec.as_str() {
+            "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => (media, codec.clock_rate, None),
+            "opus" | "g722" | "pcma" | "pcmu" => (media, codec.clock_rate, channels),
+            _ => continue,
+        };
+
+        lines.push(format!("m={media} {port} RTP/AVP {pt}"));
+        if let Some(ch) = channels {
+            lines.push(format!(
+                "a=rtpmap:{} {}/{}/{}",
+                pt,
+                codec.codec.to_uppercase(),
+                clock_rate,
+                ch
+            ));
+        } else {
+            lines.push(format!(
+                "a=rtpmap:{} {}/{}",
+                pt,
+                codec.codec.to_uppercase(),
+                clock_rate
+            ));
+        }
+        if !codec.fmtp.is_empty() {
+            lines.push(format!("a=fmtp:{} {}", pt, codec.fmtp));
+        }
+    }
+
+    lines.join("\r\n") + "\r\n"
+}
+
 async fn track_send_task(
     track: PublishTrackRemote,
     socket: Arc<UdpSocket>,
     dest: SocketAddr,
+    payload_type: u8,
+    is_video: bool,
     cancel: CancellationToken,
     exit_tx: mpsc::UnboundedSender<()>,
 ) {
     let codec = track.codec();
-    let payload_type = codec.sdp_payload_type();
-    let is_video = codec.kind == "video";
     let mime = format!("{}/{}", codec.kind, codec.codec);
     // Video is re-assembled and re-packetized: SPS/PPS get inlined ahead of
     // every IDR (idempotent for streams that already carry them, so a
@@ -596,6 +735,8 @@ mod tests {
             url: url.to_string(),
             multicast_interface: None,
             ttl: None,
+            payload_type: None,
+            sdp_file: None,
         }
     }
 
@@ -768,6 +909,123 @@ mod tests {
         .await
         .expect("datagram sent to the group must reach the joined receiver");
         assert_eq!(&buf[..received], payload);
+    }
+
+    fn test_codec(
+        kind: &str,
+        codec: &str,
+        fmtp: &str,
+        payload_type: u8,
+        clock_rate: u32,
+        channels: u16,
+    ) -> Codec {
+        Codec {
+            kind: kind.to_string(),
+            codec: codec.to_string(),
+            fmtp: fmtp.to_string(),
+            payload_type,
+            clock_rate,
+            channels,
+        }
+    }
+
+    const H264_FMTP: &str = "profile-level-id=42001f;packetization-mode=1;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4yyA==";
+
+    #[test]
+    fn build_receiver_sdp_describes_multicast_group_and_tracks() {
+        let dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(230, 1, 1, 1)), 1720);
+        let tracks = [
+            (
+                RtpCodecKind::Video,
+                test_codec("video", "h264", H264_FMTP, 96, 90000, 0),
+                96u8,
+            ),
+            (
+                RtpCodecKind::Audio,
+                test_codec("audio", "opus", "", 111, 48000, 2),
+                111u8,
+            ),
+        ];
+
+        let sdp = build_receiver_sdp("robot-cam", dest, &tracks);
+
+        assert!(
+            sdp.starts_with(
+                "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=live777-robot-cam\r\nc=IN IP4 230.1.1.1\r\n"
+            ),
+            "unexpected session head: {sdp}"
+        );
+        // Video on the URL's port, audio on port + 2 (RTP/AVP).
+        assert!(sdp.contains("m=video 1720 RTP/AVP 96\r\n"), "SDP: {sdp}");
+        assert!(sdp.contains("a=rtpmap:96 H264/90000\r\n"), "SDP: {sdp}");
+        assert!(
+            sdp.contains(&format!("a=fmtp:96 {H264_FMTP}\r\n")),
+            "SDP: {sdp}"
+        );
+        assert!(sdp.contains("m=audio 1722 RTP/AVP 111\r\n"), "SDP: {sdp}");
+        assert!(sdp.contains("a=rtpmap:111 OPUS/48000/2\r\n"), "SDP: {sdp}");
+    }
+
+    #[test]
+    fn build_receiver_sdp_uses_resolved_pt_and_unicast_placeholder() {
+        // A unicast destination cannot know the receiver's address: the
+        // connection address is a placeholder the receiver must replace.
+        let dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 5004);
+        let tracks = [(
+            RtpCodecKind::Video,
+            test_codec("video", "h264", "", 96, 90000, 0),
+            120u8,
+        )];
+
+        let sdp = build_receiver_sdp("cam", dest, &tracks);
+
+        assert!(sdp.contains("c=IN IP4 127.0.0.1\r\n"), "SDP: {sdp}");
+        // The resolved (overridden) PT is what the m= line advertises.
+        assert!(sdp.contains("m=video 5004 RTP/AVP 120\r\n"), "SDP: {sdp}");
+        // An empty fmtp leaves no a=fmtp line behind.
+        assert!(
+            !sdp.contains("a=fmtp:120"),
+            "empty fmtp must not emit an a=fmtp line: {sdp}"
+        );
+    }
+
+    /// The generated file must be directly consumable by live777's own SDP
+    /// file source: `rtsp::parse_media_info_from_sdp` is the parser behind
+    /// `[[stream.<name>.sources]] url = "*.sdp"`.
+    #[cfg(any(feature = "source", feature = "rtsp"))]
+    #[test]
+    fn receiver_sdp_round_trips_through_the_sdp_source_parser() {
+        let dest = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(230, 1, 1, 1)), 1720);
+        let tracks = [(
+            RtpCodecKind::Video,
+            test_codec("video", "h264", H264_FMTP, 96, 90000, 0),
+            96u8,
+        )];
+
+        let sdp = build_receiver_sdp("robot-cam", dest, &tracks);
+
+        let parsed = rtsp::parse_media_info_from_sdp(sdp.as_bytes()).unwrap();
+        match parsed.video_codec {
+            Some(rtsp::VideoCodecParams::H264 {
+                payload_type,
+                clock_rate,
+                sps,
+                pps,
+                ..
+            }) => {
+                assert_eq!(payload_type, 96);
+                assert_eq!(clock_rate, 90000);
+                assert!(
+                    !sps.is_empty() && !pps.is_empty(),
+                    "sprop parameter sets must survive the round trip"
+                );
+            }
+            other => panic!("expected H264, got {other:?}"),
+        }
+
+        // The video media line carries the URL's port.
+        let m_video = sdp.lines().find(|l| l.starts_with("m=video")).unwrap();
+        assert!(m_video.starts_with("m=video 1720 RTP/AVP 96"));
     }
 
     /// Receive datagrams until one contains `idr`, asserting every datagram
@@ -943,6 +1201,8 @@ mod tests {
             track.clone(),
             socket,
             dest,
+            96,
+            true,
             cancel.clone(),
             exit_tx,
         ));
@@ -1016,15 +1276,50 @@ mod tests {
         let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let dest = listener.local_addr().unwrap();
 
+        // A receiver-SDP write failure must not fail the send: the file is
+        // an aid, not a precondition. This pass also exercises the video
+        // payload_type override (105 on the wire, nothing here reads it).
+        let bad_sdp_path = "/nonexistent-live777-dir/robot-cam.sdp";
+        let ctx_bad_sdp = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            TargetConfig {
+                payload_type: Some(105),
+                sdp_file: Some(bad_sdp_path.to_string()),
+                ..rtp_target(&format!("rtp://{dest}"))
+            },
+        )
+        .unwrap();
+        let (bad_exit_tx, mut bad_exit_rx) = mpsc::unbounded_channel::<()>();
+        let bad_epoch = ctx_bad_sdp.start_senders(&bad_exit_tx).await.unwrap();
+        bad_epoch.cancel();
+        tokio::time::timeout(Duration::from_secs(5), bad_exit_rx.recv())
+            .await
+            .expect("send task must signal its exit");
+        assert!(!std::path::Path::new(bad_sdp_path).exists());
+
+        // The real pass: a receiver-side SDP file is written on send start.
+        let sdp_file = tempfile::NamedTempFile::new().unwrap();
+        let sdp_path = sdp_file.path().to_path_buf();
         let ctx = RtpTargetContext::new(
             manager.clone(),
             "cam".to_string(),
-            rtp_target(&format!("rtp://{dest}")),
+            TargetConfig {
+                sdp_file: Some(sdp_path.to_string_lossy().into_owned()),
+                ..rtp_target(&format!("rtp://{dest}"))
+            },
         )
         .unwrap();
 
         let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
         let epoch = ctx.start_senders(&exit_tx).await.unwrap();
+
+        let sdp = tokio::fs::read_to_string(&sdp_path).await.unwrap();
+        assert!(
+            sdp.contains(&format!("m=video {} RTP/AVP 96", dest.port())),
+            "receiver SDP must advertise the video port and PT: {sdp}"
+        );
+        assert!(sdp.contains("a=rtpmap:96 H264/90000\r\n"), "SDP: {sdp}");
 
         let tracks = forward.publish_tracks().await;
         let track = tracks

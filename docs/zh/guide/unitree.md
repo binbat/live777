@@ -80,6 +80,10 @@ live777 会缓存相机的 SPS/PPS 并在每个关键帧前重新注入，新加
 url = "rtp://230.1.1.1:1720"
 # multicast_interface = "192.168.123.10"  # 出站网卡（可选）
 # ttl = 16                                # 跨路由器时调大（默认 1）
+# payload_type = 96        # 固定视频 payload type（96-127，动态段）；不配则
+                           # 沿用协商值，动态编码为 96。音频始终自动选择。
+# sdp_file = "/etc/live777/robot-cam.sdp"  # 发送开始时写出接收端 SDP 文件
+                           # （类似 ffmpeg 的 -sdp_file）
 ```
 
 发送是 media-driven 的，与 WHIP push target 一致：流获得发布者
@@ -88,6 +92,19 @@ url = "rtp://230.1.1.1:1720"
 端口 + 2（RTP/AVP 惯例把端口 + 1 留给 RTCP）。视频在发送前会经过
 重组包：每个 IDR 前都会内联 SPS/PPS，中途加入的接收端从下一个
 关键帧即可解码——与接入侧提供的保证一致。音频则原样直通。
+
+配置 `sdp_file` 后，live777 在每次开始发送时写出接收端 SDP 文件
+（发送停止时不删除——发送端空闲期间组地址与端口依然有效）。生成
+的文件可以被另一个 live777 直接作为 SDP 文件源消费，从而实现
+live777 → live777 的组播级联：
+
+```toml
+[[stream.relayed.sources]]
+url = "/etc/live777/robot-cam.sdp"
+```
+
+单播目标生成的 `c=` 行是 `127.0.0.1` 占位符，接收方使用前需将其
+替换为实际地址。
 
 由于输出就是普通的 RTP/AVP，接收端不需要 live777。与之匹配的
 SDP：

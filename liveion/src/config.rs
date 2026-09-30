@@ -818,6 +818,19 @@ pub struct TargetConfig {
     /// (default 1). Only valid with a multicast `rtp://` url.
     #[serde(default)]
     pub ttl: Option<u32>,
+    /// Payload type stamped on the video track's outgoing packets and
+    /// advertised in the generated SDP (96-127, dynamic range). Unset keeps
+    /// the automatic choice: the publisher's negotiated PT, or 96 for
+    /// dynamic codecs. Only valid with an `rtp://` url.
+    #[serde(default)]
+    pub payload_type: Option<u32>,
+    /// Write a receiver-side SDP file describing this target's output when
+    /// sending starts (like ffmpeg's rtp output writing test.sdp). The
+    /// file is directly consumable by live777's SDP file source
+    /// (`source-sdp`), ffmpeg, and gstreamer. Unset disables. Only valid
+    /// with an `rtp://` url.
+    #[serde(default)]
+    pub sdp_file: Option<String>,
 }
 
 #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
@@ -828,9 +841,14 @@ impl TargetConfig {
         match scheme.as_str() {
             #[cfg(feature = "target-whip")]
             "whip" | "whips" => {
-                if self.multicast_interface.is_some() || self.ttl.is_some() {
+                if self.multicast_interface.is_some()
+                    || self.ttl.is_some()
+                    || self.payload_type.is_some()
+                    || self.sdp_file.is_some()
+                {
                     anyhow::bail!(
-                        "multicast_interface and ttl are only valid with a multicast rtp:// target"
+                        "multicast_interface, ttl, payload_type and sdp_file \
+                         are only valid with an rtp:// target"
                     );
                 }
                 crate::target::validate_target_url(url)
@@ -1255,6 +1273,17 @@ fn default_rtsp_realm() -> String {
 mod target_tests {
     use super::*;
 
+    #[cfg(feature = "target-rtp")]
+    fn rtp_target(url: &str) -> TargetConfig {
+        TargetConfig {
+            url: url.to_string(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        }
+    }
+
     #[cfg(feature = "target-whip")]
     #[test]
     fn target_config_validate_accepts_whip_schemes() {
@@ -1268,6 +1297,8 @@ mod target_tests {
                 url: url.into(),
                 multicast_interface: None,
                 ttl: None,
+                payload_type: None,
+                sdp_file: None,
             };
             target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
         }
@@ -1286,6 +1317,8 @@ mod target_tests {
                 url: url.into(),
                 multicast_interface: None,
                 ttl: None,
+                payload_type: None,
+                sdp_file: None,
             };
             assert!(target.validate().is_err(), "{url} must be rejected");
         }
@@ -1298,6 +1331,8 @@ mod target_tests {
             url: "whip://edge-1:7777/whip/cam1".into(),
             multicast_interface: Some("192.168.1.10".into()),
             ttl: None,
+            payload_type: None,
+            sdp_file: None,
         };
         let err = target.validate().unwrap_err().to_string();
         assert!(
@@ -1309,6 +1344,8 @@ mod target_tests {
             url: "whip://edge-1:7777/whip/cam1".into(),
             multicast_interface: None,
             ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
         };
         assert!(target.validate().is_err());
     }
@@ -1326,6 +1363,8 @@ mod target_tests {
                 url: url.into(),
                 multicast_interface: None,
                 ttl: None,
+                payload_type: None,
+                sdp_file: None,
             };
             target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
         }
@@ -1338,6 +1377,8 @@ mod target_tests {
             url: "rtp://230.1.1.1:1720".into(),
             multicast_interface: Some("192.168.1.10".into()),
             ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
         };
         target.validate().unwrap();
 
@@ -1345,6 +1386,8 @@ mod target_tests {
             url: "rtp://[ff12::1]:1720".into(),
             multicast_interface: Some("2".into()),
             ttl: Some(255),
+            payload_type: None,
+            sdp_file: None,
         };
         target.validate().unwrap();
     }
@@ -1364,6 +1407,8 @@ mod target_tests {
                 url: url.into(),
                 multicast_interface: None,
                 ttl: None,
+                payload_type: None,
+                sdp_file: None,
             };
             assert!(target.validate().is_err(), "{url} must be rejected");
         }
@@ -1377,6 +1422,8 @@ mod target_tests {
             url: "rtp://230.1.1.1:1720".into(),
             multicast_interface: None,
             ttl: Some(256),
+            payload_type: None,
+            sdp_file: None,
         };
         assert!(target.validate().is_err());
 
@@ -1387,6 +1434,8 @@ mod target_tests {
                 url: "rtp://230.1.1.1:1720".into(),
                 multicast_interface: Some(interface.into()),
                 ttl: None,
+                payload_type: None,
+                sdp_file: None,
             };
             let err = target.validate().unwrap_err().to_string();
             assert!(
@@ -1400,6 +1449,8 @@ mod target_tests {
             url: "rtp://[ff12::1]:1720".into(),
             multicast_interface: Some("192.168.1.10".into()),
             ttl: None,
+            payload_type: None,
+            sdp_file: None,
         };
         assert!(target.validate().is_err());
 
@@ -1409,6 +1460,8 @@ mod target_tests {
                 url: "rtp://192.168.1.10:5004".into(),
                 multicast_interface: interface.map(str::to_string),
                 ttl,
+                payload_type: None,
+                sdp_file: None,
             };
             let err = target.validate().unwrap_err().to_string();
             assert!(
@@ -1416,6 +1469,70 @@ mod target_tests {
                 "error must say multicast-only: {err}"
             );
         }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_payload_type_and_sdp_file() {
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            payload_type: Some(96),
+            sdp_file: Some("/etc/live777/robot-cam.sdp".into()),
+            multicast_interface: None,
+            ttl: None,
+        };
+        target.validate().unwrap();
+
+        // The whole dynamic range is usable.
+        let target = TargetConfig {
+            payload_type: Some(127),
+            ..rtp_target("rtp://230.1.1.1:1720")
+        };
+        target.validate().unwrap();
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_payload_type_outside_dynamic_range() {
+        for pt in [0, 95, 128, 200] {
+            let target = TargetConfig {
+                payload_type: Some(pt),
+                ..rtp_target("rtp://230.1.1.1:1720")
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("payload_type") && err.contains("96"),
+                "error must explain the dynamic range: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
+    #[test]
+    fn target_config_validate_rejects_whip_url_with_rtp_options() {
+        // payload_type and sdp_file follow the same rule as the multicast
+        // options: an rtp://-only knob on a WHIP target is rejected.
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: Some(96),
+            sdp_file: None,
+        };
+        let err = target.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("rtp://"),
+            "error must point at rtp:// targets: {err}"
+        );
+
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: Some("cam.sdp".into()),
+        };
+        assert!(target.validate().is_err());
     }
 
     #[test]
@@ -1431,6 +1548,8 @@ mod target_tests {
         assert_eq!(entry.targets[0].url, "whip://token@edge-1:7777/whip/cam1");
         assert_eq!(entry.targets[0].multicast_interface, None);
         assert_eq!(entry.targets[0].ttl, None);
+        assert_eq!(entry.targets[0].payload_type, None);
+        assert_eq!(entry.targets[0].sdp_file, None);
     }
 
     #[cfg(feature = "target-rtp")]
@@ -1442,6 +1561,8 @@ mod target_tests {
             url = "rtp://230.1.1.1:1720"
             multicast_interface = "192.168.123.10"
             ttl = 16
+            payload_type = 96
+            sdp_file = "/etc/live777/robot-cam.sdp"
             "#,
         )
         .unwrap();
@@ -1452,6 +1573,11 @@ mod target_tests {
             Some("192.168.123.10")
         );
         assert_eq!(entry.targets[0].ttl, Some(16));
+        assert_eq!(entry.targets[0].payload_type, Some(96));
+        assert_eq!(
+            entry.targets[0].sdp_file.as_deref(),
+            Some("/etc/live777/robot-cam.sdp")
+        );
     }
 
     #[test]
@@ -1464,6 +1590,8 @@ mod target_tests {
                     url: "whep://edge-1/whep/cam1".into(),
                     multicast_interface: None,
                     ttl: None,
+                    payload_type: None,
+                    sdp_file: None,
                 }],
                 ..Default::default()
             },
@@ -1490,11 +1618,15 @@ mod target_tests {
                         url: url.into(),
                         multicast_interface: None,
                         ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                     TargetConfig {
                         url: url.into(),
                         multicast_interface: None,
                         ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                 ],
                 ..Default::default()
