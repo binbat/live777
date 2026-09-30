@@ -801,7 +801,7 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 /// sources are (re)started whenever the stream has neither a publisher nor
 /// an active target session.
 #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetConfig {
     /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
     /// (or `whips://`), or an RTP destination: `rtp://host:port`. A Bearer
