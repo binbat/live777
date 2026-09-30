@@ -1205,4 +1205,51 @@ mod tests {
         source.stop().await.unwrap();
         assert_eq!(source.state(), StreamSourceState::Disconnected);
     }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn multicast_datagram_on_joined_interface_is_received() {
+        // The data plane behind the loopback join: a datagram sent to the
+        // group out of the joined interface must surface on the source's
+        // RTP broadcast — what separates a real membership from a bind
+        // that merely succeeded.
+        let mut source = test_source_with(MULTICAST_SDP, Some("127.0.0.1"));
+        source.start().await.unwrap();
+        let mut rtp_rx = source.subscribe_rtp();
+
+        let sender =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+        sender.set_multicast_if_v4(&Ipv4Addr::LOCALHOST).unwrap();
+        let group = socket2::SockAddr::from(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(230, 1, 1, 1)),
+            1720,
+        ));
+        let payload = b"live777-multicast-loopback";
+
+        // Membership propagation is not instantaneous; resend until one
+        // datagram makes it through.
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                sender.send_to(payload, &group).unwrap();
+                if let Ok(Ok(packet)) =
+                    tokio::time::timeout(Duration::from_millis(100), rtp_rx.recv()).await
+                {
+                    break packet;
+                }
+            }
+        })
+        .await
+        .expect("datagram sent to the joined group must be received");
+
+        match received {
+            MediaPacket::Rtp { channel, data } => {
+                assert_eq!(channel, 0);
+                assert_eq!(&data[..], &payload[..]);
+            }
+            #[allow(unreachable_patterns)]
+            other => panic!("expected an RTP packet, got {other:?}"),
+        }
+
+        source.stop().await.unwrap();
+    }
 }
