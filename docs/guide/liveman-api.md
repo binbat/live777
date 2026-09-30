@@ -82,7 +82,7 @@ Response: [200]
 - `alias`: String, Alias must be unique
 - `url`: String, Node API URL
 - `status`: StringEnum("running" | "stopped"), Node contact health: the latest poll result for `poll` nodes (any HTTP response counts as reachable), the SSE connection state for `sse` nodes, and the discovery presence for net4mqtt nodes
-- `duration`: String, Round-trip of the latest poll (e.g. `"12ms"`); `"-"` for nodes without polls (SSE / net4mqtt)
+- `duration`: String, Round-trip of the latest node contact (e.g. `"12ms"`): the poll RTT for `poll` nodes, the SSE connect handshake RTT for `sse` nodes, or the `/api/info` fetch RTT whenever liveman refreshes the node's build info; `"-"` until the first successful contact
 - `info`: Object, optional — the node's own `GET /api/info` build information (`version`, `gitHash`, `buildTime`, `features`), cached by liveman and refetched on reconnect; absent until the first successful fetch
 
 For Example:
