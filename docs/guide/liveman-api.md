@@ -313,3 +313,15 @@ Response: [200]
 }
 ```
 
+### Streams SSE
+
+**This API pushes the same merged view as `GET /api/streams/`**
+
+`GET` `/api/sse/streams`
+
+Server-Sent Events endpoint. Requires the same auth as admin routes.
+
+Pushes the full merged snapshot of all streams (per-node snapshots merged by stream id) whenever the stored cluster state changes. Each SSE message is a JSON array of stream objects, in the same shape as `GET /api/streams/` (including the `statsScope` marking). The optional `?nodes=<alias>` query parameter (repeatable) restricts the view to the given nodes, exactly like `GET /api/streams/`.
+
+The first message is sent when the connection is established; subsequent messages are sent on every state change, with identical consecutive payloads suppressed. Nodes updated by polling refresh on the poll cadence while at least one client is connected.
+

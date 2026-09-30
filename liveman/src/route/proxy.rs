@@ -54,6 +54,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/streams/{stream}", get(stream::show))
         .route("/api/streams/{stream}", post(stream::create))
         .route("/api/streams/{stream}", delete(stream::destroy))
+        .route(api::path::streams_sse(), get(stream::sse))
         .merge(recorder::route())
         .merge(source::route())
         .merge(storage::route())

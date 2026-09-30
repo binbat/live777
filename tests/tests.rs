@@ -179,6 +179,103 @@ async fn test_liveman_nodes_carry_node_build_info() {
 }
 
 #[tokio::test]
+async fn test_liveman_streams_sse() {
+    // liveman's dashboard SSE endpoint (`GET /api/sse/streams`, the
+    // counterpart of liveion's): it must push the merged cluster view as
+    // SSE data events — an initial snapshot immediately, then an updated
+    // snapshot when the node's stream set changes. The node is poll-mode,
+    // so the update arrives through the SSE loop's idle cadence, which
+    // drives liveman's throttled lazy poll.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    let mut resp = reqwest::Client::new()
+        .get(format!("http://{liveman_addr}{}", api::path::streams_sse()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::OK, resp.status());
+
+    // Accumulate body chunks and pop complete `data:` events ("\n\n"
+    // terminated); keep-alive comment lines are ignored.
+    async fn next_sse_data(resp: &mut reqwest::Response, buffer: &mut String) -> String {
+        loop {
+            if let Some((event, rest)) = buffer.split_once("\n\n") {
+                let event = event.to_string();
+                *buffer = rest.to_string();
+                let data: String = event
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(|line| line.trim_start())
+                    .collect();
+                if !data.is_empty() {
+                    return data;
+                }
+                continue;
+            }
+            let chunk = resp.chunk().await.unwrap().expect("SSE stream ended");
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    }
+
+    let mut buffer = String::new();
+
+    // The initial snapshot is sent immediately: no streams yet.
+    let initial: Vec<serde_json::Value> = serde_json::from_str(
+        &tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            next_sse_data(&mut resp, &mut buffer),
+        )
+        .await
+        .expect("liveman SSE did not send the initial snapshot"),
+    )
+    .expect("initial SSE snapshot");
+    assert!(initial.is_empty());
+
+    // A stream appears on the node: a later snapshot must carry it (the
+    // idle-cadence poll makes this a couple of seconds at worst; allow
+    // generous slack for CI).
+    reqwest::Client::new()
+        .post(format!("http://{node_addr}{}", api::path::streams("-")))
+        .send()
+        .await
+        .unwrap();
+
+    let found = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
+        loop {
+            let streams: Vec<serde_json::Value> =
+                serde_json::from_str(&next_sse_data(&mut resp, &mut buffer).await)
+                    .expect("SSE snapshot");
+            if streams.iter().any(|s| s["id"] == "-") {
+                return streams;
+            }
+        }
+    })
+    .await
+    .expect("liveman SSE did not push the new stream in time");
+
+    let stream = found.iter().find(|s| s["id"] == "-").unwrap();
+    assert_eq!(stream["statsScope"], "node");
+}
+
+#[tokio::test]
 async fn test_liveion_ipv6() {
     let cfg = liveion::config::Config::default();
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);

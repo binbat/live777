@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, useTemplateRef, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from "vue";
 
 import { useNeedAuthorization } from "@/shared/hooks/use-need-authorization";
 import StreamsTable from "@/shared/components/streams-table.vue";
@@ -71,15 +71,17 @@ watch(currentView, () => {
     filterNodes.value = params.getAll("nodes");
 });
 
-const getStreams = async () => {
-    try {
-        // Ordering is owned by the table's sortable computed; no fetch-time
-        // sort here (it would be dead work and fight the stable row order).
-        return await livemanApi.getStreams(filterNodes.value);
-    } catch {
-        return [];
+// SSE pushes of the merged cluster view, same as liveion's dashboard; the
+// nodes filter rides along as a query param (reactive, so the table
+// reconnects when it changes).
+const streamsSSEUrl = computed(() => {
+    if (filterNodes.value.length === 0) {
+        return sharedApi.STREAMS_SSE_URL;
     }
-};
+    const params = new URLSearchParams();
+    filterNodes.value.forEach(v => params.append("nodes", v));
+    return `${sharedApi.STREAMS_SSE_URL}?${params.toString()}`;
+});
 
 const getWhxpUrl = (whxp: "whep" | "whip", streamId: string) => {
     let url = `/${whxp}/${streamId}`;
@@ -114,14 +116,14 @@ const streamTokenDialog = useTemplateRef<IStreamTokenDialog>("streamTokenDialog"
         <template v-else>
             <NodesTable v-if="filterNodes.length === 0" />
             <StreamsTable
-                :get-streams="getStreams"
+                :streams-s-s-e-url="streamsSSEUrl"
                 :get-whep-url="getWhepUrl"
                 :get-whip-url="getWhipUrl"
                 :get-stream-nodes="getStreamNodes"
                 :features="{ autoDetectRecording: true, source: true }"
             >
                 <template #extra-actions="{ stream }">
-                    <button class="btn btn-sm" @click="streamTokenDialog?.show(stream.id)">Create token</button>
+                    <a @click="streamTokenDialog?.show(stream.id)">Create token</a>
                 </template>
             </StreamsTable>
         </template>

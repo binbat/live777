@@ -162,6 +162,11 @@ pub struct Storage {
     /// fresh build-info fetch, so the dashboard shows its version
     /// immediately instead of waiting for a tick.
     info_notify: Arc<tokio::sync::Notify>,
+    /// Bumped on every mutation that can change the merged streams view
+    /// (snapshot applies, eager stream-index writes). The browser-facing
+    /// SSE handler (`route::stream::sse`) subscribes to it; a `watch` keeps
+    /// bursts coalesced into a single wakeup instead of queueing per write.
+    change_version: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// A desired inter-node cascade hop for one stream. Nodes are referenced by
@@ -225,6 +230,7 @@ impl Storage {
             cascade_intents: Arc::new(RwLock::new(HashMap::new())),
             cascade_notify: Arc::new(tokio::sync::Notify::new()),
             info_notify: Arc::new(tokio::sync::Notify::new()),
+            change_version: Arc::new(tokio::sync::watch::channel(0).0),
         }
     }
 
@@ -280,7 +286,9 @@ impl Storage {
             &self.pending_subs,
             alias,
             streams,
-        )
+        )?;
+        self.notify_change();
+        Ok(())
     }
 
     fn apply_snapshot_body(
@@ -411,6 +419,8 @@ impl Storage {
             arr.push(alias);
         }
         ctx.insert(stream, arr);
+        drop(ctx);
+        self.notify_change();
         Ok(())
     }
 
@@ -425,6 +435,8 @@ impl Storage {
                 ctx.remove(stream);
             }
         }
+        drop(ctx);
+        self.notify_change();
         Ok(())
     }
 
@@ -622,6 +634,17 @@ impl Storage {
         self.info_notify.clone()
     }
 
+    /// Signal that the merged streams view may have changed. Cheap even in
+    /// bursts: receivers coalesce versions, and the SSE consumer dedups on
+    /// the serialized payload, so a false positive costs one view rebuild.
+    fn notify_change(&self) {
+        self.change_version.send_modify(|v| *v += 1);
+    }
+
+    pub fn change_subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.change_version.subscribe()
+    }
+
     async fn update(&mut self) {
         // Throttle check: acquire lock only for the fast in-memory guard,
         // then release before making any HTTP requests so that concurrent
@@ -718,6 +741,7 @@ impl Storage {
                 }
             }
         }
+        self.notify_change();
     }
 }
 
