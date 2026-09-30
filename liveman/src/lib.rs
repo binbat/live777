@@ -278,6 +278,7 @@ where
         storage: store,
         database: database_service,
         record_sync_cursor: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        cancel: cancel.clone(),
         whep_locks: Arc::new(std::sync::RwLock::new(HashMap::new())),
         #[cfg(feature = "recorder")]
         file_storage,
@@ -367,6 +368,10 @@ struct AppState {
     storage: Storage,
     database: DatabaseService,
     record_sync_cursor: Arc<tokio::sync::RwLock<HashMap<String, i64>>>,
+    /// Shutdown signal shared with long-lived per-request tasks (the
+    /// dashboard SSE loop), so graceful shutdown is not held open by a
+    /// streaming response that never ends on its own.
+    cancel: CancellationToken,
     /// Per-stream WHEP admission locks: the capacity check and the session
     /// creation it justifies must be one critical section, or two
     /// concurrent viewers can both pass a `sub_max = 1` check before either

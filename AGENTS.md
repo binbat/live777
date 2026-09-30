@@ -352,7 +352,16 @@ clients via Link headers).
   `on_demand` stream acts as standing demand: its sources are (re)started
   whenever the stream has neither a publisher nor a push session, paced by
   the same backoff.
-- `liveman/src/route/` — proxy/cascade/admin routes.
+- `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's
+  streams table is SSE-pushed like liveion's: `GET /api/sse/streams`
+  (`route/stream.rs::sse`, same `?nodes=` filter as `GET /api/streams/`)
+  sends the merged cluster view on connect and re-sends it whenever
+  `Storage`'s `watch` change-version bumps (snapshot applies, eager
+  stream-index writes) and on a 3 s idle cadence that doubles as the
+  driver for the throttled lazy poll of poll-mode nodes. Identical
+  consecutive payloads are suppressed, and the loop selects on the
+  server's `CancellationToken` so a streaming response cannot hold
+  graceful shutdown open.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
 - `libs/api/src/` — shared REST/WebRTC API types (`request`, `response`,

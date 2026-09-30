@@ -1,15 +1,22 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::time::Duration;
 
 use axum::{
     Json,
     extract::{Path, State},
-    response::Response,
+    response::{
+        Response, Sse,
+        sse::{Event, KeepAlive},
+    },
 };
 // https://docs.rs/axum/latest/axum/extract/struct.Query.html
 // For handling multiple values for the same query parameter, in a ?foo=1&foo=2&foo=3 fashion, use axum_extra::extract::Query instead.
 use axum_extra::extract::Query;
 use http::{StatusCode, header};
-use tracing::warn;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{trace, warn};
 
 use api::response::Stream;
 
@@ -42,13 +49,30 @@ pub async fn index(
     State(mut state): State<AppState>,
     Query(query_extract): Query<QueryExtract>,
 ) -> Result<Json<Vec<api::response::Stream>>> {
+    Ok(Json(merged_streams(&mut state, &query_extract.nodes).await))
+}
+
+/// How long the SSE loop sleeps between storage reads when no change
+/// notification arrived. The read itself drives the throttled lazy poll of
+/// poll-mode nodes (`Storage::update`), so this cadence keeps poll-mode
+/// snapshots flowing while a dashboard is connected; SSE-mode nodes push
+/// their updates through the change watch as they arrive.
+const SSE_IDLE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// The cluster-wide streams view behind `GET /api/streams/` and the SSE
+/// stream: per-node snapshots merged by stream id, optionally restricted to
+/// the given node aliases. The output order is deterministic (per-stream
+/// node aliases merged in alias order, streams sorted by id, sessions by
+/// id) so the SSE payload dedup compares a stable serialization.
+async fn merged_streams(state: &mut AppState, nodes: &[String]) -> Vec<Stream> {
     let map_server_stream = get_map_server_stream(state.storage.info_raw_all().await.unwrap());
 
     let streams = state.storage.stream_all().await;
     let mut result_streams: HashMap<String, Stream> = HashMap::new();
-    for (stream_id, servers) in streams.into_iter() {
+    for (stream_id, mut servers) in streams.into_iter() {
+        servers.sort();
         for server_alias in servers.iter() {
-            if !query_extract.nodes.is_empty() && !query_extract.nodes.contains(server_alias) {
+            if !nodes.is_empty() && !nodes.contains(server_alias) {
                 continue;
             }
             let alias = format!("{server_alias}:{stream_id}");
@@ -120,11 +144,78 @@ pub async fn index(
         }
     }
 
-    Ok(Json(
-        result_streams
-            .into_values()
-            .collect::<Vec<api::response::Stream>>(),
-    ))
+    let mut result: Vec<Stream> = result_streams.into_values().collect();
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    for stream in &mut result {
+        stream.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+        stream.subscribe.sessions.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    result
+}
+
+/// Browser-facing counterpart of liveion's `/api/sse/streams`: pushes the
+/// merged cluster view (the same payload `index` serves) to dashboards.
+/// Sends an initial snapshot immediately, then re-reads storage on every
+/// change notification and on the idle cadence; identical consecutive
+/// payloads are suppressed like liveion's.
+pub async fn sse(
+    State(mut state): State<AppState>,
+    Query(query_extract): Query<QueryExtract>,
+) -> Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let (send, recv) = tokio::sync::mpsc::channel(16);
+    let mut change_recv = state.storage.change_subscribe();
+    let cancel = state.cancel.clone();
+    tokio::spawn(async move {
+        let mut last_payload: Option<String> = None;
+
+        async fn send_snapshot(
+            state: &mut AppState,
+            nodes: &[String],
+            last_payload: &mut Option<String>,
+            send: &tokio::sync::mpsc::Sender<Vec<Stream>>,
+        ) -> bool {
+            let streams = merged_streams(state, nodes).await;
+            let Ok(payload) = serde_json::to_string(&streams) else {
+                // Plain-data structs cannot realistically fail to serialize;
+                // keep the stream alive if they ever do.
+                return true;
+            };
+            if last_payload.as_deref() == Some(payload.as_str()) {
+                return true;
+            }
+            trace!("sse send merged snapshot with {} streams", streams.len());
+            *last_payload = Some(payload);
+            send.send(streams).await.is_ok()
+        }
+
+        // Send an initial snapshot so the client has current state immediately.
+        if !send_snapshot(&mut state, &query_extract.nodes, &mut last_payload, &send).await {
+            return;
+        }
+
+        loop {
+            tokio::select! {
+                // Storage mutation: `watch` is level-triggered, so a burst
+                // of snapshot applies coalesces into one wakeup, and a
+                // closed channel ends the loop.
+                result = change_recv.changed() => {
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(SSE_IDLE_INTERVAL) => {}
+                // End the stream on shutdown: a never-ending response
+                // would otherwise hold graceful shutdown open.
+                _ = cancel.cancelled() => break,
+            }
+            if !send_snapshot(&mut state, &query_extract.nodes, &mut last_payload, &send).await {
+                break;
+            }
+        }
+    });
+    let stream =
+        ReceiverStream::new(recv).map(|streams| Ok(Event::default().json_data(streams).unwrap()));
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 pub async fn show(

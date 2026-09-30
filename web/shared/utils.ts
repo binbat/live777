@@ -8,6 +8,27 @@ export const formatTime = (timestamp: number) => new Date(timestamp).toLocaleStr
     hourCycle: 'h23'
 });
 
+/**
+ * Compact timestamp for dense table cells: `HH:mm:ss` within the same day,
+ * `MM/DD` otherwise. Pair with a `formatTime` tooltip so the full value
+ * stays one hover away.
+ */
+export const formatTimeShort = (timestamp: number) => {
+    const date = new Date(timestamp);
+    if (date.toDateString() === new Date().toDateString()) {
+        return date.toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23'
+        });
+    }
+    return date.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit'
+    });
+};
+
 export const formatVideoTrackResolution = (track: MediaStreamTrack): string => {
     // firefox@127 returns empty object for this
     const { width, height, frameRate } = track.getSettings();
