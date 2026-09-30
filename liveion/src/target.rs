@@ -1,9 +1,11 @@
-//! Static WHIP push targets (declarative cascade-push).
+//! Static output targets (declarative cascade-push / RTP sender).
 //!
-//! A `[[stream.<name>.targets]]` config entry pushes the stream to a
-//! downstream WHIP endpoint (typically another live777 node) — the static
-//! counterpart of `POST /api/cascade/{stream}` with a `target_url`, just as
-//! the WHEP source is the static counterpart of a cascade pull.
+//! A `[[stream.<name>.targets]]` config entry with a `whip://`/`whips://` URL
+//! pushes the stream to a downstream WHIP endpoint (typically another
+//! live777 node) — the static counterpart of `POST /api/cascade/{stream}`
+//! with a `target_url`, just as the WHEP source is the static counterpart
+//! of a cascade pull. An `rtp://` URL instead sends the media out as plain
+//! RTP over UDP, see [`crate::target_rtp`].
 //!
 //! The push is media-driven: one supervisor task per target establishes the
 //! cascade-push session when the stream gains a publisher (`PublishStarted`,
@@ -23,15 +25,24 @@
 //! downstream is back, capped at roughly one source restart per minute.
 
 use std::sync::Arc;
+#[cfg(feature = "target-whip")]
 use std::time::Duration;
 
+#[cfg(feature = "target-whip")]
 use libwish::{Client, parse_whip_url};
+#[cfg(feature = "target-whip")]
 use tokio::sync::broadcast;
+#[cfg(feature = "target-whip")]
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "target-whip")]
+use tracing::{debug, warn};
+use tracing::{error, info};
 
+#[cfg(feature = "target-whip")]
 use crate::config::TargetConfig;
+#[cfg(feature = "target-whip")]
 use crate::event::{Event, StreamDeleteReason};
+#[cfg(feature = "target-whip")]
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
 
@@ -44,19 +55,38 @@ pub fn init(manager: Arc<Manager>) {
         return;
     }
     info!(
-        "[Server] Starting {} configured WHIP target(s)...",
+        "[Server] Starting {} configured target(s)...",
         targets.len()
     );
     for (stream, target) in targets {
-        match TargetContext::new(manager.clone(), stream, target) {
-            Ok(ctx) => {
-                tokio::spawn(ctx.run());
-            }
-            Err(e) => error!("[target] {}", e),
+        // Config validation already rejected unknown schemes; stay
+        // defensive so a programmatic config cannot panic the dispatch.
+        let scheme = target
+            .url
+            .trim()
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match scheme.as_str() {
+            #[cfg(feature = "target-whip")]
+            "whip" | "whips" => match TargetContext::new(manager.clone(), stream, target) {
+                Ok(ctx) => {
+                    tokio::spawn(ctx.run());
+                }
+                Err(e) => error!("[target] {}", e),
+            },
+            #[cfg(feature = "target-rtp")]
+            "rtp" => crate::target_rtp::spawn(manager.clone(), stream, target),
+            _ => error!(
+                "[target] [{}] unsupported target url scheme: {}",
+                stream, target.url
+            ),
         }
     }
 }
 
+#[cfg(feature = "target-whip")]
 struct TargetContext {
     manager: Arc<Manager>,
     stream: String,
@@ -67,6 +97,7 @@ struct TargetContext {
     cancel: CancellationToken,
 }
 
+#[cfg(feature = "target-whip")]
 impl TargetContext {
     fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
         let (url, token) = parse_whip_url(&target.url)
@@ -311,6 +342,7 @@ impl TargetContext {
 /// userinfo rules, and that the token (if any) is usable as a Bearer header
 /// value. Called from `Config::validate` so misconfiguration fails at
 /// startup instead of surfacing once in a supervisor log line.
+#[cfg(feature = "target-whip")]
 pub(crate) fn validate_target_url(raw: &str) -> anyhow::Result<()> {
     let (_, token) = parse_whip_url(raw)?;
     // The token reaches the Authorization header verbatim on every push.

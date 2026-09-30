@@ -566,7 +566,13 @@ impl Manager {
     /// Whether `stream` is a provisioned stream with `on_demand = true`.
     /// Drives the recorder's publish-triggered recording for such streams,
     /// and the target supervisor's on-demand source kick.
-    #[cfg(any(feature = "recorder", all(feature = "target-whip", feature = "source")))]
+    #[cfg(any(
+        feature = "recorder",
+        all(
+            feature = "source",
+            any(feature = "target-whip", feature = "target-rtp")
+        )
+    ))]
     pub fn is_on_demand_stream(&self, stream: &str) -> bool {
         self.config
             .stream
@@ -1023,10 +1029,10 @@ impl Manager {
         }
     }
 
-    /// Static WHIP push targets declared in the config file, as
+    /// Static output targets declared in the config file, as
     /// `(stream, target)` pairs sorted by stream name for a deterministic
     /// startup order.
-    #[cfg(feature = "target-whip")]
+    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
     pub fn static_targets(&self) -> Vec<(String, crate::config::TargetConfig)> {
         let mut targets: Vec<(String, crate::config::TargetConfig)> = self
             .config
@@ -1045,7 +1051,7 @@ impl Manager {
     }
 
     /// Shutdown token shared by the manager's background tasks.
-    #[cfg(feature = "target-whip")]
+    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -1741,7 +1747,7 @@ impl Manager {
         self.stats_version.subscribe()
     }
 
-    #[cfg(any(feature = "rtsp", feature = "recorder"))]
+    #[cfg(any(feature = "rtsp", feature = "recorder", feature = "target-rtp"))]
     pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()

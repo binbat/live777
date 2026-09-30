@@ -90,6 +90,8 @@ source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
 # Static WHIP push targets (declarative cascade-push)
 target-whip = ["cascade"]
+# Static RTP/UDP multicast (or unicast) output targets
+target-rtp = ["dep:socket2", "dep:libc", "dep:livetwo"]
 
 native-source = ["source", "dep:livehal"]
 
