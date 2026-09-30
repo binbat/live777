@@ -417,11 +417,14 @@ async fn do_node_info_check(state: &AppState) {
 
     // Fetches run concurrently so one stalling node cannot delay the rest;
     // bodies are read inside the spawned tasks like the streams poll does.
+    // Each successful fetch's round-trip is recorded as a contact RTT
+    // sample — for SSE and net4mqtt nodes it is the only periodic one.
     let handles = stale
         .into_iter()
         .map(|(alias, node)| {
             let client = state.client.clone();
             tokio::spawn(async move {
+                let start = Instant::now();
                 let mut req = client.get(format!(
                     "{}{}",
                     node.url.trim_end_matches('/'),
@@ -437,14 +440,14 @@ async fn do_node_info_check(state: &AppState) {
                     .json::<api::response::ServerInfo>()
                     .await
                     .ok()?;
-                Some((alias, info))
+                Some((alias, info, start.elapsed()))
             })
         })
         .collect::<Vec<_>>();
 
     for handle in handles {
-        if let Ok(Some((alias, info))) = handle.await {
-            state.storage.node_set_info(&alias, info);
+        if let Ok(Some((alias, info, rtt))) = handle.await {
+            state.storage.node_set_info(&alias, info, rtt);
         }
     }
 }

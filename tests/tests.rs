@@ -179,6 +179,60 @@ async fn test_liveman_nodes_carry_node_build_info() {
 }
 
 #[tokio::test]
+async fn test_liveman_nodes_sse_delay() {
+    // SSE-mode nodes have no streams poll to measure an RTT from; the SSE
+    // connect handshake (and the periodic build-info fetch) must feed the
+    // Delay column instead of leaving it at "-" forever.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        mode: liveman::config::UpdateMode::Sse,
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    // The SSE connect runs at liveman startup, so the RTT sample lands
+    // within the first contact.
+    let nodes_url = format!("http://{liveman_addr}/api/nodes/");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let nodes = reqwest::get(&nodes_url)
+            .await
+            .unwrap()
+            .json::<Vec<serde_json::Value>>()
+            .await
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        let duration = nodes[0]["duration"].as_str().unwrap_or_default();
+        if duration
+            .strip_suffix("ms")
+            .and_then(|ms| ms.parse::<u64>().ok())
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SSE node delay stayed at \"{duration}\" instead of an RTT sample"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test]
 async fn test_liveman_streams_sse() {
     // liveman's dashboard SSE endpoint (`GET /api/sse/streams`, the
     // counterpart of liveion's): it must push the merged cluster view as

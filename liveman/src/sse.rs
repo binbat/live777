@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use api::response::Stream;
 use http::header;
@@ -44,6 +44,7 @@ pub async fn subscribe_streams(
         .unwrap();
 
     loop {
+        let contact_start = Instant::now();
         select! {
             _ = cancel.cancelled() => {
                 info!(alias, "sse subscriber cancelled");
@@ -80,8 +81,11 @@ pub async fn subscribe_streams(
                             continue;
                         }
 
-                        // A live SSE connection is this node's liveness signal.
-                        storage.node_set_online(&alias, true, None);
+                        // A live SSE connection is this node's liveness
+                        // signal; the handshake doubles as the node's RTT
+                        // sample for the dashboard (SSE nodes have no poll
+                        // to measure one from).
+                        storage.node_set_online(&alias, true, Some(contact_start.elapsed()));
 
                         let stream = resp
                             .bytes_stream()

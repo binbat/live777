@@ -81,7 +81,7 @@ Response: [200]
 - `alias`: String, 别名必须唯一
 - `url`: String, 节点 API 的 URL 地址
 - `status`: StringEnum("running" | "stopped"), 节点连通状态：`poll` 节点反映最近一次轮询结果（任何 HTTP 响应都视为可达），`sse` 节点反映 SSE 连接状态，net4mqtt 节点反映发现（presence）状态
-- `duration`: String, 最近一次轮询的往返耗时（如 `"12ms"`）；无轮询的节点（SSE / net4mqtt）为 `"-"`
+- `duration`: String, 最近一次节点接触的往返耗时（如 `"12ms"`）：`poll` 节点为轮询 RTT，`sse` 节点为连接握手 RTT，或者 liveman 刷新节点构建信息时 `/api/info` 请求的 RTT；首次成功接触前为 `"-"`
 - `info`: Object, 可选 — 节点自身 `GET /api/info` 的构建信息（`version`、`gitHash`、`buildTime`、`features`），由 liveman 缓存并在节点重连时刷新；首次拉取成功前不出现该字段
 
 例如:

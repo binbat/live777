@@ -39,7 +39,9 @@ pub struct Node {
     pub online: bool,
 
     streams: Vec<Stream>,
-    /// Round-trip time of the last successful poll contact.
+    /// Round-trip of the last successful node contact: the poll RTT for
+    /// poll-mode nodes, the SSE connect handshake RTT for SSE nodes, or
+    /// the `/api/info` fetch RTT whenever the build info is refreshed.
     pub duration: Option<Duration>,
     /// Build/version info fetched from the node's `GET /api/info` by
     /// `tick::node_info_check`; `None` until the first successful fetch.
@@ -622,11 +624,14 @@ impl Storage {
         }
     }
 
-    /// Cache a node's `GET /api/info` response for the dashboard.
-    pub fn node_set_info(&self, alias: &str, info: api::response::ServerInfo) {
+    /// Cache a node's `GET /api/info` response for the dashboard. The
+    /// fetch doubles as a contact RTT sample — for SSE and net4mqtt nodes
+    /// (no poll to measure one from) it is the only periodic RTT source.
+    pub fn node_set_info(&self, alias: &str, info: api::response::ServerInfo, rtt: Duration) {
         if let Some(node) = self.list.write().unwrap().get_mut(alias) {
             node.info = Some(info);
             node.info_fetched_at = Some(Instant::now());
+            node.duration = Some(rtt);
         }
     }
 
