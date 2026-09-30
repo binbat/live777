@@ -136,6 +136,10 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_publish(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -150,6 +154,7 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                             "publish",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
@@ -235,21 +240,28 @@ pub(crate) async fn wait_for_peer_connected(
 }
 
 /// How long a peer may stay `Disconnected` before we stop waiting for ICE
-/// recovery and close it (teardown then follows the normal `Closed` path).
+/// recovery and close it. Teardown does NOT follow a `Closed` event —
+/// `close()` aborts the webrtc driver, so the watchdog removes the session
+/// directly after closing.
 const DISCONNECTED_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Give a `Disconnected` peer time to recover (transient network blip, ICE
-/// restart); if it is still disconnected when the grace expires, close it so
-/// teardown follows the normal `Closed` path instead of lingering as a
-/// zombie session with dead forwarding loops.
+/// restart); if it is still disconnected when the grace expires, close it and
+/// remove the session directly. The direct removal is load-bearing: webrtc's
+/// `close()` aborts the driver task, so the `Closed` state event that would
+/// normally drive session removal is never emitted, and without this the
+/// session lingers as a zombie in `Disconnected` forever. Both `remove_*`
+/// paths are idempotent no-ops if the `Closed` event did get delivered first.
 fn spawn_disconnected_watchdog(
     stream: String,
     role: &'static str,
     connection_state_tx: &watch::Sender<RTCPeerConnectionState>,
     peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
 ) {
     let mut state_rx = connection_state_tx.subscribe();
     let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
     tokio::spawn(async move {
         let wait = async {
             while matches!(*state_rx.borrow(), RTCPeerConnectionState::Disconnected) {
@@ -271,6 +283,91 @@ fn spawn_disconnected_watchdog(
             );
             if let Some(peer) = peer.upgrade() {
                 let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Backstop for sessions that never reach `Connected` at all: the `Failed`
+/// and `Disconnected` paths only fire once ICE actually ran, so a client
+/// that dies after the answer but before connectivity checks would
+/// otherwise sit in `New`/`Connecting` forever — pinning the stream against
+/// both auto-delete reapers and, for a publisher, rejecting every later
+/// publisher with 409. Once the state leaves New/Connecting in any
+/// direction (`Connected`, `Failed`, `Closed`, or `Disconnected`, which its
+/// own watchdog bounds), this task exits quietly.
+fn spawn_establish_watchdog(
+    stream: String,
+    role: &'static str,
+    mut connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
+) {
+    let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
+    tokio::spawn(async move {
+        let established = async {
+            while matches!(
+                *connection_state_rx.borrow(),
+                RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting
+            ) {
+                if connection_state_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        if tokio::time::timeout(PUBLISH_CONNECTED_TIMEOUT, established)
+            .await
+            .is_err()
+        {
+            warn!(
+                "[{}] [{}] connection not established after {}s, closing",
+                stream,
+                role,
+                PUBLISH_CONNECTED_TIMEOUT.as_secs()
+            );
+            if let Some(peer) = peer.upgrade() {
+                let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    // Idempotent no-op when another path already removed (or,
+                    // for publish, replaced) the session.
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] establish watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
             }
         }
     });
@@ -318,6 +415,10 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_subscribe(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -332,6 +433,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                             "subscribe",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
@@ -1544,6 +1646,68 @@ impl PeerForwardInternal {
         Ok(Some(session_id))
     }
 
+    /// Displace the incumbent publisher when it is a cascade pull whose peer
+    /// is no longer connected: the hop's supervisor (liveman) re-issues the
+    /// pull, and replacing here — like `replace_publish` — keeps subscribers
+    /// attached through the media-generation machinery instead of dropping
+    /// them with a publisher-leave teardown. A still-connected cascade-pull
+    /// incumbent and any plain WHIP publisher keep their hard conflict.
+    #[cfg(feature = "cascade")]
+    pub(crate) async fn replace_dead_cascade_pull_incumbent(&self) -> Result<Option<String>> {
+        let dead = {
+            let publish = self.publish.read().await;
+            match publish.as_ref() {
+                Some(p) => {
+                    p.cascade.is_some()
+                        && matches!(
+                            p.connection_state(),
+                            RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                        )
+                }
+                None => false,
+            }
+        };
+        if !dead {
+            return Ok(None);
+        }
+        // Aggregated before the `publish` write lock, mirroring
+        // `replace_publish` (lock order: `publish_tracks` before `publish`).
+        let stats = self.current_publish_stats().await;
+        let (old_peer, session_info) = {
+            let mut publish = self.publish.write().await;
+            let Some(current) = publish.as_ref() else {
+                return Ok(None);
+            };
+            // Recheck under the write lock: a re-issued pull may have
+            // attached since the read pass.
+            if current.cascade.is_none()
+                || !matches!(
+                    current.connection_state(),
+                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                )
+            {
+                return Ok(None);
+            }
+            let mut session_info = current.info(stats).await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
+            let old = publish.take().unwrap();
+            (old.peer.clone(), session_info)
+        };
+        let session_id = session_info.id.clone();
+        info!(
+            "[{}] [publish] {} replaced: dead cascade-pull incumbent",
+            self.stream, session_id
+        );
+        // Close before cleanup, mirroring `replace_publish`: the close
+        // re-enters `remove_publish` via the state handler, which is a no-op
+        // because the session is already out of `publish`.
+        let _ = old_peer.close().await;
+        self.do_remove_publish_cleanup(session_info, SessionStopReason::Replaced)
+            .await;
+        Ok(Some(session_id))
+    }
+
     /// Register a publish session. Returns the new session ID on success.
     pub(crate) async fn set_publish(
         &self,
@@ -1808,6 +1972,13 @@ impl PeerForwardInternal {
         handler.set_peer(Arc::downgrade(&peer)).await;
         // Store weak ref so the handler can find the peer during events
         *self.publish_peer_ref.lock().await = Some(Arc::downgrade(&peer));
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "publish",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         let mut transceiver_kinds = vec![];
         if media_info.video_transceiver.0 > 0 {
@@ -2035,6 +2206,13 @@ impl PeerForwardInternal {
                 .await?,
         );
         handler.set_peer(Arc::downgrade(&peer)).await;
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "subscribe",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         // The session ID is allocated up front (not in `add_subscribe`) so
         // the sender-setup logs below can already be attributed to it.

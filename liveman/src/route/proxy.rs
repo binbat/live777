@@ -17,6 +17,7 @@ use iceserver::{cloudflare, coturn, format_iceserver, link_header};
 use crate::route::cascade;
 use crate::route::node;
 use crate::route::recorder;
+use crate::route::source;
 use crate::route::storage;
 use crate::route::stream;
 use crate::store::Server;
@@ -54,6 +55,7 @@ pub fn route() -> Router<AppState> {
         .route("/api/streams/{stream}", post(stream::create))
         .route("/api/streams/{stream}", delete(stream::destroy))
         .merge(recorder::route())
+        .merge(source::route())
         .merge(storage::route())
 }
 
@@ -65,8 +67,13 @@ async fn api_whip(
     let uri = format!("/whip/{stream}");
     *req.uri_mut() = Uri::try_from(uri).unwrap();
 
-    match state.storage.get_map_server().get(&alias) {
-        Some(server) => request_proxy(state, req, server).await,
+    match state.storage.get_map_server().get(&alias).cloned() {
+        Some(server) => {
+            let res = request_proxy(state.clone(), req, &server).await?;
+            let location = session_location_of(&res, "WHIP");
+            record_session_location(&state, location, &stream, &server.alias, "WHIP").await;
+            Ok(res)
+        }
         None => Err(AppError::NoAvailableNode),
     }
 }
@@ -79,10 +86,62 @@ async fn api_whep(
     let uri = format!("/whep/{stream}");
     *req.uri_mut() = Uri::try_from(uri).unwrap();
 
-    match state.storage.get_map_server().get(&alias) {
-        Some(server) => request_proxy(state, req, server).await,
+    match state.storage.get_map_server().get(&alias).cloned() {
+        Some(server) => {
+            let res = request_proxy(state.clone(), req, &server).await?;
+            let location = session_location_of(&res, "WHEP");
+            record_session_location(&state, location, &stream, &server.alias, "WHEP").await;
+            Ok(res)
+        }
         None => Err(AppError::NoAvailableNode),
     }
+}
+
+/// Eagerly record the stream -> node and session -> node mappings from a
+/// proxied WHIP/WHEP response, so session routing (trickle PATCH, DELETE)
+/// and capacity accounting work before the next node snapshot (SSE or poll)
+/// arrives. `location` is the response's Location header, extracted by the
+/// caller (`Response<Body>` is not `Sync`, so it must not cross an `.await`).
+async fn record_session_location(
+    state: &AppState,
+    location: Option<String>,
+    stream: &str,
+    alias: &str,
+    op: &str,
+) {
+    let Some(location) = location else {
+        error!("{op} Error: Location not found");
+        return;
+    };
+    state
+        .storage
+        .stream_put(stream.to_string(), alias.to_string())
+        .await
+        .unwrap();
+    state
+        .storage
+        .session_put(location.clone(), alias.to_string())
+        .await
+        .unwrap();
+    // Overlay the session on capacity accounting until the next snapshot
+    // makes it authoritative (publishers don't consume subscriber capacity).
+    if op == "WHEP" {
+        state
+            .storage
+            .pending_sub_add(location, alias.to_string(), stream.to_string());
+    }
+}
+
+/// Pull the fields `record_session_location` needs out of a proxied
+/// response, logging non-success responses.
+fn session_location_of(res: &Response, op: &str) -> Option<String> {
+    if !res.status().is_success() {
+        error!("{op} Error: {:?}", res);
+        return None;
+    }
+    res.headers()
+        .get(header::LOCATION)
+        .map(|v| String::from(v.to_str().unwrap()))
 }
 
 async fn extra_ice(
@@ -157,33 +216,10 @@ async fn whip(
             let resp = request_proxy(state.clone(), req, &server).await;
             match resp {
                 Ok(mut res) => {
+                    let location = session_location_of(&res, "WHIP");
+                    record_session_location(&state, location, &stream, &server.alias, "WHIP").await;
                     extra_ice(res.headers_mut(), state.config.extra_ice).await?;
-
-                    if res.status().is_success() {
-                        match res.headers().get(header::LOCATION) {
-                            Some(location) => {
-                                state
-                                    .storage
-                                    .stream_put(stream.clone(), server.alias.clone())
-                                    .await
-                                    .unwrap();
-
-                                state
-                                    .storage
-                                    .session_put(
-                                        String::from(location.to_str().unwrap()),
-                                        server.alias,
-                                    )
-                                    .await
-                                    .unwrap();
-                            }
-                            None => error!("WHIP Error: Location not found"),
-                        };
-                        Ok(res)
-                    } else {
-                        error!("WHIP Error: {:?}", res);
-                        Ok(res)
-                    }
+                    Ok(res)
                 }
                 Err(e) => Err(e),
             }
@@ -198,6 +234,10 @@ async fn whep(
     Query(query_extract): Query<QueryExtract>,
     req: Request,
 ) -> Result<Response> {
+    // Serialize admission per stream: the capacity check below and the
+    // session creation it justifies must be atomic, or two concurrent
+    // viewers both pass a sub_max = 1 check before either session exists.
+    let _admission = state.whep_lock(&stream).lock_owned().await;
     let mut servers = state.storage.stream_get(stream.clone()).await.unwrap();
     if !query_extract.nodes.is_empty() {
         servers.retain(|x| query_extract.nodes.contains(&x.alias));
@@ -224,22 +264,10 @@ async fn whep(
             let resp = request_proxy(state.clone(), req, &server).await;
             match resp {
                 Ok(mut res) => {
+                    let location = session_location_of(&res, "WHEP");
+                    record_session_location(&state, location, &stream, &server.alias, "WHEP").await;
                     extra_ice(res.headers_mut(), state.config.extra_ice).await?;
-
-                    if res.status().is_success() {
-                        match res.headers().get(header::LOCATION) {
-                            Some(location) => state
-                                .storage
-                                .session_put(String::from(location.to_str().unwrap()), server.alias)
-                                .await
-                                .unwrap(),
-                            None => error!("WHEP Error: Location not found {:?}", res),
-                        };
-                        Ok(res)
-                    } else {
-                        error!("WHEP Error: {:?}", res);
-                        Ok(res)
-                    }
+                    Ok(res)
                 }
                 Err(e) => Err(e),
             }
@@ -253,14 +281,27 @@ async fn session(
     Path((stream, session)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response> {
-    let session = api::path::session(&stream, &session);
-    match state.storage.session_get(session).await {
-        Ok(server) => request_proxy(state, req, &server).await,
+    let session_path = api::path::session(&stream, &session);
+    let is_delete = req.method() == http::Method::DELETE;
+    match state.storage.session_get(session_path.clone()).await {
+        Ok(server) => {
+            let res = request_proxy(state.clone(), req, &server).await?;
+            // A deleted session leaves the routing table immediately; the
+            // node snapshot (SSE or poll) only converges later.
+            if is_delete && res.status().is_success() {
+                state.storage.session_remove(&session_path).await?;
+            }
+            Ok(res)
+        }
         Err(_) => Err(AppError::ResourceNotFound),
     }
 }
 
-async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Result<Response> {
+pub(crate) async fn request_proxy(
+    state: AppState,
+    mut req: Request,
+    target: &Server,
+) -> Result<Response> {
     Span::current().record("target_addr", target.url.clone());
     let path = req.uri().path();
     let path_query = req
@@ -295,9 +336,13 @@ async fn request_proxy(state: AppState, mut req: Request, target: &Server) -> Re
 
 async fn maximum_idle_node(
     mut state: AppState,
-    servers: Vec<Server>,
+    mut servers: Vec<Server>,
     stream: String,
 ) -> Option<Server> {
+    // Never route a viewer to an offline node: it has the largest apparent
+    // remaining capacity (its snapshot is stale) and the proxy would just
+    // fail.
+    state.storage.filter_online(&mut servers);
     if servers.is_empty() {
         return None;
     }
@@ -319,8 +364,38 @@ async fn maximum_idle_node(
         for s in servers.clone() {
             if s.alias == alias {
                 let remain = match i.clone() {
-                    Some(x) => s.sub_max as i32 - x.subscribe.sessions.len() as i32,
-                    None => s.sub_max as i32,
+                    Some(x) => {
+                        // A publisher-less, non-provisioned stream is a shell
+                        // left behind by a torn-down cascade: no media to
+                        // offer, so it must never win routing (remain = 0 is
+                        // never picked). Provisioned standby streams (e.g.
+                        // on-demand) are exempt — their source starts when a
+                        // viewer arrives.
+                        let has_publisher = x
+                            .publish
+                            .sessions
+                            .iter()
+                            .any(|p| p.state != api::response::RTCPeerConnectionState::Closed);
+                        if !x.provisioned && !has_publisher {
+                            0
+                        } else {
+                            // Closed sessions linger in the node snapshot for
+                            // display (a 30 s TTL); they no longer hold capacity.
+                            let active = x
+                                .subscribe
+                                .sessions
+                                .iter()
+                                .filter(|s| {
+                                    s.state != api::response::RTCPeerConnectionState::Closed
+                                })
+                                .count()
+                                + state.storage.pending_sub_count(&alias, &stream);
+                            s.sub_max as i32 - active as i32
+                        }
+                    }
+                    None => {
+                        s.sub_max as i32 - state.storage.pending_sub_count(&alias, &stream) as i32
+                    }
                 };
 
                 if remain > max {

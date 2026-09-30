@@ -45,7 +45,6 @@ mod tests {
     use std::collections::HashMap;
 
     fn strategy(
-        each_stream_max_sub: u16,
         cascade_push_close_sub: bool,
         auto_create_whip: bool,
         auto_create_whep: bool,
@@ -53,7 +52,6 @@ mod tests {
         auto_delete_whep: i64,
     ) -> api::strategy::Strategy {
         api::strategy::Strategy {
-            each_stream_max_sub: api::strategy::EachStreamMaxSub(each_stream_max_sub),
             cascade_push_close_sub,
             auto_create_whip,
             auto_create_whep,
@@ -76,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_effective_strategy_no_override() {
-        let global = strategy(10, false, true, true, -1, -1);
+        let global = strategy(false, true, true, -1, -1);
         let cfg = config_with_strategy(global.clone(), HashMap::new());
         let manager_cfg = ManagerConfig::from_config(cfg);
         let effective = manager_cfg.effective_strategy("unknown");
@@ -85,22 +83,18 @@ mod tests {
 
     #[test]
     fn test_effective_strategy_with_override() {
-        let global = strategy(10, false, true, true, -1, -1);
+        let global = strategy(false, true, true, -1, -1);
         let mut streams = HashMap::new();
         streams.insert(
             "cam1".to_string(),
             crate::config::StreamEntry {
-                strategy: Some(strategy(2, true, false, false, 0, 1000)),
+                strategy: Some(strategy(true, false, false, 0, 1000)),
                 ..Default::default()
             },
         );
         let cfg = config_with_strategy(global, streams);
         let manager_cfg = ManagerConfig::from_config(cfg);
         let effective = manager_cfg.effective_strategy("cam1");
-        assert_eq!(
-            effective.each_stream_max_sub,
-            api::strategy::EachStreamMaxSub(2)
-        );
         assert!(effective.cascade_push_close_sub);
         assert!(!effective.auto_create_whip);
         assert!(!effective.auto_create_whep);
@@ -116,12 +110,12 @@ mod tests {
 
     #[test]
     fn test_effective_strategy_unknown_stream_uses_global() {
-        let global = strategy(20, true, false, false, 500, 1500);
+        let global = strategy(true, false, false, 500, 1500);
         let mut streams = HashMap::new();
         streams.insert(
             "cam1".to_string(),
             crate::config::StreamEntry {
-                strategy: Some(strategy(2, false, true, true, 0, 1000)),
+                strategy: Some(strategy(false, true, true, 0, 1000)),
                 ..Default::default()
             },
         );

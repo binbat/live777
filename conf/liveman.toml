@@ -65,9 +65,6 @@
 # level = "warn"
 
 [cascade]
-# When a new whep beginning, and trigger cascade, check cascade status done times
-# Every times check after wait 100ms. If Mare than 5 * 500ms return error
-# check_attempts = 5
 # Check cluster all node cascade status time interval
 # Default: 60s
 # check_tick_time = 60000
@@ -154,6 +151,24 @@ enabled = false
 # url = "http://127.0.0.1:7777"
 # Update mechanism: "poll" (default) or "sse"
 # mode = "sse"
+# Per-stream subscriber capacity for WHEP routing and cascade target
+# selection (absent = unlimited). This is a liveman-side scheduling policy;
+# liveion does not enforce it.
+# sub_max = 1
+
+# [[node_rules]]
+# Policy for nodes without an explicit [[nodes]] entry — primarily
+# dynamically discovered (net4mqtt) nodes. Glob on the node alias; first
+# match wins. Nodes matching nothing get no limit.
+# pattern = "edge*"
+# sub_max = 1
+#
+# A catch-all last rule makes the default explicit — e.g. conservative:
+# unknown nodes may publish (act as sources) but never serve a viewer
+# directly, so cascades never land on an unrecognized node:
+# [[node_rules]]
+# pattern = "*"
+# sub_max = 0
 
 # [[nodes]]
 # alias = "static-1"

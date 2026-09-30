@@ -110,7 +110,6 @@ where
             .merge(admin::route())
             .merge(crate::route::stream::route())
             .merge(crate::route::recorder::route())
-            .merge(crate::route::strategy::route())
             .merge({
                 #[cfg(feature = "source")]
                 {

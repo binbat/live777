@@ -221,7 +221,7 @@ clients via Link headers).
 
 - Rust crate source lives in `src/` or `<crate>/src/`.
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
-  stream, strategy, source, recorder, info, sdp).
+  stream, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
   track, bridge, media, RTCP). Media statistics (issue #252): per-track and
   per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths

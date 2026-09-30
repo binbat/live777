@@ -80,10 +80,9 @@ Response: [200] Binary media data or [302] redirect to storage URL
 Response: [200]
 
 - `alias`: String, Alias must be unique
-- `url`: String, Node API URL  
-- `pub_max`: Int16, Maximum publish count
-- `sub_max`: Int16, Maximum subscribe count
-- `status`: StringEnum("running" | "stopped"), Node status
+- `url`: String, Node API URL
+- `status`: StringEnum("running" | "stopped"), Node contact health: the latest poll result for `poll` nodes (any HTTP response counts as reachable), the SSE connection state for `sse` nodes, and the discovery presence for net4mqtt nodes
+- `duration`: String, Round-trip of the latest poll (e.g. `"12ms"`); `"-"` for nodes without polls (SSE / net4mqtt)
 
 For Example:
 
@@ -92,26 +91,59 @@ For Example:
   {
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "3ms"
   },
   {
     "alias": "buildin-1",
     "url": "http://127.0.0.1:55582",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "5ms"
   },
   {
     "alias": "buildin-2",
     "url": "http://127.0.0.1:55583",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "stopped",
+    "duration": "-"
   }
 ]
 ```
+
+## Source
+
+Source management is proxied to a named node (`{alias}`): liveman rewrites each request to the same path on that node and forwards it with the node's bearer token injected, so cluster clients manage per-node sources through liveman only. Request/response bodies are the node's liveion source API — see [live777 API / Source](/guide/live777-api#source). An unknown alias fails with [503].
+
+`GET` `/api/sources/{alias}`
+
+List the node's sources.
+
+`POST` `/api/sources/{alias}/{stream}`
+
+Create a source. On success liveman eagerly registers the stream→node mapping so WHEP routing sees it before the next node snapshot.
+
+`GET` `/api/sources/{alias}/{stream}`
+
+Get source info.
+
+`DELETE` `/api/sources/{alias}/{stream}`
+
+Delete the source.
+
+`GET` `/api/sources/{alias}/{stream}/state`
+
+Get the source runtime state.
+
+`GET` `/api/sources/{alias}/{stream}/bitrate`
+
+Get the encoder bitrate telemetry.
+
+`GET` `/api/sources/{alias}/{stream}/tier`
+
+Get the source quality tiers.
+
+`POST` `/api/sources/{alias}/{stream}/tier`
+
+Apply a source quality tier.
 
 ## Stream
 

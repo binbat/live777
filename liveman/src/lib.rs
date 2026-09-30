@@ -62,7 +62,13 @@ where
         None
     };
 
-    let client_req = reqwest::Client::builder();
+    // Everything on `client_req` is a short request/response exchange
+    // (WHIP/WHEP proxying, session and cascade calls); SSE builds its own
+    // client in sse.rs. Bound it anyway so a node that accepts TCP but
+    // stalls cannot wedge the caller (notably the cascade supervisor).
+    let client_req = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30));
     let client_mem = reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(500))
         .timeout(Duration::from_millis(1000));
@@ -95,10 +101,9 @@ where
     let cancel = CancellationToken::new();
     let nodes = store.get_map_nodes_mut();
     for v in cfg.nodes.clone() {
-        nodes.write().unwrap().insert(
-            v.alias.clone(),
-            Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode),
-        );
+        let mut node = Node::new(v.token.clone(), NodeKind::Static, v.url.clone(), v.mode);
+        node.sub_max = v.sub_max.or_else(|| cfg.node_sub_max(&v.alias));
+        nodes.write().unwrap().insert(v.alias.clone(), node);
 
         if v.mode == UpdateMode::Sse {
             tokio::spawn(crate::sse::subscribe_streams(
@@ -173,6 +178,8 @@ where
             });
 
             let cancel_discovery = cancel.clone();
+            let discovery_nodes = cfg.nodes.clone();
+            let discovery_rules = crate::config::compile_node_rules(&cfg.node_rules);
             std::thread::spawn(move || {
                 let dns = net4mqtt::kxdns::Kxdns::new(domain);
                 tokio::runtime::Runtime::new()
@@ -188,15 +195,24 @@ where
                                     match msg {
                                         Some((agent_id, _local_id, data)) => {
                                             if data.len() > 5 {
-                                                nodes.write().unwrap().insert(
-                                                    agent_id.clone(),
-                                                    Node::new(
-                                                        "".to_string(),
-                                                        NodeKind::Net4mqtt,
-                                                        format!("http://{}", dns.registry(&agent_id)),
-                                                        UpdateMode::default(),
-                                                    ),
+                                                // Discovery presence is the
+                                                // liveness signal for
+                                                // net4mqtt nodes; policy
+                                                // comes from [[nodes]] /
+                                                // [[node_rules]] by alias.
+                                                let mut node = Node::new(
+                                                    "".to_string(),
+                                                    NodeKind::Net4mqtt,
+                                                    format!("http://{}", dns.registry(&agent_id)),
+                                                    UpdateMode::default(),
                                                 );
+                                                node.online = true;
+                                                node.sub_max = crate::config::resolve_sub_max_compiled(
+                                                    &discovery_nodes,
+                                                    &discovery_rules,
+                                                    &agent_id,
+                                                );
+                                                nodes.write().unwrap().insert(agent_id.clone(), node);
                                             } else {
                                                 nodes.write().unwrap().remove(&agent_id);
                                             }
@@ -262,6 +278,7 @@ where
         storage: store,
         database: database_service,
         record_sync_cursor: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        whep_locks: Arc::new(std::sync::RwLock::new(HashMap::new())),
         #[cfg(feature = "recorder")]
         file_storage,
     };
@@ -303,6 +320,8 @@ where
         .fallback(static_handler);
 
     tokio::spawn(tick::cascade_check(app_state.clone()));
+
+    tokio::spawn(route::cascade::cascade_supervisor(app_state.clone()));
 
     tokio::spawn(tick::auto_record_check(app_state.clone()));
 
@@ -346,6 +365,22 @@ struct AppState {
     storage: Storage,
     database: DatabaseService,
     record_sync_cursor: Arc<tokio::sync::RwLock<HashMap<String, i64>>>,
+    /// Per-stream WHEP admission locks: the capacity check and the session
+    /// creation it justifies must be one critical section, or two
+    /// concurrent viewers can both pass a `sub_max = 1` check before either
+    /// session exists in any snapshot.
+    whep_locks: Arc<std::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     #[cfg(feature = "recorder")]
     file_storage: Option<opendal::Operator>,
+}
+
+impl AppState {
+    fn whep_lock(&self, stream: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.whep_locks
+            .write()
+            .unwrap()
+            .entry(stream.to_string())
+            .or_default()
+            .clone()
+    }
 }

@@ -1,17 +1,21 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
-use chrono::Utc;
 use glob::Pattern;
 use http::header;
 use tracing::{error, info, warn};
 use url::Url;
 
 use crate::service::recordings_index::RecordingsIndexService;
-use crate::{AppState, error::AppError, result::Result, route::utils::session_delete};
+use crate::store::{CascadeIntent, Server};
+use crate::{AppState, result::Result, route::utils::session_delete};
 
 use api::recorder::{
     AckRecordingsRequest, DeleteRecordingsRequest, PullRecordingsRequest, RecordingKey,
 };
+use api::response::Stream;
 
 pub async fn cascade_check(state: AppState) {
     loop {
@@ -38,44 +42,148 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
         return Ok(());
     }
 
+    // Tracked intents are torn down when the source no longer hosts the
+    // stream at all, or when the destination has had no viewers for longer
+    // than maximum_idle_time. The idle mark is maintained here: the
+    // supervisor stops re-establishing a dead hop while nobody watches (see
+    // `CascadeIntent::idle_since`), and a viewer showing up again clears it.
+    for intent in state.storage.cascade_intents() {
+        let src_hosts = nodes
+            .get(&intent.src)
+            .map(|streams| streams.iter().any(|s| s.id == intent.stream))
+            .unwrap_or(false);
+        let mut intent = intent;
+        if has_active_viewers(&nodes, &intent.dst, &intent.stream) {
+            intent.idle_since = None;
+        } else if intent.idle_since.is_none() {
+            intent.idle_since = Some(Instant::now());
+        }
+        let idle_expired = intent
+            .idle_since
+            .map(|t| t.elapsed().as_millis() as u64 >= state.config.cascade.maximum_idle_time)
+            .unwrap_or(false);
+        if !src_hosts || idle_expired {
+            teardown_intent(&mut state, &intent, !src_hosts).await;
+        } else {
+            state.storage.cascade_intent_update(intent);
+        }
+    }
+
+    // Hops that exist on the nodes but have no intent (e.g. created before a
+    // liveman restart) are adopted while the destination still has viewers,
+    // and reaped otherwise.
     for (alias, streams) in nodes.iter() {
-        let server = map_server.get(alias).unwrap();
+        let Some(node) = map_server.get(alias) else {
+            continue;
+        };
         for stream_info in streams {
-            for session_info in &stream_info.subscribe.sessions {
-                if let Some(cascade_info) = &session_info.cascade
-                    && let Ok((target_node_addr, target_stream)) =
-                        parse_node_and_stream(cascade_info.target_url.clone().unwrap())
-                    && let Some(target_node) = map_url_server.get(&target_node_addr)
-                    && let Some(target_stream_info) = nodes
-                        .get(&target_node.alias)
-                        .unwrap()
-                        .iter()
-                        .find(|i| i.id == target_stream)
-                    && target_stream_info.subscribe.leave_at != 0
-                    && Utc::now().timestamp_millis()
-                        >= target_stream_info.subscribe.leave_at
-                            + state.config.cascade.maximum_idle_time as i64
-                {
+            // A push hop is visible on the SOURCE as a subscribe session
+            // marked with the target_url. Closed entries linger in the
+            // listing for a display TTL; they are not hops to reap.
+            for sub in &stream_info.subscribe.sessions {
+                if sub.state == api::response::RTCPeerConnectionState::Closed {
+                    continue;
+                }
+                let Some(cascade_info) = &sub.cascade else {
+                    continue;
+                };
+                let Some(target_url) = cascade_info.target_url.clone() else {
+                    continue;
+                };
+                let Some((dst, stream, form)) =
+                    resolve_cascade_target(&target_url, &map_server, &map_url_server)
+                else {
+                    continue;
+                };
+                // Adopt/reap only liveman's own pinned-form hops: a
+                // direct-form push may be a liveion static target whose own
+                // supervisor would re-establish it after any teardown here,
+                // causing a reap/recreate thrash.
+                if form != CascadeUrlForm::Pinned {
+                    continue;
+                }
+                if state.storage.cascade_intent_get(&stream).is_some() {
+                    continue;
+                }
+                if has_active_viewers(&nodes, &dst.alias, &stream) {
                     info!(
-                        ?server,
-                        stream_info.id,
-                        session_info.id,
-                        ?target_stream_info,
-                        "cascade idle for long periods of time"
+                        "adopt untracked push cascade: stream {}, {} -> {}",
+                        stream, alias, dst.alias
+                    );
+                    let mut intent = CascadeIntent::new(stream, alias.clone(), dst.alias.clone());
+                    // The hop is already established and its cleanup ran
+                    // before the restart; do not kick subscribers again.
+                    intent.subs_closed = true;
+                    intent.was_healthy = true;
+                    state.storage.cascade_intent_insert(intent);
+                } else {
+                    info!(
+                        ?node,
+                        stream_info.id, sub.id, "reap untracked push cascade with no viewers"
                     );
                     match session_delete(
                         state.client.clone(),
-                        server.clone(),
+                        node.clone(),
                         stream_info.id.clone(),
-                        session_info.id.clone(),
+                        sub.id.clone(),
                     )
                     .await
                     {
                         Ok(_) => {}
-                        Err(e) => {
-                            error!("cascade session delete error: {:?}", e)
-                        }
+                        Err(e) => error!("cascade session delete error: {:?}", e),
                     }
+                }
+            }
+            // A pull hop is visible on the DESTINATION as a publish session
+            // marked with the source_url.
+            for publish in &stream_info.publish.sessions {
+                if publish.state == api::response::RTCPeerConnectionState::Closed {
+                    continue;
+                }
+                let Some(cascade_info) = &publish.cascade else {
+                    continue;
+                };
+                let Some(source_url) = cascade_info.source_url.clone() else {
+                    continue;
+                };
+                let Some((src, stream, _)) =
+                    resolve_cascade_target(&source_url, &map_server, &map_url_server)
+                else {
+                    continue;
+                };
+                if state.storage.cascade_intent_get(&stream).is_some() {
+                    continue;
+                }
+                if has_active_viewers(&nodes, alias, &stream) {
+                    info!(
+                        "adopt untracked pull cascade: stream {}, {} -> {}",
+                        stream, src.alias, alias
+                    );
+                    let mut intent = CascadeIntent::new(stream, src.alias, alias.clone());
+                    intent.subs_closed = true;
+                    intent.was_healthy = true;
+                    state.storage.cascade_intent_insert(intent);
+                } else {
+                    info!(
+                        ?node,
+                        stream_info.id, publish.id, "reap untracked pull cascade with no viewers"
+                    );
+                    match session_delete(
+                        state.client.clone(),
+                        node.clone(),
+                        stream_info.id.clone(),
+                        publish.id.clone(),
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => error!("cascade session delete error: {:?}", e),
+                    }
+                    // The pull hop auto-created its destination stream; reap
+                    // the leftover shell too (no-op while anything is left
+                    // on it), so it cannot keep winning WHEP routing with no
+                    // publisher.
+                    delete_stream_if_idle(&mut state, node, &stream_info.id, &publish.id).await;
                 }
             }
         }
@@ -84,26 +192,190 @@ async fn do_cascade_check(mut state: AppState) -> Result<()> {
     Ok(())
 }
 
-fn parse_node_and_stream(url: String) -> Result<(String, String)> {
-    let url = Url::parse(&url)?;
-    let split: Vec<&str> = url.path().split('/').collect();
-    Ok((
-        format!(
-            "{}://{}:{}",
-            url.scheme(),
-            url.host_str()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("host error")))?,
-            url.port()
-                .ok_or(AppError::InternalServerError(anyhow::anyhow!("port error")))?
-        ),
-        split
-            .last()
+/// Tear down an intent's own hop wherever it is visible — on the source
+/// side of a push and the destination side of a pull, matched by the hop
+/// URL resolving to *this* intent's counterpart (never every marked
+/// session, which could belong to another intent or a static target) —
+/// then drop the intent.
+///
+/// `force_stream_delete` is set when the source no longer hosts the stream
+/// at all: any viewers left on the destination are zombies waiting on a
+/// publisher that is gone, so the destination stream is deleted outright
+/// instead of only when idle.
+async fn teardown_intent(state: &mut AppState, intent: &CascadeIntent, force_stream_delete: bool) {
+    info!(
+        "cascade intent teardown: stream {}, {} -> {}",
+        intent.stream, intent.src, intent.dst
+    );
+    let map_server = state.storage.get_map_server();
+    let mut map_url_server = HashMap::new();
+    for s in map_server.values() {
+        map_url_server.insert(s.url.clone(), s.clone());
+    }
+    if let Some(src) = map_server.get(&intent.src).cloned()
+        && let Ok(streams) = state.storage.info_get(src.alias.clone()).await
+    {
+        for stream_info in streams.iter().filter(|s| s.id == intent.stream) {
+            for sub in &stream_info.subscribe.sessions {
+                let resolves_here = sub
+                    .cascade
+                    .as_ref()
+                    .and_then(|c| c.target_url.as_ref())
+                    .and_then(|url| resolve_cascade_target(url, &map_server, &map_url_server))
+                    .map(|(node, stream, _)| node.alias == intent.dst && stream == intent.stream)
+                    .unwrap_or(false);
+                if resolves_here {
+                    let _ = session_delete(
+                        state.client.clone(),
+                        src.clone(),
+                        intent.stream.clone(),
+                        sub.id.clone(),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+    if let Some(dst) = map_server.get(&intent.dst).cloned() {
+        let mut pull_hop_id = None;
+        if let Ok(streams) = state.storage.info_get(dst.alias.clone()).await {
+            for stream_info in streams.iter().filter(|s| s.id == intent.stream) {
+                for publish in &stream_info.publish.sessions {
+                    let resolves_here = publish
+                        .cascade
+                        .as_ref()
+                        .and_then(|c| c.source_url.as_ref())
+                        .and_then(|url| resolve_cascade_target(url, &map_server, &map_url_server))
+                        .map(|(node, stream, _)| {
+                            node.alias == intent.src && stream == intent.stream
+                        })
+                        .unwrap_or(false);
+                    if resolves_here {
+                        pull_hop_id = Some(publish.id.clone());
+                        let _ = session_delete(
+                            state.client.clone(),
+                            dst.clone(),
+                            intent.stream.clone(),
+                            publish.id.clone(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        if force_stream_delete {
+            // The source is gone: viewers left on the destination can never
+            // receive media again — kick them by deleting the stream
+            // outright (best-effort; a provisioned stream refuses with 409,
+            // which is correct).
+            delete_stream(state, &dst, &intent.stream).await;
+        } else if let Some(hop_id) = pull_hop_id {
+            // A pull hop's destination stream is auto-created with the hop;
+            // once it has neither publisher nor viewers it would still host
+            // the stream and win routing with its huge remaining capacity,
+            // stranding the next viewer on an empty shell.
+            delete_stream_if_idle(state, &dst, &intent.stream, &hop_id).await;
+        }
+    }
+    state.storage.cascade_intent_remove(&intent.stream);
+}
+
+/// Delete a cascade destination stream when nothing is left on it. The
+/// just-deleted hop session (`exclude_session`) is ignored: the cached
+/// snapshot may still list it until the node's next SSE push.
+async fn delete_stream_if_idle(
+    state: &mut AppState,
+    node: &Server,
+    stream: &str,
+    exclude_session: &str,
+) {
+    let Ok(streams) = state.storage.info_get(node.alias.clone()).await else {
+        return;
+    };
+    let Some(info) = streams.iter().find(|s| s.id == stream) else {
+        return;
+    };
+    let has_pub = info.publish.sessions.iter().any(|p| {
+        p.id != exclude_session && p.state != api::response::RTCPeerConnectionState::Closed
+    });
+    let has_sub = info
+        .subscribe
+        .sessions
+        .iter()
+        .any(|s| s.state != api::response::RTCPeerConnectionState::Closed);
+    if has_pub || has_sub {
+        return;
+    }
+    delete_stream(state, node, stream).await;
+}
+
+/// Best-effort DELETE of a stream on a node; a provisioned stream refuses
+/// with 409, which is correct.
+async fn delete_stream(state: &AppState, node: &Server, stream: &str) {
+    let url = format!("{}{}", node.url, api::path::streams(stream));
+    let mut req = state.client.delete(url);
+    if !node.token.is_empty() {
+        req = req.bearer_auth(&node.token);
+    }
+    let _ = req.send().await;
+}
+
+fn has_active_viewers(nodes: &HashMap<String, Vec<Stream>>, alias: &str, stream: &str) -> bool {
+    nodes
+        .get(alias)
+        .and_then(|streams| streams.iter().find(|s| s.id == stream))
+        .map(|s| {
+            s.subscribe
+                .sessions
+                .iter()
+                .any(|x| x.state != api::response::RTCPeerConnectionState::Closed)
+        })
+        .unwrap_or(false)
+}
+
+/// Resolve a cascade `target_url`/`source_url` to its peer node and stream.
+/// Push cascades point at liveman's node-pinned endpoint
+/// (`{public}/api/whip/{alias}/{stream}`), so the node is resolved by alias;
+/// direct node addresses (`{node}/whip/{stream}`, `{node}/whep/{stream}`)
+/// are resolved by origin.
+fn resolve_cascade_target(
+    target_url: &str,
+    map_server: &HashMap<String, Server>,
+    map_url_server: &HashMap<String, Server>,
+) -> Option<(Server, String, CascadeUrlForm)> {
+    let url = Url::parse(target_url).ok()?;
+    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["api", "whip", alias, stream] => map_server
+            .get(*alias)
             .cloned()
-            .ok_or(AppError::InternalServerError(anyhow::anyhow!(
-                "url path split error"
-            )))?
-            .to_string(),
-    ))
+            .map(|node| (node, stream.to_string(), CascadeUrlForm::Pinned)),
+        ["whip", stream] | ["whep", stream] => {
+            let addr = format!(
+                "{}://{}:{}",
+                url.scheme(),
+                url.host_str()?,
+                url.port_or_known_default()?
+            );
+            map_url_server
+                .get(&addr)
+                .cloned()
+                .map(|node| (node, stream.to_string(), CascadeUrlForm::Direct))
+        }
+        _ => None,
+    }
+}
+
+/// Whether a cascade URL is liveman's own node-pinned form
+/// (`{public}/api/whip/{alias}/{stream}`) or a direct node address
+/// (`{node}/whip|whep/{stream}`). Only pinned-form hops are provably
+/// liveman-issued: direct-form pushes may be liveion static
+/// `[[stream.<name>.targets]]` or operator cascades, whose own supervisors
+/// would fight any adoption or teardown here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CascadeUrlForm {
+    Pinned,
+    Direct,
 }
 
 /// Liveman Auto Record Check
@@ -566,4 +838,87 @@ async fn do_auto_record_rotate(mut state: AppState) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(alias: &str, url: &str) -> Server {
+        Server {
+            alias: alias.to_string(),
+            url: url.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn maps() -> (HashMap<String, Server>, HashMap<String, Server>) {
+        let cloud = server("cloud", "http://127.0.0.1:7782");
+        let map_server = HashMap::from([("cloud".to_string(), cloud.clone())]);
+        let map_url_server = HashMap::from([(cloud.url.clone(), cloud)]);
+        (map_server, map_url_server)
+    }
+
+    #[test]
+    fn resolve_pinned_push_target_by_alias() {
+        let (map_server, map_url_server) = maps();
+        let (node, stream, form) = resolve_cascade_target(
+            "http://127.0.0.1:8890/api/whip/cloud/cam0",
+            &map_server,
+            &map_url_server,
+        )
+        .unwrap();
+        assert_eq!(node.alias, "cloud");
+        assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Pinned);
+    }
+
+    #[test]
+    fn resolve_direct_push_target_by_origin() {
+        let (map_server, map_url_server) = maps();
+        let (node, stream, form) = resolve_cascade_target(
+            "http://127.0.0.1:7782/whip/cam0",
+            &map_server,
+            &map_url_server,
+        )
+        .unwrap();
+        assert_eq!(node.alias, "cloud");
+        assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Direct);
+    }
+
+    #[test]
+    fn resolve_pull_source_by_origin() {
+        let (map_server, map_url_server) = maps();
+        let (node, stream, form) = resolve_cascade_target(
+            "http://127.0.0.1:7782/whep/cam0",
+            &map_server,
+            &map_url_server,
+        )
+        .unwrap();
+        assert_eq!(node.alias, "cloud");
+        assert_eq!(stream, "cam0");
+        assert_eq!(form, CascadeUrlForm::Direct);
+    }
+
+    #[test]
+    fn resolve_unknown_target_returns_none() {
+        let (map_server, map_url_server) = maps();
+        assert!(
+            resolve_cascade_target(
+                "http://127.0.0.1:8890/api/whip/ghost/cam0",
+                &map_server,
+                &map_url_server,
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_cascade_target(
+                "http://9.9.9.9:7782/whip/cam0",
+                &map_server,
+                &map_url_server,
+            )
+            .is_none()
+        );
+    }
 }

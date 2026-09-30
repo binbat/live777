@@ -54,6 +54,7 @@ pub async fn subscribe_streams(
                     Ok(resp) => {
                         let status = resp.status();
                         if !status.is_success() {
+                            storage.node_set_online(&alias, false, None);
                             if status == http::StatusCode::UNAUTHORIZED
                                 || status == http::StatusCode::FORBIDDEN
                             {
@@ -78,6 +79,9 @@ pub async fn subscribe_streams(
                             }
                             continue;
                         }
+
+                        // A live SSE connection is this node's liveness signal.
+                        storage.node_set_online(&alias, true, None);
 
                         let stream = resp
                             .bytes_stream()
@@ -126,10 +130,12 @@ pub async fn subscribe_streams(
                                         }
                                         Ok(None) => {
                                             warn!(alias, "sse stream closed");
+                                            storage.node_set_online(&alias, false, None);
                                             break;
                                         }
                                         Err(e) => {
                                             warn!(alias, error = ?e, "sse read error");
+                                            storage.node_set_online(&alias, false, None);
                                             break;
                                         }
                                     }
@@ -139,6 +145,7 @@ pub async fn subscribe_streams(
                     }
                     Err(e) => {
                         warn!(alias, error = ?e, "sse request error");
+                        storage.node_set_online(&alias, false, None);
                     }
                 }
             }

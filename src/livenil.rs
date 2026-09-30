@@ -96,15 +96,25 @@ async fn main() -> Result<()> {
         tokio::spawn(liveion::serve(cfg, listener, utils::shutdown_signal()));
     }
 
-    cfg.nodes.extend(
-        results
-            .into_iter()
-            .map(|(alias, addr)| liveman::config::Node {
+    // In-process nodes merge with (not duplicate) any same-alias [[nodes]]
+    // entry declared in liveman.toml: the declared entry contributes policy
+    // fields like sub_max, the runtime contributes the actual listen
+    // address. In-process nodes always use SSE updates — on loopback it is
+    // strictly fresher than polling.
+    for (alias, addr) in results {
+        match cfg.nodes.iter_mut().find(|n| n.alias == alias) {
+            Some(node) => {
+                node.url = format!("http://{addr}");
+                node.mode = liveman::config::UpdateMode::Sse;
+            }
+            None => cfg.nodes.push(liveman::config::Node {
                 alias: alias.to_string(),
                 url: format!("http://{addr}"),
+                mode: liveman::config::UpdateMode::Sse,
                 ..Default::default()
             }),
-    );
+        }
+    }
 
     let listener = TcpListener::bind(cfg.http.listen).await.unwrap();
 

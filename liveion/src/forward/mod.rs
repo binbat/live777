@@ -373,24 +373,35 @@ impl PeerForward {
         result
     }
 
+    /// Ensure the publish slot is free for a cascade pull: a dead
+    /// cascade-pull incumbent (its hop lost the network) is replaced instead
+    /// of fought — liveman's supervisor re-issues the pull, and replacing
+    /// keeps subscribers attached via the media-generation machinery. A live
+    /// incumbent is supervised and would fight its way back, so anything
+    /// else publishing is a hard conflict.
+    #[cfg(feature = "cascade")]
+    async fn ensure_publish_slot_for_pull(&self) -> Result<()> {
+        self.internal.replace_dead_cascade_pull_incumbent().await?;
+        if self.internal.publish_is_some().await {
+            return Err(AppError::stream_already_exists(
+                "A connection has already been established",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "cascade")]
     pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        // Fast path before taking the lock.
+        self.ensure_publish_slot_for_pull().await?;
 
-        // Held for the whole handshake, as in `set_publish`. A cascade pull
-        // never displaces an incumbent: it is supervised and would fight its
-        // way back, so any existing publisher is a hard conflict.
+        // Held for the whole handshake, as in `set_publish`. The only
+        // displacement a cascade pull performs is replacing a *dead*
+        // cascade-pull incumbent (see above); anything else publishing is a
+        // hard conflict.
         let _publish_guard = self.publish_lock.lock().await;
 
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        self.ensure_publish_slot_for_pull().await?;
 
         let media_info = MediaInfo {
             _codec: vec![],
@@ -726,13 +737,19 @@ impl PeerForward {
                 .await?;
             // Propagate a bad answer instead of reporting an established
             // session that cannot carry media: the error path closes the
-            // peer, and the session cleanup above removes it again.
+            // peer and removes the registered session directly.
             peer.set_remote_description(target_sdp).await?;
             Ok(session_id)
         }
         .await;
         if result.is_err() {
             let _ = peer.close().await;
+            // close() does not reliably surface the Closed event (the driver
+            // task is aborted first), so a session registered above would
+            // linger as a New-state zombie, leaking REFORWARD capacity and
+            // pinning the stream. Remove it directly; idempotent when
+            // registration never happened or cleanup already ran.
+            let _ = self.internal.remove_subscribe(peer.clone()).await;
         }
         result
     }
@@ -1735,6 +1752,66 @@ a=end-of-candidates";
 
         peer_a.close().await?;
         peer_b.close().await?;
+        Ok(())
+    }
+
+    /// Incumbents that are still establishing (New/Connecting) are never
+    /// replaced by a re-issued cascade pull — only Disconnected/Failed
+    /// cascade-pull incumbents are (the hop-death path is covered end-to-end
+    /// by tests/cascade_cluster.rs, where real peers reach Disconnected).
+    #[cfg(feature = "cascade")]
+    #[tokio::test]
+    async fn connecting_incumbents_are_not_replaced() -> crate::result::Result<()> {
+        let forward = PeerForward::new(
+            "cascade-connecting-incumbent-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            #[cfg(feature = "source")]
+            None,
+            api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
+        );
+
+        async fn register_incumbent(
+            forward: &PeerForward,
+            name: &str,
+            cascade: bool,
+        ) -> crate::result::Result<String> {
+            let (peer_a, offer_a) = new_offer_peer(name).await?;
+            let media_info =
+                super::media::MediaInfo::try_from(super::unmarshal_sdp(&offer_a.sdp)?)?;
+            let (peer, gather_complete, connection_state_rx) =
+                forward.new_publish_peer(media_info).await?;
+            let _description = super::peer_complete(offer_a, peer.clone(), gather_complete).await?;
+            let session = forward
+                .internal
+                .set_publish(
+                    peer.clone(),
+                    cascade.then_some(super::message::CascadeInfo {
+                        source_url: None,
+                        target_url: None,
+                        token: None,
+                        session_url: None,
+                    }),
+                    connection_state_rx,
+                )
+                .await;
+            peer_a.close().await?;
+            session
+        }
+
+        // The hand-registered pairs never get past establishing, so the
+        // incumbent is in New/Connecting — not a dead hop.
+        let _session_a = register_incumbent(&forward, "cascade-pull", true).await?;
+        assert!(
+            forward
+                .internal
+                .replace_dead_cascade_pull_incumbent()
+                .await?
+                .is_none()
+        );
+        assert!(forward.internal.publish_is_some().await);
         Ok(())
     }
 }

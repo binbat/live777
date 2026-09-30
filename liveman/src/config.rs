@@ -25,6 +25,12 @@ pub struct Config {
     #[serde(default)]
     pub nodes: Vec<Node>,
 
+    /// Policy rules for nodes without an explicit `[[nodes]]` entry —
+    /// primarily dynamically discovered (net4mqtt) nodes. Matched by glob
+    /// on the node alias; first match wins.
+    #[serde(default)]
+    pub node_rules: Vec<NodeRule>,
+
     // Database for recording index (stream-date to mpd_path mapping)
     #[serde(default)]
     pub database: Database,
@@ -94,6 +100,23 @@ pub struct Node {
     pub url: String,
     #[serde(default)]
     pub mode: UpdateMode,
+    /// Per-stream subscriber capacity used by WHEP routing and cascade
+    /// target selection. `None` (or an absent entry) means unlimited.
+    /// This is a liveman-side scheduling policy: liveion does not enforce
+    /// it and no longer carries `each_stream_max_sub` for liveman's sake.
+    #[serde(default)]
+    pub sub_max: Option<u16>,
+}
+
+/// Policy rule applied to nodes whose alias matches `pattern` (glob) and
+/// that carry no explicit `[[nodes]] sub_max` — primarily dynamically
+/// discovered (net4mqtt) nodes. First match wins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeRule {
+    /// Glob matched against the node alias, e.g. `edge-*`.
+    pub pattern: String,
+    #[serde(default)]
+    pub sub_max: Option<u16>,
 }
 
 #[derive(Default, Debug, Clone, Deserialize, Serialize)]
@@ -274,8 +297,6 @@ pub enum CascadeMode {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cascade {
     #[serde(default)]
-    pub check_attempts: CascadeCheckAttempts,
-    #[serde(default)]
     pub check_tick_time: CheckCascadeTickTime,
     #[serde(default = "default_reforward_maximum_idle_time")]
     pub maximum_idle_time: u64,
@@ -284,15 +305,6 @@ pub struct Cascade {
 
     #[serde(default)]
     pub mode: CascadeMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CascadeCheckAttempts(pub u8);
-
-impl Default for CascadeCheckAttempts {
-    fn default() -> Self {
-        CascadeCheckAttempts(5)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,8 +321,85 @@ impl Config {
         if self.http.public.is_empty() {
             self.http.public = format!("http://{}", self.http.listen);
         }
+        for (i, rule) in self.node_rules.iter().enumerate() {
+            glob::Pattern::new(&rule.pattern).map_err(|e| {
+                anyhow::anyhow!("invalid node_rules pattern {:?}: {}", rule.pattern, e)
+            })?;
+            if rule.pattern == "*" && i + 1 < self.node_rules.len() {
+                tracing::warn!(
+                    "node_rules: catch-all pattern \"*\" at index {} shadows all later rules (first match wins)",
+                    i
+                );
+            }
+        }
+        #[cfg(feature = "net4mqtt")]
+        if matches!(self.cascade.mode, CascadeMode::Pull)
+            && let Some(net4mqtt) = &self.net4mqtt
+        {
+            tracing::warn!(
+                "cascade.mode = \"pull\" cannot reach net4mqtt-discovered nodes: their *.{} addresses only resolve through liveman's own SOCKS proxy, so a pull cascade sourcing such a node will fail (use \"push\" for NAT-ed nodes)",
+                net4mqtt.domain
+            );
+        }
         Ok(())
     }
+
+    /// Resolve a node's per-stream subscriber capacity: an explicit
+    /// `[[nodes]]` entry's `sub_max` wins; otherwise the first matching
+    /// `[[node_rules]]` glob. `None` means unlimited.
+    pub fn node_sub_max(&self, alias: &str) -> Option<u16> {
+        resolve_sub_max(&self.nodes, &self.node_rules, alias)
+    }
+}
+
+/// Pre-compile `[[node_rules]]` globs for hot paths (net4mqtt discovery
+/// resolves a rule on every presence message). Invalid patterns are dropped
+/// here; `Config::validate` rejects them earlier, so this is defense in
+/// depth.
+#[cfg(feature = "net4mqtt")]
+pub(crate) fn compile_node_rules(rules: &[NodeRule]) -> Vec<(glob::Pattern, Option<u16>)> {
+    rules
+        .iter()
+        .filter_map(|r| glob::Pattern::new(&r.pattern).ok().map(|p| (p, r.sub_max)))
+        .collect()
+}
+
+/// `resolve_sub_max` with pre-compiled rules (first match wins).
+#[cfg(feature = "net4mqtt")]
+pub(crate) fn resolve_sub_max_compiled(
+    nodes: &[Node],
+    rules: &[(glob::Pattern, Option<u16>)],
+    alias: &str,
+) -> Option<u16> {
+    if let Some(sub_max) = nodes
+        .iter()
+        .find(|n| n.alias == alias)
+        .and_then(|n| n.sub_max)
+    {
+        return Some(sub_max);
+    }
+    rules
+        .iter()
+        .find(|(p, _)| p.matches(alias))
+        .and_then(|(_, s)| *s)
+}
+
+pub(crate) fn resolve_sub_max(nodes: &[Node], rules: &[NodeRule], alias: &str) -> Option<u16> {
+    if let Some(sub_max) = nodes
+        .iter()
+        .find(|n| n.alias == alias)
+        .and_then(|n| n.sub_max)
+    {
+        return Some(sub_max);
+    }
+    rules
+        .iter()
+        .find(|rule| {
+            glob::Pattern::new(&rule.pattern)
+                .map(|p| p.matches(alias))
+                .unwrap_or(false)
+        })
+        .and_then(|rule| rule.sub_max)
 }
 
 fn default_reforward_maximum_idle_time() -> u64 {
@@ -444,5 +533,79 @@ mod tests {
         )
         .unwrap();
         assert_eq!(node.mode, UpdateMode::Sse);
+    }
+
+    #[test]
+    fn node_sub_max_defaults_to_unlimited() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.sub_max, None);
+    }
+
+    #[test]
+    fn node_sub_max_parses() {
+        let node: Node = toml::from_str(
+            r#"
+            alias = "node-0"
+            url = "http://127.0.0.1:7777"
+            sub_max = 1
+        "#,
+        )
+        .unwrap();
+        assert_eq!(node.sub_max, Some(1));
+    }
+
+    #[test]
+    fn node_rules_resolve_by_glob_with_explicit_node_winning() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [[nodes]]
+            alias = "edge-special"
+            sub_max = 7
+
+            [[node_rules]]
+            pattern = "edge-*"
+            sub_max = 1
+
+            [[node_rules]]
+            pattern = "*"
+            sub_max = 3
+        "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.node_sub_max("edge-special"), Some(7));
+        assert_eq!(cfg.node_sub_max("edge-0"), Some(1));
+        // First matching rule wins.
+        assert_eq!(cfg.node_sub_max("anything-else"), Some(3));
+    }
+
+    #[test]
+    fn node_rules_unmatched_means_unlimited() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [[node_rules]]
+            pattern = "edge-*"
+            sub_max = 1
+        "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.node_sub_max("cloud"), None);
+    }
+
+    #[test]
+    fn node_rules_validate_rejects_bad_glob() {
+        let mut cfg: Config = toml::from_str(
+            r#"
+            [[node_rules]]
+            pattern = "[unclosed"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
     }
 }

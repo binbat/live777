@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use api::response::Stream;
-use api::strategy::Strategy;
 
 use crate::config::UpdateMode;
 
@@ -22,8 +21,6 @@ pub struct Server {
     #[serde(default)]
     pub url: String,
     #[serde(default = "u16_max_value")]
-    pub pub_max: u16,
-    #[serde(default = "u16_max_value")]
     pub sub_max: u16,
 }
 
@@ -33,9 +30,16 @@ pub struct Node {
     pub kind: NodeKind,
     pub url: String,
     pub mode: UpdateMode,
+    /// Liveman-side per-stream subscriber capacity from `[[nodes]] sub_max`
+    /// (`None` = unlimited).
+    pub sub_max: Option<u16>,
+    /// Whether the node is currently reachable: poll-mode nodes are marked
+    /// by their `/api/streams/` poll result, SSE nodes by their stream
+    /// connection, and net4mqtt nodes by discovery presence.
+    pub online: bool,
 
     streams: Vec<Stream>,
-    pub strategy: Option<Strategy>,
+    /// Round-trip time of the last successful poll contact.
     pub duration: Option<Duration>,
 }
 
@@ -82,11 +86,7 @@ impl From<(String, Node)> for Server {
             alias: k,
             token: v.token,
             url: v.url,
-            sub_max: match v.strategy {
-                Some(x) => x.each_stream_max_sub.0,
-                None => u16::MAX,
-            },
-            ..Default::default()
+            sub_max: v.sub_max.unwrap_or(u16::MAX),
         }
     }
 }
@@ -97,7 +97,6 @@ impl Default for Server {
             alias: String::default(),
             token: String::default(),
             url: String::default(),
-            pub_max: u16::MAX,
             sub_max: u16::MAX,
         }
     }
@@ -113,25 +112,106 @@ fn u16_max_value() -> u16 {
     u16::MAX
 }
 
+/// How long an unconfirmed eager WHEP record (`pending_subs`) keeps counting
+/// against capacity: comfortably longer than one SSE/stats snapshot cadence,
+/// so a record whose confirmation never arrives (dead session) eventually
+/// stops blocking capacity.
+const PENDING_SUB_TTL: Duration = Duration::from_secs(10);
+
+/// Eager WHEP session records awaiting snapshot confirmation:
+/// session path -> (alias, stream, recorded at).
+type PendingSubs = Arc<RwLock<HashMap<String, (String, String, Instant)>>>;
+
 #[derive(Clone)]
 pub struct Storage {
     list: Arc<RwLock<HashMap<String, Node>>>,
-    time: Instant,
+    /// Last poll-mode refresh. Shared across clones (axum hands every
+    /// request a fresh `Storage` clone) so the throttle actually throttles.
+    time: Arc<std::sync::Mutex<Instant>>,
     client: reqwest::Client,
     stream: Arc<RwLock<HashMap<String, Vec<String>>>>,
     session: Arc<RwLock<HashMap<String, String>>>,
+    /// WHEP sessions recorded eagerly on the proxy path but not yet
+    /// confirmed by a node snapshot: session path -> (alias, stream, when).
+    /// Capacity accounting overlays these on the snapshot-stale subscribe
+    /// counts so a burst of viewers inside one snapshot window cannot
+    /// oversubscribe a capped node. An entry is dropped once a snapshot
+    /// confirms it (the snapshot counts it authoritatively), on
+    /// `session_remove`, or when it ages past `PENDING_SUB_TTL` — a fresh
+    /// unconfirmed entry must survive *stale* snapshot applies (a stats-tick
+    /// snapshot generated just before the session existed would otherwise
+    /// erase the record and reopen the oversubscribe window).
+    pending_subs: PendingSubs,
     update_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Desired cascade hops, keyed by stream. The supervisor
+    /// (`route::cascade::cascade_supervisor`) converges the actual hop to
+    /// each intent and the reaper (`tick::cascade_check`) tears intents
+    /// down; inserts notify `cascade_notify` so the first establishment
+    /// attempt is immediate instead of waiting for a tick.
+    cascade_intents: Arc<RwLock<HashMap<String, CascadeIntent>>>,
+    cascade_notify: Arc<tokio::sync::Notify>,
+}
+
+/// A desired inter-node cascade hop for one stream. Nodes are referenced by
+/// alias and resolved fresh on every supervisor pass, so node re-registration
+/// (changed URL/token) does not strand the intent.
+#[derive(Debug, Clone)]
+pub struct CascadeIntent {
+    pub stream: String,
+    pub src: String,
+    pub dst: String,
+    /// Whether the one-time `close_other_sub` cleanup already ran for this
+    /// hop. Runs once per intent, right after the hop first establishes.
+    pub subs_closed: bool,
+    /// Consecutive issue attempts since the hop was last seen healthy; drives
+    /// the retry backoff.
+    pub attempts: u32,
+    /// Earliest time the next (re)issue is allowed.
+    pub next_attempt: Instant,
+    /// Since when the destination has had no viewers, maintained by the idle
+    /// reaper (`tick::cascade_check`). While set, the supervisor does not
+    /// re-establish a dead hop — nobody is watching — which prevents a
+    /// create/destroy thrash loop with the destination's auto_delete_whep.
+    /// Once it exceeds `cascade.maximum_idle_time` the intent is torn down.
+    pub idle_since: Option<Instant>,
+    /// Whether the hop was ever seen healthy. Once healthy, a later death
+    /// with no viewers watching must not be re-established (the hop dying
+    /// dropped everyone); the gate keys off this rather than `attempts`,
+    /// because a healthy observation resets the attempt counter.
+    pub was_healthy: bool,
+}
+
+impl CascadeIntent {
+    pub fn new(stream: String, src: String, dst: String) -> Self {
+        Self {
+            stream,
+            src,
+            dst,
+            subs_closed: false,
+            attempts: 0,
+            next_attempt: Instant::now(),
+            idle_since: None,
+            was_healthy: false,
+        }
+    }
 }
 
 impl Storage {
     pub fn new(client: reqwest::Client) -> Self {
         Self {
             list: Arc::new(RwLock::new(HashMap::new())),
-            time: Instant::now(),
+            // Backdated so the first poll-mode refresh runs immediately
+            // instead of waiting out a full throttle window.
+            time: Arc::new(std::sync::Mutex::new(
+                Instant::now() - Duration::from_secs(4),
+            )),
             client,
             stream: Arc::new(RwLock::new(HashMap::new())),
             session: Arc::new(RwLock::new(HashMap::new())),
+            pending_subs: Arc::new(RwLock::new(HashMap::new())),
             update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            cascade_intents: Arc::new(RwLock::new(HashMap::new())),
+            cascade_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -164,6 +244,15 @@ impl Storage {
             .collect()
     }
 
+    /// Drop offline nodes from a routing candidate list (`Node::online` is
+    /// maintained by poll/SSE/net4mqtt contact health). Candidates built
+    /// from snapshots keep stale entries after a node departs; picking one
+    /// only produces proxy errors and permanently failing cascade intents.
+    pub fn filter_online(&self, servers: &mut Vec<Server>) {
+        let nodes = self.list.read().unwrap();
+        servers.retain(|s| nodes.get(&s.alias).map(|n| n.online).unwrap_or(false));
+    }
+
     pub async fn nodes(&mut self) -> Vec<Server> {
         self.update().await;
         self.get_cluster()
@@ -171,13 +260,21 @@ impl Storage {
 
     pub async fn update_snapshot(&self, alias: &str, streams: Vec<Stream>) -> Result<()> {
         let _guard = self.update_lock.lock().await;
-        Self::apply_snapshot_body(&self.list, &self.session, &self.stream, alias, streams)
+        Self::apply_snapshot_body(
+            &self.list,
+            &self.session,
+            &self.stream,
+            &self.pending_subs,
+            alias,
+            streams,
+        )
     }
 
     fn apply_snapshot_body(
         list: &Arc<RwLock<HashMap<String, Node>>>,
         session: &Arc<RwLock<HashMap<String, String>>>,
         stream: &Arc<RwLock<HashMap<String, Vec<String>>>>,
+        pending_subs: &PendingSubs,
         alias: &str,
         streams: Vec<Stream>,
     ) -> Result<()> {
@@ -195,13 +292,20 @@ impl Storage {
         }
         stream_map.retain(|_, aliases| !aliases.is_empty());
 
-        // Remove stale session entries contributed by this node.
+        // Remove stale session entries contributed by this node, publish
+        // side included: WHIP and cascade-hop locations recorded eagerly
+        // would otherwise linger as 404-routable ghosts forever.
         let old_streams = list
             .get(alias)
             .map(|node| node.streams.clone())
             .unwrap_or_default();
         for stream in old_streams {
-            for session in stream.subscribe.sessions {
+            for session in stream
+                .subscribe
+                .sessions
+                .into_iter()
+                .chain(stream.publish.sessions)
+            {
                 let key = api::path::session(&stream.id, &session.id);
                 if let Some(existing_alias) = session_map.get(&key)
                     && existing_alias == alias
@@ -211,19 +315,49 @@ impl Storage {
             }
         }
 
+        // The snapshot is authoritative for what it contains: eager WHEP
+        // records it confirms are now counted by the snapshot itself.
+        // Fresh unconfirmed entries are newer than this snapshot and keep
+        // counting; entries older than the TTL would never be confirmed.
+        let confirmed: std::collections::HashSet<String> = streams
+            .iter()
+            .flat_map(|s| {
+                s.subscribe
+                    .sessions
+                    .iter()
+                    .map(|x| api::path::session(&s.id, &x.id))
+            })
+            .collect();
+        pending_subs
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .retain(|key, (a, _, at)| {
+                a != alias || (!confirmed.contains(key) && at.elapsed() < PENDING_SUB_TTL)
+            });
+
         // Update the node's stream list.
         let node = list
             .get_mut(alias)
             .ok_or_else(|| anyhow!("node not found"))?;
         node.streams = streams.clone();
 
-        // Rebuild stream/session indexes for the new snapshot.
+        // Rebuild stream/session indexes for the new snapshot. Closed
+        // sessions linger in the node listing for display (30 s TTL) but are
+        // not routable, so they stay out of the session index.
         for stream in streams {
             stream_map
                 .entry(stream.id.clone())
                 .or_default()
                 .push(alias.to_string());
-            for session in stream.subscribe.sessions {
+            for session in stream
+                .subscribe
+                .sessions
+                .into_iter()
+                .chain(stream.publish.sessions)
+            {
+                if session.state == api::response::RTCPeerConnectionState::Closed {
+                    continue;
+                }
                 session_map.insert(
                     api::path::session(&stream.id, &session.id),
                     alias.to_string(),
@@ -267,6 +401,20 @@ impl Storage {
         Ok(())
     }
 
+    // Counterpart of `stream_put` (e.g. a deleted runtime source): drop the
+    // eagerly-registered alias so routing converges before the next snapshot.
+    pub async fn stream_remove(&self, stream: &str, alias: &str) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
+        let mut ctx = self.stream.write().map_err(|e| anyhow!("{:?}", e))?;
+        if let Some(arr) = ctx.get_mut(stream) {
+            arr.retain(|a| a != alias);
+            if arr.is_empty() {
+                ctx.remove(stream);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn stream_get(&mut self, stream: String) -> Result<Vec<Server>, Error> {
         self.update().await;
 
@@ -282,7 +430,11 @@ impl Storage {
 
         let mut result: Vec<Server> = vec![];
         for alias in streams {
-            if let Some(n) = nodes.get(&alias) {
+            // Offline nodes keep their last snapshot in the index; routing a
+            // viewer there only produces a proxy error, so leave them out.
+            if let Some(n) = nodes.get(&alias)
+                && n.online
+            {
                 result.push((alias, n.clone()).into());
             }
         }
@@ -326,73 +478,110 @@ impl Storage {
         Ok((alias, node).into())
     }
 
-    fn get_do_strategy_update_list(&self) -> HashMap<String, Node> {
-        self.get_map_nodes()
-            .into_iter()
-            .filter(|(_, v)| v.kind != NodeKind::Net4mqtt && v.strategy.is_none())
+    // Serialize with snapshot updates so proxy writes are not interleaved
+    // with apply_snapshot_body rebuilding the stream/session indexes.
+    pub async fn session_remove(&self, session: &str) -> Result<()> {
+        let _guard = self.update_lock.lock().await;
+        self.session
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .remove(session);
+        self.pending_subs
+            .write()
+            .map_err(|e| anyhow!("{:?}", e))?
+            .remove(session);
+        Ok(())
+    }
+
+    /// Record an eagerly-proxied WHEP session for capacity accounting (see
+    /// `pending_subs`).
+    pub fn pending_sub_add(&self, session: String, alias: String, stream: String) {
+        self.pending_subs
+            .write()
+            .unwrap()
+            .insert(session, (alias, stream, Instant::now()));
+    }
+
+    /// Unconfirmed WHEP sessions currently counted against (alias, stream).
+    pub fn pending_sub_count(&self, alias: &str, stream: &str) -> usize {
+        self.pending_subs
+            .read()
+            .unwrap()
+            .values()
+            .filter(|(a, s, at)| a == alias && s == stream && at.elapsed() < PENDING_SUB_TTL)
+            .count()
+    }
+
+    /// Insert or replace the cascade intent for a stream and wake the
+    /// supervisor, so the first establishment attempt is immediate.
+    pub fn cascade_intent_insert(&self, intent: CascadeIntent) {
+        self.cascade_intents
+            .write()
+            .unwrap()
+            .insert(intent.stream.clone(), intent);
+        self.cascade_notify.notify_one();
+    }
+
+    /// Write back supervisor-side progress (backoff, subs_closed) without
+    /// waking the supervisor. Compare-and-store: if the intent was removed
+    /// after the supervisor snapshotted it (idle teardown, node gone), the
+    /// write-back is dropped instead of resurrecting the intent.
+    pub fn cascade_intent_update(&self, intent: CascadeIntent) {
+        if let Some(slot) = self
+            .cascade_intents
+            .write()
+            .unwrap()
+            .get_mut(&intent.stream)
+        {
+            *slot = intent;
+        }
+    }
+
+    pub fn cascade_intent_get(&self, stream: &str) -> Option<CascadeIntent> {
+        self.cascade_intents.read().unwrap().get(stream).cloned()
+    }
+
+    pub fn cascade_intent_remove(&self, stream: &str) -> Option<CascadeIntent> {
+        self.cascade_intents.write().unwrap().remove(stream)
+    }
+
+    /// Mark demand on an existing intent: a viewer just arrived for its
+    /// stream. Reopens the no-viewers gates (idle mark, `was_healthy`) and
+    /// allows an immediate (re)issue — without this, a dead hop whose
+    /// destination stream is also gone (e.g. the destination restarted with
+    /// `auto_create_whep = false`, so the viewer's WHEP keeps 404ing) would
+    /// wait out the idle reaper before anyone rebuilt it.
+    pub fn cascade_intent_demand(&self, stream: &str) {
+        let mut intents = self.cascade_intents.write().unwrap();
+        if let Some(intent) = intents.get_mut(stream) {
+            intent.idle_since = None;
+            intent.was_healthy = false;
+            intent.next_attempt = Instant::now();
+        }
+        drop(intents);
+        self.cascade_notify.notify_one();
+    }
+
+    pub fn cascade_intents(&self) -> Vec<CascadeIntent> {
+        self.cascade_intents
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
             .collect()
     }
 
-    async fn update_strategy_from(&mut self, nodes: HashMap<String, Node>) {
-        let start = Instant::now();
-        let mut requests = Vec::new();
+    pub fn cascade_notify_waiter(&self) -> Arc<tokio::sync::Notify> {
+        self.cascade_notify.clone()
+    }
 
-        for (alias, server) in nodes {
-            requests.push((
-                alias,
-                self.client
-                    .get(format!("{}{}", server.url, api::path::strategy()))
-                    .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
-                    .send(),
-            ));
-        }
-
-        let handles = requests
-            .into_iter()
-            .map(|(alias, value)| {
-                tokio::spawn(async move { (alias, value.await, start.elapsed()) })
-            })
-            .collect::<Vec<
-                tokio::task::JoinHandle<(
-                    std::string::String,
-                    std::result::Result<reqwest::Response, reqwest::Error>,
-                    std::time::Duration,
-                )>,
-            >>();
-
-        let duration = start.elapsed();
-
-        if duration > Duration::from_secs(1) {
-            warn!("update duration: {:?}", duration);
-        } else {
-            debug!("update duration: {:?}", duration);
-        }
-
-        for handle in handles {
-            let result = tokio::join!(handle);
-            match result {
-                (Ok((alias, Ok(res), duration)),) => {
-                    debug!(
-                        "{}: spend time: [{:?}] Response: {:?}",
-                        alias, duration, res
-                    );
-
-                    match serde_json::from_str::<Strategy>(&res.text().await.unwrap()) {
-                        Ok(strategy) => {
-                            if let Some(node) =
-                                self.get_map_nodes_mut().write().unwrap().get_mut(&alias)
-                            {
-                                node.duration = Some(duration);
-                                node.strategy = Some(strategy);
-                            }
-                        }
-                        Err(e) => error!("Error: {:?}", e),
-                    };
-                }
-                (Ok((name, Err(e), duration)),) => {
-                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
-                }
-                _ => {}
+    /// Mark a node's reachability, and on success remember the contact RTT
+    /// for the dashboard.
+    pub fn node_set_online(&self, alias: &str, online: bool, rtt: Option<Duration>) {
+        if let Some(node) = self.list.write().unwrap().get_mut(alias) {
+            node.online = online;
+            if online && let Some(rtt) = rtt {
+                node.duration = Some(rtt);
             }
         }
     }
@@ -404,14 +593,12 @@ impl Storage {
         {
             let update_lock = self.update_lock.clone();
             let _guard = update_lock.lock().await;
-            if self.time.elapsed() < Duration::from_secs(3) {
+            let mut time = self.time.lock().unwrap();
+            if time.elapsed() < Duration::from_secs(3) {
                 return;
             }
-            self.time = Instant::now();
+            *time = Instant::now();
         }
-
-        self.update_strategy_from(self.get_do_strategy_update_list())
-            .await;
 
         let start = Instant::now();
         let poll_nodes: Vec<(String, Node)> = self
@@ -431,18 +618,22 @@ impl Storage {
             ));
         }
 
+        // Response bodies are read inside the spawned tasks so the lock
+        // below covers only the fast in-memory snapshot-apply step.
         let handles = requests
             .into_iter()
             .map(|(alias, value)| {
-                tokio::spawn(async move { (alias, start.elapsed(), value.await) })
+                tokio::spawn(async move {
+                    let res = value.await;
+                    let elapsed = start.elapsed();
+                    let body = match res {
+                        Ok(res) => res.text().await.map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    (alias, elapsed, body)
+                })
             })
-            .collect::<Vec<
-                tokio::task::JoinHandle<(
-                    std::string::String,
-                    std::time::Duration,
-                    std::result::Result<reqwest::Response, reqwest::Error>,
-                )>,
-            >>();
+            .collect::<Vec<_>>();
 
         let duration = start.elapsed();
 
@@ -458,21 +649,24 @@ impl Storage {
         let _guard = update_lock.lock().await;
 
         for handle in handles {
-            let result = tokio::join!(handle);
-            match result {
-                (Ok((alias, duration, Ok(res))),) => {
-                    debug!(
-                        "{}: spend time: [{:?}] Response: {:?}",
-                        alias, duration, res
-                    );
+            let Ok((alias, duration, body)) = handle.await else {
+                continue;
+            };
+            match body {
+                Ok(body) => {
+                    // Any HTTP response means the node is reachable, even an
+                    // error status (auth mismatch, 500) — the snapshot simply
+                    // stays stale then.
+                    self.node_set_online(&alias, true, Some(duration));
 
-                    match serde_json::from_str::<Vec<Stream>>(&res.text().await.unwrap()) {
+                    match serde_json::from_str::<Vec<Stream>>(&body) {
                         Ok(streams) => {
                             trace!("{:?}", streams.clone());
                             if let Err(e) = Self::apply_snapshot_body(
                                 &self.list,
                                 &self.session,
                                 &self.stream,
+                                &self.pending_subs,
                                 &alias,
                                 streams,
                             ) {
@@ -482,10 +676,10 @@ impl Storage {
                         Err(e) => error!("Error: {:?}", e),
                     };
                 }
-                (Ok((name, duration, Err(e))),) => {
-                    error!("{}: spend time: [{:?}] Error: {:?}", name, duration, e);
+                Err(e) => {
+                    error!("{}: spend time: [{:?}] Error: {:?}", alias, duration, e);
+                    self.node_set_online(&alias, false, None);
                 }
-                _ => {}
             }
         }
     }
@@ -496,51 +690,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strategy_update_list_skips_net4mqtt_nodes() {
-        let storage = Storage::new(reqwest::Client::new());
-        {
-            let mut nodes = storage.list.write().unwrap();
-            nodes.insert(
-                "static-0".to_string(),
-                Node::new(
-                    "token".to_string(),
-                    NodeKind::Static,
-                    "http://127.0.0.1:7777".to_string(),
-                    UpdateMode::Poll,
-                ),
-            );
-            nodes.insert(
-                "mqtt-0".to_string(),
-                Node::new(
-                    "".to_string(),
-                    NodeKind::Net4mqtt,
-                    "http://mqtt-0.net4mqtt.local:7777".to_string(),
-                    UpdateMode::default(),
-                ),
-            );
-        }
+    fn server_sub_max_comes_from_node_config() {
+        let mut limited = Node::new(
+            String::new(),
+            NodeKind::Static,
+            "http://127.0.0.1:7780".to_string(),
+            UpdateMode::Poll,
+        );
+        limited.sub_max = Some(1);
+        let server: Server = ("edge0".to_string(), limited).into();
+        assert_eq!(server.sub_max, 1);
 
-        let list = storage.get_do_strategy_update_list();
-        assert!(list.contains_key("static-0"));
-        assert!(!list.contains_key("mqtt-0"));
-    }
-
-    #[test]
-    fn strategy_update_list_skips_nodes_with_strategy() {
-        let storage = Storage::new(reqwest::Client::new());
-        {
-            let mut nodes = storage.list.write().unwrap();
-            let mut node = Node::new(
-                "token".to_string(),
-                NodeKind::Static,
-                "http://127.0.0.1:7777".to_string(),
-                UpdateMode::Poll,
-            );
-            node.strategy = Some(Strategy::default());
-            nodes.insert("static-0".to_string(), node);
-        }
-
-        let list = storage.get_do_strategy_update_list();
-        assert!(!list.contains_key("static-0"));
+        let unlimited = Node::new(
+            String::new(),
+            NodeKind::Static,
+            "http://127.0.0.1:7782".to_string(),
+            UpdateMode::Poll,
+        );
+        let server: Server = ("cloud".to_string(), unlimited).into();
+        assert_eq!(server.sub_max, u16::MAX);
     }
 }

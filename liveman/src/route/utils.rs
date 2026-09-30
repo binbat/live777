@@ -1,63 +1,11 @@
-use std::time::Duration;
-
 use anyhow::{Error, anyhow};
 use http::header;
 use reqwest::header::HeaderMap;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, trace};
 
-use api::{
-    request::Cascade,
-    response::{RTCPeerConnectionState, Stream},
-};
+use api::request::Cascade;
 
 use crate::store::Server;
-
-pub async fn force_check_times(
-    client: reqwest::Client,
-    server: Server,
-    stream: String,
-    count: u8,
-) -> Result<u8, Error> {
-    for i in 0..count {
-        let timeout = tokio::time::sleep(Duration::from_millis(1000));
-        tokio::pin!(timeout);
-        let _ = timeout.as_mut().await;
-        match force_check(client.clone(), server.clone(), stream.clone()).await {
-            Ok(()) => return Ok(i),
-            Err(e) => warn!("force_check failed {:?}", e),
-        };
-    }
-    Err(anyhow!("reforward check failed"))
-}
-
-async fn force_check(client: reqwest::Client, server: Server, stream: String) -> Result<(), Error> {
-    let url = format!("{}{}", server.url, api::path::streams(""));
-
-    let response = client.get(url).send().await?;
-
-    trace!("{:?}", response);
-    let status = response.status();
-    let body = &response.text().await?;
-    if status.is_success() {
-        let streams = serde_json::from_str::<Vec<Stream>>(body)?;
-        debug!("{:?}", streams);
-        return match streams.into_iter().find(|f| f.id == stream) {
-            Some(stream) => match stream.publish.sessions.first() {
-                Some(session) => {
-                    if session.state == RTCPeerConnectionState::Connected {
-                        Ok(())
-                    } else {
-                        Err(anyhow!("connect state is {:?}", session.state))
-                    }
-                }
-                None => Err(anyhow!("Not Found stream publisher")),
-            },
-            None => Err(anyhow!("Not Found stream")),
-        };
-    }
-    info!("{:?} {:?}", status, *body);
-    Err(anyhow!("http status not success"))
-}
 
 pub async fn cascade_push(
     public: String,
@@ -81,12 +29,13 @@ pub async fn cascade_push(
     .unwrap();
     trace!("{:?}", body);
 
-    let response = client
-        .post(url.clone())
-        .headers(headers)
-        .body(body)
-        .send()
-        .await?;
+    // The node's /api/cascade route sits behind liveion's auth middleware;
+    // without this every issue 401s once the node configures auth.tokens.
+    let mut req = client.post(url.clone()).headers(headers).body(body);
+    if !server_src.token.is_empty() {
+        req = req.bearer_auth(&server_src.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())
@@ -109,7 +58,11 @@ pub async fn session_delete(
 ) -> Result<(), Error> {
     let url = format!("{}/session/{}/{}", server.url, stream, session);
 
-    let response = client.delete(url).send().await?;
+    let mut req = client.delete(url);
+    if !server.token.is_empty() {
+        req = req.bearer_auth(&server.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())
@@ -138,12 +91,13 @@ pub async fn cascade_pull(
 
     trace!("cascade pull request: {:?}", body);
 
-    let response = client
-        .post(url.clone())
-        .headers(headers)
-        .body(body)
-        .send()
-        .await?;
+    // The POST goes to the destination node (its token authorizes the call);
+    // the source node's token travels in the body for the WHEP leg itself.
+    let mut req = client.post(url.clone()).headers(headers).body(body);
+    if !server_dst.token.is_empty() {
+        req = req.bearer_auth(&server_dst.token);
+    }
+    let response = req.send().await?;
 
     if response.status().is_success() {
         Ok(())

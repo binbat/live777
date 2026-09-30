@@ -130,6 +130,25 @@ cargo run --bin=liveman -- -c conf/liveman.toml
 cargo run --bin=livenil -- -c conf/livenil
 ```
 
+#### 边缘-云端级联演示 {#livenil-edge-cloud}
+
+`conf/livenil/edge-cloud/` 是一个预制拓扑：两个边缘节点模拟摄像头
+（各预置一路流，通过 liveman 的 `[[node_rules]]` glob 规则——
+`pattern = "edge*"`、`sub_max = 1`——限制只允许一个直连观众），
+一个云端节点作为中心 SFU，全部由一个 liveman 管理：
+
+```bash
+just run-edge-cloud
+```
+
+摄像头推流时钉到各自的边缘节点，观众都连接 liveman
+（`http://127.0.0.1:8890/whep/cam0`）。每路流的第一个观众会被直接代理到
+边缘节点；第二个观众到来时边缘已满，liveman 会把流级联到云端节点
+（pull 模式：云端主动向边缘 WHEP 拉流），并踢掉边缘上的直连观众
+（`close_other_sub = true`），其播放器重连后落到云端。边缘始终只向外
+发送一路流，节省边缘上行带宽。完整流程见 `conf/livenil/edge-cloud/`
+里的注释。
+
 ### whipinto && whepfrom
 
 ```bash

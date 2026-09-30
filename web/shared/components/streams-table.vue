@@ -31,7 +31,7 @@ import {
     type ComputedRef,
     type MaybeRefOrGetter,
 } from "vue";
-import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from "@heroicons/vue/24/outline";
+import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon } from "@heroicons/vue/24/outline";
 
 import {
     type CapabilityProbeStatus,
@@ -58,20 +58,38 @@ import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
 import NewStreamDialog, { type INewStreamDialog } from "./dialog-new-stream.vue";
 
-async function getStreamsSorted(): Promise<StreamType[]> {
-    try {
-        const streams = await getStreams();
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
-    } catch {
-        return [];
-    }
-}
-
 const ACTIVE_STATES: SessionConnectionState[] = ["new", "connecting", "connected"];
 
 function countActiveSessions(sessions: { state: SessionConnectionState }[]): number {
     return sessions.filter(s => ACTIVE_STATES.includes(s.state)).length;
 }
+
+function cascadeSessionCount(s: StreamType): number {
+    return countActiveSessions(s.publish.sessions.filter(t => t.cascade))
+        + countActiveSessions(s.subscribe.sessions.filter(t => t.cascade));
+}
+
+type SortKey = "id" | "publisher" | "subscriber" | "in" | "out" | "cascade" | "createdAt";
+
+const SORT_COLUMNS: { key: SortKey; label: string }[] = [
+    { key: "id", label: "ID" },
+    { key: "publisher", label: "Publisher" },
+    { key: "subscriber", label: "Subscriber" },
+    { key: "in", label: "In" },
+    { key: "out", label: "Out" },
+    { key: "cascade", label: "Cascade" },
+    { key: "createdAt", label: "Creation Time" },
+];
+
+const SORT_FNS: Record<SortKey, (a: StreamType, b: StreamType) => number> = {
+    id: (a, b) => a.id.localeCompare(b.id),
+    publisher: (a, b) => countActiveSessions(a.publish.sessions) - countActiveSessions(b.publish.sessions),
+    subscriber: (a, b) => countActiveSessions(a.subscribe.sessions) - countActiveSessions(b.subscribe.sessions),
+    in: (a, b) => (a.stats?.publish.bitrate ?? 0) - (b.stats?.publish.bitrate ?? 0),
+    out: (a, b) => (a.stats?.subscribe.bitrate ?? 0) - (b.stats?.subscribe.bitrate ?? 0),
+    cascade: (a, b) => cascadeSessionCount(a) - cascadeSessionCount(b),
+    createdAt: (a, b) => a.createdAt - b.createdAt,
+};
 
 type ConnectionStatus = "connected" | "connecting" | "reconnecting" | "disconnected" | "error";
 
@@ -144,7 +162,7 @@ const {
     updateData,
     toggleTimer,
     connectionStatus,
-} = useStreamsDataSource(props.getStreams ?? getStreamsSorted, () => props.streamsSSEUrl);
+} = useStreamsDataSource(props.getStreams ?? (() => getStreams().catch(() => [])), () => props.streamsSSEUrl);
 
 const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
@@ -158,6 +176,42 @@ const webStreamDialogs = new Map<string, IWebStreamDialog>();
 const previewStreams = ref<string[]>([]);
 const previewStreamId = ref("");
 const previewDialogs = new Map<string, IPreviewDialog>();
+
+// Sorting lives in the component so it covers both data paths (SSE pushes
+// arrive in the server's map order, never sorted) and stays stable across
+// refreshes; the id tie-break means equal keys never reshuffle rows.
+// The selection persists across page loads.
+const SORT_KEY_STORAGE = "shared:streams-table:sort-key";
+const SORT_ASC_STORAGE = "shared:streams-table:sort-asc";
+
+const storedSortKey = localStorage.getItem(SORT_KEY_STORAGE);
+const sortKey = ref<SortKey>(
+    SORT_COLUMNS.some(col => col.key === storedSortKey) ? (storedSortKey as SortKey) : "createdAt",
+);
+const sortAsc = ref(localStorage.getItem(SORT_ASC_STORAGE) !== "false");
+
+watch([sortKey, sortAsc], ([key, asc]) => {
+    localStorage.setItem(SORT_KEY_STORAGE, key);
+    localStorage.setItem(SORT_ASC_STORAGE, String(asc));
+});
+
+const sortedStreams = computed(() => {
+    const cmp = SORT_FNS[sortKey.value];
+    const dir = sortAsc.value ? 1 : -1;
+    return [...streamsData.value].sort((a, b) => {
+        const primary = cmp(a, b);
+        return primary !== 0 ? dir * primary : a.id.localeCompare(b.id);
+    });
+});
+
+const toggleSort = (key: SortKey) => {
+    if (sortKey.value === key) {
+        sortAsc.value = !sortAsc.value;
+    } else {
+        sortKey.value = key;
+        sortAsc.value = true;
+    }
+};
 
 const setWebStreamDialog = (id: string, el: unknown) => {
     if (el) {
@@ -523,18 +577,25 @@ const handleCancelStop = () => {
         <table class="table whitespace-nowrap">
             <thead>
                 <tr>
-                    <th><span>ID</span></th>
-                    <td><span>Publisher</span></td>
-                    <td><span>Subscriber</span></td>
-                    <td><span>In</span></td>
-                    <td><span>Out</span></td>
-                    <td><span>Cascade</span></td>
-                    <td><span>Creation Time</span></td>
+                    <th
+                        v-for="col in SORT_COLUMNS"
+                        :key="col.key"
+                        :aria-sort="sortKey === col.key ? (sortAsc ? 'ascending' : 'descending') : 'none'"
+                    >
+                        <button
+                            class="inline-flex cursor-pointer select-none items-center gap-0.5"
+                            @click="toggleSort(col.key)"
+                        >
+                            {{ col.label }}
+                            <ChevronUpIcon v-if="sortKey === col.key && sortAsc" class="size-3.5" />
+                            <ChevronDownIcon v-else-if="sortKey === col.key" class="size-3.5" />
+                        </button>
+                    </th>
                     <td><span>Operation</span></td>
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="i in streamsData" :key="i.id">
+                <tr v-for="i in sortedStreams" :key="i.id">
                     <th class="whitespace-normal">
                         <span>
                             {{ i.id }}
@@ -555,24 +616,30 @@ const handleCancelStop = () => {
                             >config</div>
                         </span>
                     </th>
-                    <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
-                    <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
+                    <td><span class="tabular-nums">{{ countActiveSessions(i.publish.sessions) }}</span></td>
+                    <td><span class="tabular-nums">{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
                     <td>
-                        <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                        <span
+                            class="inline-block min-w-[9ch] text-right tabular-nums"
+                            :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`"
+                        >
                             {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
                         </span>
                     </td>
                     <td>
-                        <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                        <span
+                            class="inline-block min-w-[9ch] text-right tabular-nums"
+                            :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`"
+                        >
                             {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
                         </span>
                     </td>
                     <td>
-                        <span>
-                            {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
+                        <span class="tabular-nums">
+                            {{ cascadeSessionCount(i) }}
                         </span>
                     </td>
-                    <td><span>{{ formatTime(i.createdAt) }}</span></td>
+                    <td><span class="tabular-nums">{{ formatTime(i.createdAt) }}</span></td>
                     <td>
                         <div class="flex flex-nowrap gap-1">
                             <button

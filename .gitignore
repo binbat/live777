@@ -9,6 +9,7 @@ output.sdp
 live777.toml
 gateway.toml
 liveman.toml
+!conf/livenil/**/liveman.toml
 
 liveman.db
 records
