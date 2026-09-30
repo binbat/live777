@@ -52,6 +52,7 @@ export const zh: LocaleConfig = {
                             { text: 'FFmpeg', link: 'ffmpeg' },
                             { text: 'Gstreamer', link: 'gstreamer' },
                             { text: 'VLC', link: 'vlc' },
+                            { text: '宇树 Go2', link: 'unitree' },
                         ]
                     },
                     {

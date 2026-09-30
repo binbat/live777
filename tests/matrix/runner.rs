@@ -626,6 +626,7 @@ where
         liveion::config::StreamEntry {
             sources: vec![liveion::config::SourceConfig {
                 url: Some(format!("whep://{api_addr_a}{}", api::path::whep("-"))),
+                multicast_interface: None,
                 #[cfg(feature = "native-source")]
                 capture: None,
                 #[cfg(feature = "native-source")]
