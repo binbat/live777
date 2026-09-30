@@ -769,4 +769,322 @@ mod tests {
         .expect("datagram sent to the group must reach the joined receiver");
         assert_eq!(&buf[..received], payload);
     }
+
+    /// Receive datagrams until one contains `idr`, asserting every datagram
+    /// was re-stamped to payload type `pt`. Returns the RTP payloads (the
+    /// fixed 12-byte header stripped) in arrival order.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    async fn recv_idr_stream(listener: &UdpSocket, idr: &[u8], pt: u8) -> Vec<Vec<u8>> {
+        let mut buf = [0u8; 1500];
+        let mut payloads = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (n, _) = listener.recv_from(&mut buf).await.unwrap();
+                assert_eq!(buf[1] & 0x7f, pt, "payload type must be re-stamped to {pt}");
+                // These tests produce no CSRC lists or extensions, so the
+                // header is exactly the fixed 12 bytes.
+                let payload = buf[12..n].to_vec();
+                let done = payload.windows(idr.len()).any(|w| w == idr);
+                payloads.push(payload);
+                if done {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the IDR datagram");
+        payloads
+    }
+
+    /// H264 codec params whose fmtp seeds SPS/PPS through
+    /// `sprop-parameter-sets` (the SDPs both Unitree cameras and live777's
+    /// own SDP carry).
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    fn h264_codec_params() -> rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+        use base64::Engine;
+        use rtc::peer_connection::configuration::media_engine::MIME_TYPE_H264;
+        use rtc::rtp_transceiver::rtp_sender::RTCRtpCodec;
+
+        const SPS: [u8; 5] = [0x67, 0x42, 0x00, 0x1f, 0xaa];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x3c, 0x80];
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let fmtp = format!(
+            "profile-level-id=42001f;packetization-mode=1;sprop-parameter-sets={},{}",
+            b64.encode(SPS),
+            b64.encode(PPS)
+        );
+        rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: fmtp,
+                rtcp_feedback: vec![],
+            },
+            payload_type: 96,
+        }
+    }
+
+    /// Build the H264 IDR packet (bare single NAL, marker set) that the
+    /// data-plane tests publish. `payload_type` deliberately differs from
+    /// the negotiated 96 so the re-stamp is observable.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    fn h264_idr_packet(payload_type: u8) -> rtc::rtp::packet::Packet {
+        use bytes::Bytes;
+
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+        rtc::rtp::packet::Packet {
+            header: rtc::rtp::header::Header {
+                version: 2,
+                marker: true,
+                payload_type,
+                sequence_number: 1,
+                timestamp: 1000,
+                ssrc: 0x1234,
+                ..Default::default()
+            },
+            payload: Bytes::from(IDR.to_vec()),
+        }
+    }
+
+    /// Publish IDRs on `track` every 50 ms until `stop` fires. The send
+    /// task subscribes to the track broadcast asynchronously, and a
+    /// broadcast receiver does not see messages sent before it subscribed,
+    /// so the first injections may be dropped; injection errors (no
+    /// receivers yet, or none left) are expected and ignored.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    async fn pump_idrs(track: PublishTrackRemote, stop: CancellationToken) {
+        loop {
+            if let PublishTrackRemote::Virtual(v) = &track {
+                let _ = v.inject_rtp(Arc::new(h264_idr_packet(105)));
+            }
+            tokio::select! {
+                _ = stop.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+    }
+
+    /// The send task's data plane: packets broadcast on a publish track
+    /// reach the UDP destination with the payload type re-stamped to the
+    /// codec's SDP payload type, and the sprop-seeded SPS/PPS are inlined
+    /// ahead of the IDR so a receiver joining mid-GOP can decode.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn track_send_task_restamps_pt_and_injects_seeded_params() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        use crate::forward::track::VirtualPublishTrack;
+
+        const SPS: [u8; 5] = [0x67, 0x42, 0x00, 0x1f, 0xaa];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x3c, 0x80];
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let track = PublishTrackRemote::Virtual(Arc::new(VirtualPublishTrack::new(
+            "test".to_string(),
+            RtpCodecKind::Video,
+            h264_codec_params(),
+        )));
+
+        let socket =
+            Arc::new(build_sender_socket("127.0.0.1:0".parse().unwrap(), None, None).unwrap());
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let cancel = CancellationToken::new();
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
+        let task = tokio::spawn(track_send_task(
+            track.clone(),
+            socket,
+            dest,
+            cancel.clone(),
+            exit_tx,
+        ));
+
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+
+        let datagrams = recv_idr_stream(&listener, &IDR, 96).await;
+        pump_stop.cancel();
+        // The payloader aggregates the parameter sets into a STAP-A ahead
+        // of the IDR single-NAL packet (both RFC 6184), so two datagrams:
+        // [STAP-A(SPS, PPS)], [IDR].
+        assert_eq!(
+            datagrams.len(),
+            2,
+            "expected a parameter-set datagram and an IDR datagram: {datagrams:02x?}"
+        );
+        let find = |haystack: &[u8], needle: &[u8]| {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        };
+        let (sps_at, pps_at) = (find(&datagrams[0], &SPS), find(&datagrams[0], &PPS));
+        assert!(
+            sps_at.is_some() && pps_at.is_some(),
+            "parameter sets must be inlined ahead of the IDR: {datagrams:02x?}"
+        );
+        assert!(sps_at < pps_at, "SPS must precede PPS: {datagrams:02x?}");
+        assert_eq!(datagrams[1], IDR.to_vec(), "datagrams: {datagrams:02x?}");
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("send task must exit on cancel")
+            .unwrap();
+        // The task notifies its exit so the supervisor can reconcile.
+        tokio::time::timeout(Duration::from_secs(5), exit_rx.recv())
+            .await
+            .expect("send task must signal its exit");
+    }
+
+    /// `start_senders` end to end against a real manager and forward: the
+    /// stream's virtual track is wired to the UDP destination and its media
+    /// arrives re-stamped, with the seeded parameter sets inlined.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn start_senders_streams_virtual_track_to_udp() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        const SPS: [u8; 5] = [0x67, 0x42, 0x00, 0x1f, 0xaa];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x3c, 0x80];
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+        let forward = manager.get_forward("cam").await.unwrap();
+        forward
+            .add_virtual_track(RtpCodecKind::Video, h264_codec_params())
+            .await
+            .unwrap();
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            rtp_target(&format!("rtp://{dest}")),
+        )
+        .unwrap();
+
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
+        let epoch = ctx.start_senders(&exit_tx).await.unwrap();
+
+        let tracks = forward.publish_tracks().await;
+        let track = tracks
+            .iter()
+            .find(|t| t.kind() == RtpCodecKind::Video)
+            .expect("the virtual video track")
+            .clone();
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+
+        let datagrams = recv_idr_stream(&listener, &IDR, 96).await;
+        pump_stop.cancel();
+        // Same shape as the direct send-task test: parameter sets inlined
+        // (STAP-A) ahead of the IDR single-NAL packet.
+        assert_eq!(
+            datagrams.len(),
+            2,
+            "expected a parameter-set datagram and an IDR datagram: {datagrams:02x?}"
+        );
+        let find = |haystack: &[u8], needle: &[u8]| {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        };
+        let (sps_at, pps_at) = (find(&datagrams[0], &SPS), find(&datagrams[0], &PPS));
+        assert!(
+            sps_at.is_some() && pps_at.is_some(),
+            "parameter sets must be inlined ahead of the IDR: {datagrams:02x?}"
+        );
+        assert!(sps_at < pps_at, "SPS must precede PPS: {datagrams:02x?}");
+        assert_eq!(datagrams[1], IDR.to_vec(), "datagrams: {datagrams:02x?}");
+
+        // Tearing down the epoch stops the send task, which signals its
+        // exit for the supervisor to reconcile.
+        epoch.cancel();
+        tokio::time::timeout(Duration::from_secs(5), exit_rx.recv())
+            .await
+            .expect("send task must signal its exit");
+        cancel.cancel();
+    }
+
+    /// With no publisher the supervisor idles on the event bus; a shutdown
+    /// cancels it and `run` must return promptly without sending anything.
+    #[tokio::test]
+    async fn run_exits_promptly_without_publisher_on_cancel() {
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            rtp_target("rtp://127.0.0.1:5004"),
+        )
+        .unwrap();
+        let handle = tokio::spawn(ctx.run());
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must exit when the manager is cancelled")
+            .unwrap();
+    }
 }

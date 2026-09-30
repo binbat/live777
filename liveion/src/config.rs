@@ -1474,18 +1474,25 @@ mod target_tests {
 
     #[test]
     fn config_validate_rejects_duplicate_target_urls() {
+        // Both schemes funnel through the same duplicate check; use whichever
+        // this feature set validates.
+        let url = if cfg!(feature = "target-whip") {
+            "whip://edge-1:7777/whip/cam1"
+        } else {
+            "rtp://230.1.1.1:1720"
+        };
         let mut cfg = Config::default();
         cfg.stream.streams.insert(
             "cam1".to_string(),
             StreamEntry {
                 targets: vec![
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
                         multicast_interface: None,
                         ttl: None,
                     },
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
                         multicast_interface: None,
                         ttl: None,
                     },
