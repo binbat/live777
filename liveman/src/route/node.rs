@@ -18,6 +18,11 @@ pub struct Node {
     url: String,
     status: NodeState,
     duration: String,
+    /// The node's own `GET /api/info` (version/git hash/build
+    /// time/features), cached by `tick::node_info_check`; absent until the
+    /// first successful fetch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    info: Option<api::response::ServerInfo>,
 }
 
 pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>> {
@@ -38,6 +43,7 @@ pub async fn index(State(mut state): State<AppState>) -> Result<Json<Vec<Node>>>
                     Some(s) => format!("{}ms", s.as_millis()),
                     None => "-".to_string(),
                 },
+                info: node.info,
             })
             .collect(),
     ))

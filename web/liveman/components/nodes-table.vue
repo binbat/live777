@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { ArrowPathIcon, ChevronDownIcon, ChevronUpIcon } from "@heroicons/vue/24/outline";
+import { computed, ref, useTemplateRef, watch } from "vue";
+import { ArrowPathIcon, ChevronDownIcon, ChevronUpIcon, InformationCircleIcon } from "@heroicons/vue/24/outline";
 
 import { useToken } from "@/shared/context";
 import { useRefreshTimer } from "@/shared/hooks/use-refresh-timer";
 
 import { type Node, getNodes } from "../api";
+import NodeInfoDialog, { type INodeInfoDialog } from "./dialog-node-info.vue";
 
 const { data: nodes, isRefreshing, updateData, toggleTimer } = useRefreshTimer<Node[]>(
     [],
@@ -30,18 +31,20 @@ function delayMs(n: Node): number {
     return m ? parseInt(m[1]) : Number.POSITIVE_INFINITY;
 }
 
-type SortKey = "alias" | "status" | "delay";
+type SortKey = "alias" | "status" | "delay" | "version";
 
 const SORT_COLUMNS: { key: SortKey; label: string }[] = [
     { key: "alias", label: "Alias" },
     { key: "status", label: "Status" },
     { key: "delay", label: "Delay" },
+    { key: "version", label: "Version" },
 ];
 
 const SORT_FNS: Record<SortKey, (a: Node, b: Node) => number> = {
     alias: (a, b) => a.alias.localeCompare(b.alias),
     status: (a, b) => a.status.localeCompare(b.status),
     delay: (a, b) => delayMs(a) - delayMs(b),
+    version: (a, b) => (a.info?.version ?? "").localeCompare(b.info?.version ?? ""),
 };
 
 // Component-side sorting keeps row order stable across auto-refresh
@@ -78,6 +81,8 @@ const toggleSort = (key: SortKey) => {
         sortAsc.value = true;
     }
 };
+
+const nodeInfoDialog = useTemplateRef<INodeInfoDialog>("nodeInfoDialog");
 </script>
 
 <template>
@@ -113,6 +118,7 @@ const toggleSort = (key: SortKey) => {
                         </button>
                     </th>
                     <td><span>API URL</span></td>
+                    <td />
                 </tr>
             </thead>
             <tbody>
@@ -120,14 +126,22 @@ const toggleSort = (key: SortKey) => {
                     <th><span>{{ n.alias }}</span></th>
                     <td><span>{{ n.status }}</span></td>
                     <td><span class="tabular-nums">{{ n.duration }}</span></td>
+                    <td><span class="font-mono">{{ n.info?.version ?? "-" }}</span></td>
                     <td>
                         <a class="link link-hover break-all" :href="nodeUrl(n.alias)" target="_blank">{{ nodeUrl(n.alias) }}</a>
                     </td>
+                    <td>
+                        <button class="btn btn-sm btn-ghost btn-square" title="Node details" @click="nodeInfoDialog?.show(n)">
+                            <InformationCircleIcon class="size-4 stroke-current" />
+                        </button>
+                    </td>
                 </tr>
                 <tr v-if="sortedNodes.length === 0">
-                    <td colspan="4" class="text-center">N/A</td>
+                    <td colspan="6" class="text-center">N/A</td>
                 </tr>
             </tbody>
         </table>
     </div>
+
+    <NodeInfoDialog ref="nodeInfoDialog" />
 </template>

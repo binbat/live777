@@ -6,6 +6,13 @@ export interface StreamTableProps {
     streamsSSEUrl?: string;
     getWhepUrl?: (streamId: string) => string;
     getWhipUrl?: (streamId: string) => string;
+    /**
+     * Cluster mode (liveman): resolve the aliases of the nodes hosting a
+     * stream. When set, the Source button shows on every row and the
+     * source dialog probes these nodes for the stream's encoder source,
+     * instead of gating rows by the single-node `/api/sources` poll.
+     */
+    getStreamNodes?: (streamId: string) => Promise<string[]>;
     showCascade?: boolean;
     features?: {
         player?: boolean;
@@ -307,13 +314,15 @@ watch([streamsData, recordingAvailable], () => {
     })();
 }, { immediate: true });
 
-// Streams with a configured source (liveion only — liveman has no
-// /api/sources and keeps features.source off).  Sources change
-// only through the admin API, so a slow poll is enough.
+// Streams with a configured source, polled from the single-node
+// /api/sources (liveion). Cluster mode (liveman, getStreamNodes set)
+// skips this poll: its source API is node-pinned, so the Source button
+// shows on every row and the dialog discovers the owning node instead.
+// Sources change only through the admin API, so a slow poll is enough.
 const sourceStreams = ref<Set<string>>(new Set());
 watchEffect((onCleanup) => {
     void token.value;
-    if (!features.value.source) {
+    if (!features.value.source || props.getStreamNodes) {
         sourceStreams.value = new Set();
         return;
     }
@@ -347,8 +356,13 @@ const handleViewClients = (id: string) => {
     clientsDialog.value?.show();
 };
 
-const handleViewSource = (id: string) => {
-    sourceDialog.value?.show(id);
+const handleViewSource = async (id: string) => {
+    if (props.getStreamNodes) {
+        const aliases = await props.getStreamNodes(id).catch(() => [] as string[]);
+        sourceDialog.value?.show(id, aliases);
+    } else {
+        sourceDialog.value?.show(id);
+    }
 };
 
 const handleCascadePullStream = () => {
@@ -649,7 +663,7 @@ const handleCancelStop = () => {
                             >Preview</button>
                             <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
                             <button
-                                v-if="features.source && sourceStreams.has(i.id)"
+                                v-if="features.source && (getStreamNodes ? true : sourceStreams.has(i.id))"
                                 class="btn btn-sm"
                                 @click="handleViewSource(i.id)"
                             >Source</button>

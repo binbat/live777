@@ -94,6 +94,13 @@ const getWhxpUrl = (whxp: "whep" | "whip", streamId: string) => {
 const getWhepUrl = (streamId: string) => getWhxpUrl("whep", streamId);
 const getWhipUrl = (streamId: string) => getWhxpUrl("whip", streamId);
 
+// Aliases of the nodes currently hosting a stream, for the source
+// dialog's cluster mode (the encoder source lives on exactly one of them).
+const getStreamNodes = async (streamId: string) => {
+    const detail = await livemanApi.getStreamDetail(streamId);
+    return Object.keys(detail);
+};
+
 const streamTokenDialog = useTemplateRef<IStreamTokenDialog>("streamTokenDialog");
 </script>
 
@@ -110,7 +117,8 @@ const streamTokenDialog = useTemplateRef<IStreamTokenDialog>("streamTokenDialog"
                 :get-streams="getStreams"
                 :get-whep-url="getWhepUrl"
                 :get-whip-url="getWhipUrl"
-                :features="{ autoDetectRecording: true }"
+                :get-stream-nodes="getStreamNodes"
+                :features="{ autoDetectRecording: true, source: true }"
             >
                 <template #extra-actions="{ stream }">
                     <button class="btn btn-sm" @click="streamTokenDialog?.show(stream.id)">Create token</button>

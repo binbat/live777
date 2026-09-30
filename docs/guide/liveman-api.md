@@ -83,6 +83,7 @@ Response: [200]
 - `url`: String, Node API URL
 - `status`: StringEnum("running" | "stopped"), Node contact health: the latest poll result for `poll` nodes (any HTTP response counts as reachable), the SSE connection state for `sse` nodes, and the discovery presence for net4mqtt nodes
 - `duration`: String, Round-trip of the latest poll (e.g. `"12ms"`); `"-"` for nodes without polls (SSE / net4mqtt)
+- `info`: Object, optional — the node's own `GET /api/info` build information (`version`, `gitHash`, `buildTime`, `features`), cached by liveman and refetched on reconnect; absent until the first successful fetch
 
 For Example:
 
@@ -92,7 +93,13 @@ For Example:
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
     "status": "running",
-    "duration": "3ms"
+    "duration": "3ms",
+    "info": {
+      "version": "v0.10.2",
+      "gitHash": "b789a64",
+      "buildTime": "2026-09-28T10:00:00+00:00",
+      "features": ["webui", "cascade", "recorder", "source-all"]
+    }
   },
   {
     "alias": "buildin-1",
