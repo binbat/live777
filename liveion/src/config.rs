@@ -479,7 +479,7 @@ impl Config {
             }
         }
 
-        #[cfg(feature = "target-whip")]
+        #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
         for (stream_id, entry) in &self.stream.streams {
             let mut seen_urls = std::collections::HashSet::new();
             for target in &entry.targets {
@@ -755,8 +755,9 @@ pub struct StreamEntry {
     #[serde(default = "default_on_demand_start_timeout_ms")]
     pub on_demand_start_timeout_ms: u64,
     /// Static output targets: push this stream to downstream WHIP endpoints
-    /// (declarative cascade-push).
-    #[cfg(feature = "target-whip")]
+    /// (declarative cascade-push) and/or send it out as plain RTP/UDP to a
+    /// multicast group or unicast address.
+    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -772,7 +773,7 @@ impl Default for StreamEntry {
             on_demand: false,
             on_demand_close_after_ms: default_on_demand_close_after_ms(),
             on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
-            #[cfg(feature = "target-whip")]
+            #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
             targets: Vec::new(),
         }
     }
@@ -786,25 +787,76 @@ fn default_on_demand_start_timeout_ms() -> u64 {
     10_000
 }
 
-/// A static output target of a stream: media is pushed to a downstream WHIP
-/// endpoint (declarative cascade-push), on par with how a WHEP source pulls
-/// media in. The push is media-driven: it is established when the stream
-/// gains a publisher and torn down when the publisher goes away; failures
-/// are retried with backoff. A target on an `on_demand` stream acts as
-/// standing demand: its sources are (re)started whenever the stream has
-/// neither a publisher nor a push session.
-#[cfg(feature = "target-whip")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A static output target of a stream. Two flavors:
+///
+/// - `whip://`/`whips://`: media is pushed to a downstream WHIP endpoint
+///   (declarative cascade-push), on par with how a WHEP source pulls media
+///   in.
+/// - `rtp://`: media is sent out as plain RTP over UDP to a multicast group
+///   (e.g. a Unitree video receiver) or a unicast address.
+///
+/// Both are media-driven: sending starts when the stream gains a publisher
+/// and stops when the publisher goes away; failures are retried with
+/// backoff. A target on an `on_demand` stream acts as standing demand: its
+/// sources are (re)started whenever the stream has neither a publisher nor
+/// an active target session.
+#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetConfig {
     /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
-    /// (or `whips://`). A Bearer token can be carried as userinfo.
+    /// (or `whips://`), or an RTP destination: `rtp://host:port`. A Bearer
+    /// token can be carried as userinfo (WHIP only). The RTP host must be
+    /// an IP literal (v6 in brackets); a multicast address sends to the
+    /// group, anything else is unicast.
     pub url: String,
+    /// Outbound multicast interface for `rtp://` targets: an IPv4 address
+    /// for IPv4 groups; an interface index or name for IPv6 groups. Unset
+    /// lets the kernel choose. Only valid with a multicast `rtp://` url.
+    #[serde(default)]
+    pub multicast_interface: Option<String>,
+    /// IPv4 multicast TTL / IPv6 multicast hops for `rtp://` targets
+    /// (default 1). Only valid with a multicast `rtp://` url.
+    #[serde(default)]
+    pub ttl: Option<u32>,
+    /// Payload type stamped on the video track's outgoing packets and
+    /// advertised in the generated SDP (96-127, dynamic range). Unset keeps
+    /// the automatic choice: the publisher's negotiated PT, or 96 for
+    /// dynamic codecs. Only valid with an `rtp://` url.
+    #[serde(default)]
+    pub payload_type: Option<u32>,
+    /// Write a receiver-side SDP file describing this target's output when
+    /// sending starts (like ffmpeg's rtp output writing test.sdp). The
+    /// file is directly consumable by live777's SDP file source
+    /// (`source-sdp`), ffmpeg, and gstreamer. Unset disables. Only valid
+    /// with an `rtp://` url.
+    #[serde(default)]
+    pub sdp_file: Option<String>,
 }
 
-#[cfg(feature = "target-whip")]
+#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
 impl TargetConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        crate::target::validate_target_url(self.url.trim())
+        let url = self.url.trim();
+        let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+        match scheme.as_str() {
+            #[cfg(feature = "target-whip")]
+            "whip" | "whips" => {
+                if self.multicast_interface.is_some()
+                    || self.ttl.is_some()
+                    || self.payload_type.is_some()
+                    || self.sdp_file.is_some()
+                {
+                    anyhow::bail!(
+                        "multicast_interface, ttl, payload_type and sdp_file \
+                         are only valid with an rtp:// target"
+                    );
+                }
+                crate::target::validate_target_url(url)
+            }
+            #[cfg(feature = "target-rtp")]
+            "rtp" => crate::target_rtp::validate_rtp_target(self),
+            _ => anyhow::bail!("unsupported target url scheme: {url}"),
+        }
     }
 }
 
@@ -1216,11 +1268,23 @@ fn default_rtsp_realm() -> String {
     "live777".to_string()
 }
 
-#[cfg(feature = "target-whip")]
+#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
 #[cfg(test)]
 mod target_tests {
     use super::*;
 
+    #[cfg(feature = "target-rtp")]
+    fn rtp_target(url: &str) -> TargetConfig {
+        TargetConfig {
+            url: url.to_string(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
     #[test]
     fn target_config_validate_accepts_whip_schemes() {
         for url in [
@@ -1229,11 +1293,18 @@ mod target_tests {
             "whip://token@edge-1:7777/whip/cam1",
             "WHIP://edge-1/whip/cam1",
         ] {
-            let target = TargetConfig { url: url.into() };
+            let target = TargetConfig {
+                url: url.into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
             target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
         }
     }
 
+    #[cfg(feature = "target-whip")]
     #[test]
     fn target_config_validate_rejects_bad_input() {
         for url in [
@@ -1242,9 +1313,226 @@ mod target_tests {
             "rtsp://edge-1/cam1",
             "whip://user:pass@edge-1/whip/cam1",
         ] {
-            let target = TargetConfig { url: url.into() };
+            let target = TargetConfig {
+                url: url.into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
             assert!(target.validate().is_err(), "{url} must be rejected");
         }
+    }
+
+    #[cfg(feature = "target-whip")]
+    #[test]
+    fn target_config_validate_rejects_whip_url_with_multicast_options() {
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        };
+        let err = target.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("rtp://"),
+            "error must point at rtp:// targets: {err}"
+        );
+
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: None,
+            ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_rtp_urls() {
+        for url in [
+            "rtp://230.1.1.1:1720",
+            "rtp://192.168.1.10:5004",
+            "rtp://[ff12::1]:1720",
+            "RTP://230.1.1.1:1720",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_multicast_rtp_options() {
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
+        };
+        target.validate().unwrap();
+
+        let target = TargetConfig {
+            url: "rtp://[ff12::1]:1720".into(),
+            multicast_interface: Some("2".into()),
+            ttl: Some(255),
+            payload_type: None,
+            sdp_file: None,
+        };
+        target.validate().unwrap();
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_bad_rtp_urls() {
+        for url in [
+            "rtp://",
+            "rtp://230.1.1.1",
+            "rtp://camera.local:1720",
+            "rtp://user@230.1.1.1:1720",
+            "rtp://230.1.1.1:1720/x",
+            "rtp://230.1.1.1:0",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            assert!(target.validate().is_err(), "{url} must be rejected");
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_bad_rtp_options() {
+        // TTL out of range.
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            multicast_interface: None,
+            ttl: Some(256),
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+
+        // IPv4 group: the interface must be an IPv4 address, not a name or
+        // an interface index (those are the IPv6 form).
+        for interface in ["eth0", "2"] {
+            let target = TargetConfig {
+                url: "rtp://230.1.1.1:1720".into(),
+                multicast_interface: Some(interface.into()),
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("multicast_interface"),
+                "error must name multicast_interface: {err}"
+            );
+        }
+
+        // IPv6 group: an IPv4 interface address does not fit.
+        let target = TargetConfig {
+            url: "rtp://[ff12::1]:1720".into(),
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+
+        // Unicast destination: multicast-only options are rejected.
+        for (interface, ttl) in [(Some("192.168.1.10"), None), (None, Some(16))] {
+            let target = TargetConfig {
+                url: "rtp://192.168.1.10:5004".into(),
+                multicast_interface: interface.map(str::to_string),
+                ttl,
+                payload_type: None,
+                sdp_file: None,
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("multicast"),
+                "error must say multicast-only: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_payload_type_and_sdp_file() {
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            payload_type: Some(96),
+            sdp_file: Some("/etc/live777/robot-cam.sdp".into()),
+            multicast_interface: None,
+            ttl: None,
+        };
+        target.validate().unwrap();
+
+        // The whole dynamic range is usable.
+        let target = TargetConfig {
+            payload_type: Some(127),
+            ..rtp_target("rtp://230.1.1.1:1720")
+        };
+        target.validate().unwrap();
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_payload_type_outside_dynamic_range() {
+        for pt in [0, 95, 128, 200] {
+            let target = TargetConfig {
+                payload_type: Some(pt),
+                ..rtp_target("rtp://230.1.1.1:1720")
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("payload_type") && err.contains("96"),
+                "error must explain the dynamic range: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
+    #[test]
+    fn target_config_validate_rejects_whip_url_with_rtp_options() {
+        // payload_type and sdp_file follow the same rule as the multicast
+        // options: an rtp://-only knob on a WHIP target is rejected.
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: Some(96),
+            sdp_file: None,
+        };
+        let err = target.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("rtp://"),
+            "error must point at rtp:// targets: {err}"
+        );
+
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: Some("cam.sdp".into()),
+        };
+        assert!(target.validate().is_err());
     }
 
     #[test]
@@ -1258,6 +1546,38 @@ mod target_tests {
         .unwrap();
         assert_eq!(entry.targets.len(), 1);
         assert_eq!(entry.targets[0].url, "whip://token@edge-1:7777/whip/cam1");
+        assert_eq!(entry.targets[0].multicast_interface, None);
+        assert_eq!(entry.targets[0].ttl, None);
+        assert_eq!(entry.targets[0].payload_type, None);
+        assert_eq!(entry.targets[0].sdp_file, None);
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn stream_entry_rtp_target_roundtrip_toml() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[targets]]
+            url = "rtp://230.1.1.1:1720"
+            multicast_interface = "192.168.123.10"
+            ttl = 16
+            payload_type = 96
+            sdp_file = "/etc/live777/robot-cam.sdp"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(entry.targets.len(), 1);
+        assert_eq!(entry.targets[0].url, "rtp://230.1.1.1:1720");
+        assert_eq!(
+            entry.targets[0].multicast_interface.as_deref(),
+            Some("192.168.123.10")
+        );
+        assert_eq!(entry.targets[0].ttl, Some(16));
+        assert_eq!(entry.targets[0].payload_type, Some(96));
+        assert_eq!(
+            entry.targets[0].sdp_file.as_deref(),
+            Some("/etc/live777/robot-cam.sdp")
+        );
     }
 
     #[test]
@@ -1268,6 +1588,10 @@ mod target_tests {
             StreamEntry {
                 targets: vec![TargetConfig {
                     url: "whep://edge-1/whep/cam1".into(),
+                    multicast_interface: None,
+                    ttl: None,
+                    payload_type: None,
+                    sdp_file: None,
                 }],
                 ..Default::default()
             },
@@ -1278,16 +1602,31 @@ mod target_tests {
 
     #[test]
     fn config_validate_rejects_duplicate_target_urls() {
+        // Both schemes funnel through the same duplicate check; use whichever
+        // this feature set validates.
+        let url = if cfg!(feature = "target-whip") {
+            "whip://edge-1:7777/whip/cam1"
+        } else {
+            "rtp://230.1.1.1:1720"
+        };
         let mut cfg = Config::default();
         cfg.stream.streams.insert(
             "cam1".to_string(),
             StreamEntry {
                 targets: vec![
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
+                        multicast_interface: None,
+                        ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
+                        multicast_interface: None,
+                        ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                 ],
                 ..Default::default()

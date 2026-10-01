@@ -44,6 +44,30 @@ pub struct Codec {
     pub channels: u16,
 }
 
+impl Codec {
+    /// Payload type advertised in a plain-RTP SDP (and stamped into
+    /// forwarded packets) for this codec.
+    ///
+    /// When a WHIP-published stream is described before the first RTP packet
+    /// arrives, the negotiated payload type is still 0 (not yet detected).
+    /// Default to 96 (dynamic PT range) for video and use the static PT
+    /// defined in RFC 3551 for well-known audio codecs so the SDP remains
+    /// valid.
+    #[cfg(any(feature = "rtsp", feature = "target-rtp"))]
+    pub(crate) fn sdp_payload_type(&self) -> u8 {
+        if self.payload_type != 0 {
+            self.payload_type
+        } else {
+            match self.codec.as_str() {
+                "pcma" => 8,
+                "pcmu" => 0,
+                "g722" => 9,
+                _ => 96,
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CascadeInfo {
     pub source_url: Option<String>,

@@ -2092,7 +2092,7 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    #[cfg(any(feature = "recorder", feature = "rtsp"))]
+    #[cfg(any(feature = "recorder", feature = "rtsp", feature = "target-rtp"))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
     }
@@ -2108,7 +2108,7 @@ impl PeerForwardInternal {
         })
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "recorder", feature = "target-rtp"))]
     pub(crate) async fn send_rtcp_to_publish(
         &self,
         message: crate::forward::rtcp::RtcpMessage,

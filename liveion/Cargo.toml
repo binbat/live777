@@ -62,10 +62,6 @@ scuffle-h265 = { version = "0.2.2", optional = true }
 glob = "0.3"
 url = { workspace = true, optional = true }
 fs2 = "0.4"
-socket2 = { version = "0.6", optional = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { version = "0.2", optional = true }
 
 [features]
 webui = ["dep:rust-embed", "dep:mime_guess"]
@@ -83,13 +79,15 @@ recorder = [
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
-source-sdp = ["source", "dep:socket2", "dep:libc"]
+source-sdp = ["source", "livetwo/multicast"]
 source-rtsp = ["source", "rtsp/client"]
 source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
 # Static WHIP push targets (declarative cascade-push)
 target-whip = ["cascade"]
+# Static RTP/UDP multicast (or unicast) output targets
+target-rtp = ["dep:livetwo", "livetwo/multicast"]
 
 native-source = ["source", "dep:livehal"]
 
@@ -113,3 +111,4 @@ native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 [dev-dependencies]
 tempfile = "3.26"
 toml = "1.0"
+socket2 = "0.6"

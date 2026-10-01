@@ -758,6 +758,7 @@ where
         liveion::config::StreamEntry {
             targets: vec![liveion::config::TargetConfig {
                 url: format!("whip://{api_addr_b}{}", api::path::whip(stream_id)),
+                ..Default::default()
             }],
             ..Default::default()
         },

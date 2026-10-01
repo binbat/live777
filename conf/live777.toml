@@ -92,6 +92,20 @@ ice_udp_addrs = ["auto"]
 # [[stream.test-source.targets]]
 # url = "whip://token@edge-1:7777/whip/cam1"
 
+# Static output targets can also send the stream out as plain RTP/UDP — to
+# a multicast group (live777 acts as the multicast sender, e.g. feeding a
+# Unitree video-link receiver) or a unicast address. Same media-driven
+# lifecycle and standing-demand semantics as a WHIP target; whip:// and
+# rtp:// targets mix freely on one stream.
+# Need enabled `--features=target-rtp`
+# - RTP send: rtp://host:port (IP literal; multicast group or unicast)
+# [[stream.test-source.targets]]
+# url = "rtp://230.1.1.1:1720"
+# multicast_interface = "192.168.123.10"  # outbound NIC (optional)
+# ttl = 16                # multicast TTL (default 1)
+# payload_type = 96       # pin the video payload type (96-127; optional)
+# sdp_file = "/etc/live777/robot-cam.sdp"  # write a receiver SDP on send start
+
 # --- Native source examples (structured config, recommended) ---
 #
 # Raspberry Pi CSI camera (tested on OV5647 / Camera Module v1):

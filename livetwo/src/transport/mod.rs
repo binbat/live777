@@ -1,3 +1,5 @@
+#[cfg(feature = "multicast")]
+pub mod multicast;
 mod rtcp;
 mod tcp;
 mod udp;

@@ -7,6 +7,8 @@ use rtc::rtp::{
 };
 use tracing::{debug, error, trace, warn};
 
+use base64::Engine;
+
 use super::{H264Processor, H265Processor};
 use crate::payload::{RTP_OUTBOUND_MTU, payload_annex_b};
 
@@ -28,6 +30,18 @@ pub trait RePayload {
     fn payload(&mut self, packet: &Packet) -> Vec<Packet>;
     fn set_h264_params(&mut self, sps: Vec<u8>, pps: Vec<u8>);
     fn set_h265_params(&mut self, vps: Vec<u8>, sps: Vec<u8>, pps: Vec<u8>);
+}
+
+/// Extract a fmtp parameter value without lowercasing, for base64-encoded
+/// values (sprop-parameter-sets, sprop-vps, ...).
+fn fmtp_param_case_preserving<'a>(fmtp: &'a str, key: &str) -> Option<&'a str> {
+    fmtp.split(';').find_map(|part| {
+        let (param_key, value) = part.trim().split_once('=')?;
+        param_key
+            .trim()
+            .eq_ignore_ascii_case(key)
+            .then_some(value.trim())
+    })
 }
 
 pub struct Forward;
@@ -181,6 +195,40 @@ impl RePayloadCodec {
             h265_processor,
             frame_count: 0,
         }
+    }
+
+    /// Build a codec for `mime_type`, pre-seeding H264/H265 parameter sets
+    /// from an SDP fmtp line (`sprop-parameter-sets` /
+    /// `sprop-vps`/`sprop-sps`/`sprop-pps`, base64). No-op for other mime
+    /// types or unparseable params.
+    pub fn with_sprop_params(mime_type: String, sdp_fmtp_line: &str) -> Self {
+        let mut rp = Self::new(mime_type.clone());
+        let b64 = base64::engine::general_purpose::STANDARD;
+        if mime_type.eq_ignore_ascii_case(MIME_TYPE_H264) {
+            if let Some(sprop) = fmtp_param_case_preserving(sdp_fmtp_line, "sprop-parameter-sets") {
+                let parts: Vec<&str> = sprop.split(',').collect();
+                if parts.len() >= 2
+                    && let (Ok(sps), Ok(pps)) =
+                        (b64.decode(parts[0].trim()), b64.decode(parts[1].trim()))
+                {
+                    rp.set_h264_params(sps, pps);
+                }
+            }
+        } else if mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+            let vps = fmtp_param_case_preserving(sdp_fmtp_line, "sprop-vps");
+            let sps = fmtp_param_case_preserving(sdp_fmtp_line, "sprop-sps");
+            let pps = fmtp_param_case_preserving(sdp_fmtp_line, "sprop-pps");
+            if let (Some(vps), Some(sps), Some(pps)) = (vps, sps, pps)
+                && let (Ok(vps), Ok(sps), Ok(pps)) = (
+                    b64.decode(vps.trim()),
+                    b64.decode(sps.trim()),
+                    b64.decode(pps.trim()),
+                )
+            {
+                rp.set_h265_params(vps, sps, pps);
+            }
+        }
+        rp
     }
 
     fn is_av1(&self) -> bool {
@@ -529,6 +577,7 @@ impl RePayload for RePayloadCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use bytes::Bytes;
 
     fn av1_packet(marker: bool, aggregation_header: u8) -> Packet {
@@ -646,5 +695,119 @@ mod tests {
             .collect();
         let expected: Vec<u16> = (0..seqs.len() as u16).collect();
         assert_eq!(seqs, expected);
+    }
+
+    fn concatenated_payload(packets: &[Packet]) -> Vec<u8> {
+        packets
+            .iter()
+            .flat_map(|p| p.payload.iter().copied())
+            .collect()
+    }
+
+    /// A constructor seeded from the SDP fmtp's `sprop-parameter-sets`
+    /// injects those parameter sets ahead of the very first IDR, so a
+    /// receiver joining from the start (or mid-GOP, after the sender's own
+    /// inline cadence) always has SPS/PPS available.
+    #[test]
+    fn with_sprop_params_seeds_h264_from_fmtp() {
+        const SPS: [u8; 5] = [0x67, 0x42, 0x00, 0x1f, 0xaa];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x3c, 0x80];
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let fmtp = format!(
+            "profile-level-id=42001f;packetization-mode=1;sprop-parameter-sets={},{}",
+            b64.encode(SPS),
+            b64.encode(PPS)
+        );
+
+        let mut codec = RePayloadCodec::with_sprop_params(MIME_TYPE_H264.to_owned(), &fmtp);
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        let payload = concatenated_payload(&out);
+        let find = |needle: &[u8]| payload.windows(needle.len()).position(|w| w == needle);
+        let (sps_at, pps_at, idr_at) = (find(&SPS), find(&PPS), find(&IDR));
+        assert!(
+            sps_at.is_some() && pps_at.is_some(),
+            "seeded SPS/PPS must be injected: {payload:02x?}"
+        );
+        assert!(sps_at < idr_at && pps_at < idr_at);
+    }
+
+    #[test]
+    fn with_sprop_params_h264_ignores_unparseable_params() {
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        // Invalid base64.
+        let mut codec = RePayloadCodec::with_sprop_params(
+            MIME_TYPE_H264.to_owned(),
+            "sprop-parameter-sets=!!!not-base64!!!,aM4yyA==",
+        );
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        assert_eq!(concatenated_payload(&out), IDR);
+
+        // Missing the PPS segment.
+        let mut codec = RePayloadCodec::with_sprop_params(
+            MIME_TYPE_H264.to_owned(),
+            "sprop-parameter-sets=Z0IAH5WoFAFuQA==",
+        );
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        assert_eq!(concatenated_payload(&out), IDR);
+
+        // No sprop at all.
+        let mut codec =
+            RePayloadCodec::with_sprop_params(MIME_TYPE_H264.to_owned(), "packetization-mode=1");
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        assert_eq!(concatenated_payload(&out), IDR);
+    }
+
+    #[test]
+    fn with_sprop_params_seeds_h265_from_fmtp() {
+        const VPS: [u8; 4] = [0x40, 0x01, 0x0c, 0x01];
+        const SPS: [u8; 5] = [0x42, 0x01, 0x01, 0x01, 0x60];
+        const PPS: [u8; 3] = [0x44, 0x01, 0xc0];
+        // IDR_W_RADL (type 19): byte0 = (19 << 1) | F.
+        const IDR: [u8; 4] = [0x26, 0x01, 0xaf, 0x08];
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let fmtp = format!(
+            "profile-id=1;sprop-vps={};sprop-sps={};sprop-pps={}",
+            b64.encode(VPS),
+            b64.encode(SPS),
+            b64.encode(PPS)
+        );
+
+        let mut codec = RePayloadCodec::with_sprop_params(MIME_TYPE_HEVC.to_owned(), &fmtp);
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        let payload = concatenated_payload(&out);
+        let find = |needle: &[u8]| payload.windows(needle.len()).position(|w| w == needle);
+        let (vps_at, sps_at, pps_at, idr_at) = (find(&VPS), find(&SPS), find(&PPS), find(&IDR));
+        assert!(
+            vps_at.is_some() && sps_at.is_some() && pps_at.is_some(),
+            "seeded VPS/SPS/PPS must be injected: {payload:02x?}"
+        );
+        assert!(vps_at < idr_at && sps_at < idr_at && pps_at < idr_at);
+    }
+
+    #[test]
+    fn with_sprop_params_is_noop_for_other_mime_types() {
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+        // Z0IAH5WoFAFuQA== / aM4yyA== (the SPS/PPS from the SDP-source tests).
+        const SPS: [u8; 9] = [0x67, 0x42, 0x00, 0x1f, 0x95, 0xa8, 0x14, 0x01, 0x6e];
+        const PPS: [u8; 4] = [0x68, 0xce, 0x32, 0xc8];
+
+        // Not an H264/H265 mime: the sprop keys are ignored, the codec
+        // works as a plain repayloader and the seeded bytes never appear
+        // in its output.
+        let mut codec = RePayloadCodec::with_sprop_params(
+            MIME_TYPE_VP8.to_owned(),
+            "sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM4yyA==",
+        );
+        let out = codec.payload(&h264_packet(true, 1, &IDR));
+        let payload = concatenated_payload(&out);
+        let contains = |needle: &[u8]| payload.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            !contains(&SPS) && !contains(&PPS),
+            "non-H264/H264 mime must not seed parameter sets: {payload:02x?}"
+        );
     }
 }

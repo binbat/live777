@@ -67,3 +67,77 @@ with backoff before the source start fails.
 For a fleet of dogs, run this on each dog's host (or an edge box with a
 link to it) and put a [liveman](./liveman.md) cluster manager in front —
 the streams then cascade to browsers through a single entry point.
+
+## live777 as the multicast sender
+
+The symmetric direction also works: a stream's `targets` can carry an
+`rtp://` URL, and live777 sends the media out as plain RTP over UDP — to a
+multicast group when the host is a multicast address, or to a unicast
+address otherwise. live777 acts as the multicast sender, like the Go2
+camera itself.
+
+```toml
+[stream.robot-cam]
+# on_demand = true  # like a WHIP target, an rtp target is standing demand:
+                    # its sources start while the stream has a publisher
+                    # (or this target) and stop after the last one leaves.
+
+[[stream.robot-cam.targets]]
+url = "rtp://230.1.1.1:1720"
+# multicast_interface = "192.168.123.10"  # outbound NIC (optional)
+# ttl = 16                                # raise to cross routers (default 1)
+# payload_type = 96        # pin the video payload type (96-127, dynamic
+                           # range); unset keeps the negotiated PT, 96 for
+                           # dynamic codecs. Audio always keeps its own.
+# sdp_file = "/etc/live777/robot-cam.sdp"  # write a receiver-side SDP file
+                           # when sending starts (like ffmpeg's -sdp_file)
+```
+
+Sending is media-driven, mirroring the WHIP push target: it starts when
+the stream gains a publisher (`PublishStarted`) and stops when the
+publisher goes away. The first video track goes to the URL's port, the
+first audio track to port + 2 (the RTP/AVP convention leaves port + 1 for
+RTCP). Video is re-assembled and re-packetized before sending: SPS/PPS are
+inlined ahead of every IDR, so a receiver joining mid-GOP decodes from the
+next keyframe — the same guarantee the ingest side gives. Audio passes
+through untouched.
+
+With `sdp_file` set, live777 writes a receiver-side SDP file every time
+sending starts (the file is not deleted when sending stops — the group and
+port stay valid while the sender is away). The generated file is directly
+consumable by another live777 as an SDP file source, giving a
+live777 → live777 multicast cascade:
+
+```toml
+[[stream.relayed.sources]]
+url = "/etc/live777/robot-cam.sdp"
+```
+
+For a unicast target the generated `c=` line is a `127.0.0.1` placeholder;
+the receiver must replace it with its own address before use.
+
+Because the output is ordinary RTP/AVP, receivers do not need live777. The
+matching SDP (as written by `sdp_file`):
+
+```
+v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=live777-robot-cam
+c=IN IP4 230.1.1.1
+t=0 0
+m=video 1720 RTP/AVP 96
+a=rtpmap:96 H264/90000
+```
+
+Verify with the same pipeline that works for the camera itself:
+
+```bash
+gst-launch-1.0 udpsrc address=230.1.1.1 port=1720 multicast-iface=eth0 ! \
+  queue ! application/x-rtp,media=video,encoding-name=H264 ! \
+  rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
+```
+
+or point an SDP file receiver at the description above. The group and port
+are free to choose, but configuring the same `230.1.1.1:1720` the Go2
+camera uses means existing Unitree video-link receivers work unmodified —
+live777 simply replaces the camera as the multicast source.
