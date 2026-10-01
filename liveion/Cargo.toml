@@ -83,7 +83,7 @@ recorder = [
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
-source-sdp = ["source", "dep:socket2", "dep:libc"]
+source-sdp = ["source", "livetwo/multicast"]
 source-rtsp = ["source", "rtsp/client"]
 source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
@@ -115,3 +115,4 @@ native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 [dev-dependencies]
 tempfile = "3.26"
 toml = "1.0"
+socket2 = "0.6"

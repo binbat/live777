@@ -22,32 +22,7 @@ type RtcpSender = Arc<RwLock<Option<mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>
 /// SDP connection address when it names a multicast group (e.g.
 /// `c=IN IP4 230.1.1.1`); unicast and unspecified addresses yield `None`.
 #[cfg(feature = "source")]
-#[derive(Debug, Clone, Copy)]
-enum MulticastJoin {
-    /// IPv4 group joined on the interface owning `interface`
-    /// (`0.0.0.0` lets the kernel choose).
-    V4 {
-        group: Ipv4Addr,
-        interface: Ipv4Addr,
-    },
-    /// IPv6 group joined on the interface with index `interface`
-    /// (`0` lets the kernel choose).
-    V6 { group: Ipv6Addr, interface: u32 },
-}
-
-#[cfg(feature = "source")]
-impl std::fmt::Display for MulticastJoin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MulticastJoin::V4 { group, interface } => {
-                write!(f, "{group} (interface {interface})")
-            }
-            MulticastJoin::V6 { group, interface } => {
-                write!(f, "{group} (interface index {interface})")
-            }
-        }
-    }
-}
+use livetwo::transport::multicast::MulticastJoin;
 
 /// The session-level SDP connection address (`c=IN IP4/IP6 <addr>`), keyed
 /// by the address family declared on the line.  The bare address is kept
@@ -134,41 +109,10 @@ fn addr_lacks_rtcp_destination(connection_info: &Option<ConnectionAddress>) -> b
     })
 }
 
-/// Resolve an interface name to its index for IPv6 multicast joins.
-#[cfg(all(feature = "source", unix))]
-fn if_name_to_index(name: &str) -> Result<u32> {
-    let name_c = std::ffi::CString::new(name)
-        .map_err(|_| anyhow::anyhow!("interface name contains a NUL byte"))?;
-    // SAFETY: name_c is a valid NUL-terminated C string; the returned index
-    // is 0 when no interface has that name.
-    let index = unsafe { libc::if_nametoindex(name_c.as_ptr()) };
-    if index == 0 {
-        anyhow::bail!("interface '{name}' not found");
-    }
-    Ok(index)
-}
-
-#[cfg(all(feature = "source", not(unix)))]
-fn if_name_to_index(name: &str) -> Result<u32> {
-    anyhow::bail!(
-        "interface names are not supported on this platform; use an interface index instead of '{name}'"
-    )
-}
-
-/// Resolve an IPv6 multicast join interface given as an interface index or
-/// an interface name (interface indexes are not stable across reboots;
-/// names are the durable identifier).
+/// Multicast socket builders and interface resolution are shared with the
+/// RTP output target (`rtp://`) via livetwo.
 #[cfg(feature = "source")]
-fn resolve_v6_interface(value: &str, group: &Ipv6Addr) -> Result<u32> {
-    if let Ok(index) = value.parse::<u32>() {
-        return Ok(index);
-    }
-    if_name_to_index(value).map_err(|e| {
-        anyhow::anyhow!(
-            "multicast_interface '{value}' must be an interface index or name for IPv6 group {group}: {e}"
-        )
-    })
-}
+use livetwo::transport::multicast::{receiver_socket, resolve_v6_interface};
 
 /// Resolve the multicast join for the SDP connection address: `None` for
 /// unicast/unspecified addresses, an error when the address is a multicast
@@ -239,53 +183,14 @@ const BIND_JOIN_MAX_DELAY: Duration = Duration::from_secs(4);
 
 /// Bind a media-port UDP socket on the wildcard address of `bind_ip`'s
 /// family, joining the multicast group when the SDP connection address
-/// named one.  Multicast receivers set SO_REUSEADDR so several receivers
-/// of the same group:port can coexist on one host (a second stream, a
-/// monitoring tool); SO_REUSEPORT would load-balance the datagrams instead
-/// of duplicating them.
+/// named one.
 #[cfg(feature = "source")]
 async fn bind_receiver_socket(
     bind_ip: IpAddr,
     port: u16,
     multicast: Option<MulticastJoin>,
 ) -> Result<UdpSocket> {
-    let bind_addr = SocketAddr::new(bind_ip, port);
-
-    let Some(join) = multicast else {
-        return UdpSocket::bind(bind_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket {bind_addr}: {e}"));
-    };
-
-    let domain = match bind_ip {
-        IpAddr::V4(_) => socket2::Domain::IPV4,
-        IpAddr::V6(_) => socket2::Domain::IPV6,
-    };
-    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    socket.set_nonblocking(true)?;
-    socket
-        .bind(&bind_addr.into())
-        .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket {bind_addr}: {e}"))?;
-    let socket = UdpSocket::from_std(socket.into())?;
-
-    match join {
-        MulticastJoin::V4 { group, interface } => {
-            socket.join_multicast_v4(group, interface).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to join multicast group {group} (interface {interface}): {e}"
-                )
-            })?;
-        }
-        MulticastJoin::V6 { group, interface } => {
-            socket.join_multicast_v6(&group, interface).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to join multicast group {group} (interface index {interface}): {e}"
-                )
-            })?;
-        }
-    }
-    Ok(socket)
+    receiver_socket(SocketAddr::new(bind_ip, port), multicast).await
 }
 
 #[cfg(feature = "source")]
@@ -539,36 +444,6 @@ impl SdpSource {
         Ok(ports)
     }
 
-    /// Bind the RTCP sender socket dual-stack (`[::]:0`, `IPV6_V6ONLY`
-    /// off), so a unicast IP6 SDP connection address is a reachable RTCP
-    /// destination; hosts without IPv6 fall back to an IPv4 socket.  The
-    /// bool reports whether sends must map v4 destinations to v4-mapped
-    /// IPv6 (an AF_INET6 socket rejects a plain AF_INET destination).
-    #[cfg(feature = "source")]
-    async fn rtcp_sender_socket() -> Result<(UdpSocket, bool)> {
-        let dual_stack = || -> Result<UdpSocket> {
-            let socket = socket2::Socket::new(
-                socket2::Domain::IPV6,
-                socket2::Type::DGRAM,
-                Some(socket2::Protocol::UDP),
-            )?;
-            socket.set_only_v6(false)?;
-            socket.set_nonblocking(true)?;
-            socket.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).into())?;
-            Ok(UdpSocket::from_std(socket.into())?)
-        };
-        match dual_stack() {
-            Ok(socket) => Ok((socket, true)),
-            Err(e) => {
-                debug!("dual-stack UDP socket unavailable ({e}); falling back to IPv4");
-                Ok((
-                    UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).await?,
-                    false,
-                ))
-            }
-        }
-    }
-
     #[cfg(feature = "source")]
     async fn rtcp_sender_task(
         stream_id: String,
@@ -577,13 +452,14 @@ impl SdpSource {
     ) {
         info!("[{}] RTCP sender task started", stream_id);
 
-        let (socket, dual_stack) = match Self::rtcp_sender_socket().await {
-            Ok(ok) => ok,
-            Err(e) => {
-                error!("[{}] Failed to create RTCP socket: {}", stream_id, e);
-                return;
-            }
-        };
+        let (socket, dual_stack) =
+            match livetwo::transport::multicast::dual_stack_sender_socket().await {
+                Ok(ok) => ok,
+                Err(e) => {
+                    error!("[{}] Failed to create RTCP socket: {}", stream_id, e);
+                    return;
+                }
+            };
 
         loop {
             tokio::select! {
@@ -1172,9 +1048,7 @@ mod tests {
         let source = test_source_with(&sdp, Some("lo"));
         let (_, _, _, multicast) = source.parse_sdp().unwrap();
 
-        let lo_index = std::ffi::CString::new("lo")
-            .map(|name| unsafe { libc::if_nametoindex(name.as_ptr()) })
-            .unwrap();
+        let lo_index = livetwo::transport::multicast::if_name_to_index("lo").unwrap();
         assert!(lo_index > 0);
         match multicast {
             Some(MulticastJoin::V6 { interface, .. }) => assert_eq!(interface, lo_index),
