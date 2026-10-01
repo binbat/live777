@@ -337,7 +337,7 @@ jobs:
       - name: Build ${{ matrix.job.variant }} live777
         shell: bash
         run: |
-          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui
+          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui,target-rtp
 
       - name: Create ${{ matrix.job.variant }} live777 tarball
         shell: bash
