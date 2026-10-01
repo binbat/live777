@@ -563,6 +563,17 @@ impl Manager {
         self.provisioned.contains(stream)
     }
 
+    /// Whether `stream` currently has a live publisher session (a real WHIP
+    /// publisher or a source bridge's virtual one). Drives the target
+    /// supervisors' media-driven start/stop.
+    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+    pub async fn has_publisher(&self, stream: &str) -> bool {
+        self.info(vec![stream.to_string()])
+            .await
+            .first()
+            .is_some_and(|s| s.publish.sessions.iter().any(|x| x.leave_at == 0))
+    }
+
     /// Whether `stream` is a provisioned stream with `on_demand = true`.
     /// Drives the recorder's publish-triggered recording for such streams,
     /// and the target supervisor's on-demand source kick.
@@ -1394,15 +1405,22 @@ impl Manager {
             forward.remove_virtual_tracks().await;
         }
         if had_bridge {
-            metrics::PUBLISH.dec();
-            let _ = self.event_sender.send(Event::PublishStopped {
-                stream: stream.to_string(),
-                session: VIRTUAL_SOURCE_SESSION.to_string(),
-                reason,
-            });
+            self.emit_source_publish_stopped(stream, reason);
         }
         info!("stopped source for stream {}", stream);
         Ok(())
+    }
+
+    /// Emit the virtual publisher's `PublishStopped` for a source-backed
+    /// stream whose bridge just went away.
+    #[cfg(feature = "source")]
+    pub(crate) fn emit_source_publish_stopped(&self, stream: &str, reason: SessionStopReason) {
+        metrics::PUBLISH.dec();
+        let _ = self.event_sender.send(Event::PublishStopped {
+            stream: stream.to_string(),
+            session: VIRTUAL_SOURCE_SESSION.to_string(),
+            reason,
+        });
     }
 
     /// Emit the virtual publisher's `PublishStarted` for a source-backed

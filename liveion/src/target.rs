@@ -128,7 +128,7 @@ impl TargetContext {
         // The bus does not replay: media that became available before this
         // task started (always-on sources, early publishers) is only visible
         // through the manager snapshot.
-        let mut desired = self.has_publisher().await;
+        let mut desired = self.manager.has_publisher(&self.stream).await;
         // A configured target on an on-demand stream is standing demand:
         // whenever the stream has neither a publisher nor a push session,
         // kick its sources. Retried with the same backoff as push failures,
@@ -155,13 +155,13 @@ impl TargetContext {
                     }
                     // The wait is event-blind: a real publisher may have
                     // arrived meanwhile.
-                    desired = self.has_publisher().await;
+                    desired = self.manager.has_publisher(&self.stream).await;
                     continue;
                 }
                 // The kick blocks until the source bridge is up, so the
                 // virtual publisher is already visible in the snapshot — no
                 // need to wait for PublishStarted.
-                desired = self.has_publisher().await;
+                desired = self.manager.has_publisher(&self.stream).await;
             }
 
             if desired && session.is_none() {
@@ -191,7 +191,7 @@ impl TargetContext {
                         // The backoff wait is event-blind: the media may have
                         // gone away mid-sleep, and pushing now would
                         // negotiate the session with the wrong codecs.
-                        desired = self.has_publisher().await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                         continue;
                     }
                 }
@@ -240,7 +240,7 @@ impl TargetContext {
                             }
                             // The wait is event-blind: re-check the media is
                             // still there before re-establishing.
-                            desired = self.has_publisher().await;
+                            desired = self.manager.has_publisher(&self.stream).await;
                         }
                     }
                     Ok(Event::StreamDeleted { stream, reason }) => {
@@ -266,7 +266,7 @@ impl TargetContext {
                             "[target] [{}] dropped {} stream events, reconciling",
                             self.stream, n
                         );
-                        desired = self.has_publisher().await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                         let mut lost = false;
                         if let Some(id) = &session
                             && !self.session_alive(id).await
@@ -285,7 +285,7 @@ impl TargetContext {
                             if self.wait(reconnect_delay(1)).await {
                                 break;
                             }
-                            desired = self.has_publisher().await;
+                            desired = self.manager.has_publisher(&self.stream).await;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -310,16 +310,6 @@ impl TargetContext {
             _ = self.cancel.cancelled() => true,
             _ = tokio::time::sleep(delay) => false,
         }
-    }
-
-    /// Whether the stream currently has a live publisher session (a real
-    /// WHIP publisher or a source bridge's virtual one).
-    async fn has_publisher(&self) -> bool {
-        self.manager
-            .info(vec![self.stream.clone()])
-            .await
-            .first()
-            .is_some_and(|s| s.publish.sessions.iter().any(|x| x.leave_at == 0))
     }
 
     /// Whether the manager still lists `id` as a live subscribe session of

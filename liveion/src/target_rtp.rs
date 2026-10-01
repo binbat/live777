@@ -30,11 +30,12 @@
 //! (ffmpeg's `-sdp_file` behavior), directly consumable by live777's own
 //! SDP file source.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use livetwo::payload::{Forward, RePayload, RePayloadCodec};
+use livetwo::transport::multicast;
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::net::UdpSocket;
@@ -87,6 +88,13 @@ pub(crate) fn parse_rtp_url(raw: &str) -> anyhow::Result<SocketAddr> {
 /// instead of surfacing once in a supervisor log line.
 pub(crate) fn validate_rtp_target(target: &TargetConfig) -> anyhow::Result<()> {
     let dest = parse_rtp_url(&target.url)?;
+    validate_rtp_options(&dest, target).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Shared option validation for [`validate_rtp_target`] and
+/// [`RtpTargetContext::new`] (which covers programmatic targets that never
+/// went through `Config::validate`).
+fn validate_rtp_options(dest: &SocketAddr, target: &TargetConfig) -> anyhow::Result<()> {
     if dest.port() == 0 {
         anyhow::bail!(
             "invalid rtp:// target url '{}': port must be non-zero",
@@ -112,119 +120,10 @@ pub(crate) fn validate_rtp_target(target: &TargetConfig) -> anyhow::Result<()> {
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if let Some(interface) = interface {
-        match dest.ip() {
-            IpAddr::V4(group) => {
-                interface.parse::<Ipv4Addr>().map_err(|_| {
-                    anyhow::anyhow!(
-                        "multicast_interface '{interface}' must be an IPv4 address \
-                         for IPv4 group {group}"
-                    )
-                })?;
-            }
-            IpAddr::V6(group) => {
-                resolve_v6_interface(interface, &group)?;
-            }
-        }
+        multicast::resolve_interface(&dest.ip(), interface)?;
     }
     Ok(())
 }
-
-/// Resolve an interface name to its index for IPv6 multicast.
-#[cfg(unix)]
-fn if_name_to_index(name: &str) -> anyhow::Result<u32> {
-    let name_c = std::ffi::CString::new(name)
-        .map_err(|_| anyhow::anyhow!("interface name contains a NUL byte"))?;
-    // SAFETY: name_c is a valid NUL-terminated C string; the returned index
-    // is 0 when no interface has that name.
-    let index = unsafe { libc::if_nametoindex(name_c.as_ptr()) };
-    if index == 0 {
-        anyhow::bail!("interface '{name}' not found");
-    }
-    Ok(index)
-}
-
-#[cfg(not(unix))]
-fn if_name_to_index(name: &str) -> anyhow::Result<u32> {
-    anyhow::bail!(
-        "interface names are not supported on this platform; \
-         use an interface index instead of '{name}'"
-    )
-}
-
-/// Resolve the outbound interface for an IPv6 multicast group given as an
-/// interface index or name (interface indexes are not stable across reboots;
-/// names are the durable identifier).
-fn resolve_v6_interface(value: &str, group: &Ipv6Addr) -> anyhow::Result<u32> {
-    if let Ok(index) = value.parse::<u32>() {
-        return Ok(index);
-    }
-    if_name_to_index(value).map_err(|e| {
-        anyhow::anyhow!(
-            "multicast_interface '{value}' must be an interface index or name \
-             for IPv6 group {group}: {e}"
-        )
-    })
-}
-
-/// Build the UDP socket sending towards `dest`: multicast TTL / outbound
-/// interface options when `dest` is a group, a plain bound socket otherwise.
-fn build_sender_socket(
-    dest: SocketAddr,
-    multicast_interface: Option<&str>,
-    ttl: Option<u32>,
-) -> anyhow::Result<UdpSocket> {
-    let domain = match dest.ip() {
-        IpAddr::V4(_) => socket2::Domain::IPV4,
-        IpAddr::V6(_) => socket2::Domain::IPV6,
-    };
-    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-    socket.set_nonblocking(true)?;
-
-    let bind_ip = match dest.ip() {
-        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-    };
-    socket
-        .bind(&SocketAddr::new(bind_ip, 0).into())
-        .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket {bind_ip}:0: {e}"))?;
-
-    let interface = multicast_interface.map(str::trim).filter(|s| !s.is_empty());
-    match dest.ip() {
-        IpAddr::V4(group) if group.is_multicast() => {
-            socket.set_multicast_ttl_v4(ttl.unwrap_or(1))?;
-            if let Some(interface) = interface {
-                let addr: Ipv4Addr = interface.parse().map_err(|_| {
-                    anyhow::anyhow!(
-                        "multicast_interface '{interface}' must be an IPv4 address \
-                         for IPv4 group {group}"
-                    )
-                })?;
-                socket.set_multicast_if_v4(&addr)?;
-            }
-        }
-        IpAddr::V6(group) if group.is_multicast() => {
-            socket.set_multicast_hops_v6(ttl.unwrap_or(1))?;
-            if let Some(interface) = interface {
-                socket.set_multicast_if_v6(resolve_v6_interface(interface, &group)?)?;
-            }
-        }
-        _ => {}
-    }
-
-    Ok(UdpSocket::from_std(socket.into())?)
-}
-
-/// Whether the stream currently has a live publisher session (a real WHIP
-/// publisher or a source bridge's virtual one).
-async fn has_publisher(manager: &Manager, stream: &str) -> bool {
-    manager
-        .info(vec![stream.to_string()])
-        .await
-        .first()
-        .is_some_and(|s| s.publish.sessions.iter().any(|x| x.leave_at == 0))
-}
-
-/// Wait (bounded) for the publisher's tracks to appear. The change
 /// notification is subscribed before the first snapshot so a track added in
 /// between is still observed. The bus does not replay: media that became
 /// available before the supervisor started is only visible through the
@@ -259,34 +158,22 @@ struct RtpTargetContext {
     /// Optional receiver-side SDP written when sending starts.
     sdp_file: Option<String>,
     cancel: CancellationToken,
+    /// Test-only observability for the supervisor's restart behavior: the
+    /// stale-exit regression test asserts a teardown/restart cycle does not
+    /// multiply into a restart storm.
+    #[cfg(test)]
+    start_calls: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RtpTargetContext {
     fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
         let dest = parse_rtp_url(&target.url)
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTP target: {}", stream, e))?;
-        if dest.port() == 0 {
-            anyhow::bail!("[{}] invalid RTP target: port must be non-zero", stream);
-        }
-        if let Some(pt) = target.payload_type
-            && !(96..=127).contains(&pt)
-        {
-            anyhow::bail!(
-                "[{}] invalid RTP target: payload_type must be in 96..=127, got {pt}",
-                stream
-            );
-        }
-        // A multicast-only option on a unicast destination would silently do
-        // nothing; reject it here (config validation already reports it, this
-        // covers programmatic targets).
-        if !dest.ip().is_multicast()
-            && (target.multicast_interface.is_some() || target.ttl.is_some())
-        {
-            anyhow::bail!(
-                "[{}] multicast_interface and ttl are only valid with a multicast rtp:// target",
-                stream
-            );
-        }
+        // Config validation already reports these; re-checking covers
+        // programmatic targets (a multicast-only option on a unicast
+        // destination would otherwise silently do nothing).
+        validate_rtp_options(&dest, &target)
+            .map_err(|e| anyhow::anyhow!("[{}] invalid RTP target: {}", stream, e))?;
         let cancel = manager.cancel_token();
         Ok(Self {
             manager,
@@ -297,6 +184,8 @@ impl RtpTargetContext {
             payload_type: target.payload_type,
             sdp_file: target.sdp_file,
             cancel,
+            #[cfg(test)]
+            start_calls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -306,12 +195,17 @@ impl RtpTargetContext {
         let mut events = self.manager.subscribe_event();
         // Send epoch: while `Some`, per-track send tasks are running and
         // cancelled on teardown. A task exiting on its own also signals via
-        // `exit_rx` (track set changed or a bus closed).
-        let mut senders: Option<CancellationToken> = None;
-        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
+        // `exit_rx` (track set changed or a bus closed). The generation tag
+        // distinguishes a live epoch's spontaneous exit from a belated exit
+        // of an already torn-down epoch — without it a stale message would
+        // cancel the *next* epoch, whose tasks report their own exits in
+        // turn, self-sustaining a restart storm.
+        let mut senders: Option<(u64, CancellationToken)> = None;
+        let mut generation: u64 = 0;
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u64>();
         // Consecutive failed kick/sender attempts, reset once sending works.
         let mut failures: u32 = 0;
-        let mut desired = has_publisher(&self.manager, &self.stream).await;
+        let mut desired = self.manager.has_publisher(&self.stream).await;
         // A configured target on an on-demand stream is standing demand:
         // whenever the stream has neither a publisher nor active senders,
         // kick its sources. Retried with the same backoff as send failures,
@@ -338,19 +232,20 @@ impl RtpTargetContext {
                     if self.wait(delay).await {
                         break;
                     }
-                    desired = has_publisher(&self.manager, &self.stream).await;
+                    desired = self.manager.has_publisher(&self.stream).await;
                     continue;
                 }
                 // The kick blocks until the source bridge is up, so the
                 // virtual publisher is already visible in the snapshot — no
                 // need to wait for PublishStarted.
-                desired = has_publisher(&self.manager, &self.stream).await;
+                desired = self.manager.has_publisher(&self.stream).await;
             }
 
             if desired && senders.is_none() {
-                match self.start_senders(&exit_tx).await {
+                generation = generation.wrapping_add(1);
+                match self.start_senders(generation, &exit_tx).await {
                     Ok(epoch) => {
-                        senders = Some(epoch);
+                        senders = Some((generation, epoch));
                         failures = 0;
                     }
                     Err(e) => {
@@ -366,7 +261,7 @@ impl RtpTargetContext {
                         // The backoff wait is event-blind: the media may have
                         // gone away mid-sleep, and sending now would stamp
                         // packets for a publisher that is already gone.
-                        desired = has_publisher(&self.manager, &self.stream).await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                         continue;
                     }
                 }
@@ -375,7 +270,7 @@ impl RtpTargetContext {
                     "[target] [{}] media gone; stopping rtp senders towards {}",
                     self.stream, self.dest
                 );
-                if let Some(epoch) = senders.take() {
+                if let Some((_, epoch)) = senders.take() {
                     epoch.cancel();
                 }
                 continue;
@@ -383,15 +278,19 @@ impl RtpTargetContext {
 
             tokio::select! {
                 _ = self.cancel.cancelled() => break,
-                _ = exit_rx.recv() => {
+                exited = exit_rx.recv() => {
                     // A send task ended: the publish tracks changed (codec
                     // switch, displacement) or a bus closed. Tear down and
                     // reconcile; the loop re-establishes against the current
-                    // tracks when media is still there.
-                    if let Some(epoch) = senders.take() {
+                    // tracks when media is still there. Exits of an epoch the
+                    // supervisor already tore down are stale and ignored.
+                    let current = senders.as_ref().is_some_and(|(tag, _)| Some(*tag) == exited);
+                    if current
+                        && let Some((_, epoch)) = senders.take()
+                    {
                         epoch.cancel();
+                        desired = self.manager.has_publisher(&self.stream).await;
                     }
-                    desired = has_publisher(&self.manager, &self.stream).await;
                 }
                 event = events.recv() => match event {
                     Ok(Event::PublishStarted { stream, .. }) => {
@@ -402,7 +301,7 @@ impl RtpTargetContext {
                     Ok(Event::PublishStopped { stream, .. }) => {
                         if stream == self.stream {
                             desired = false;
-                            if let Some(epoch) = senders.take() {
+                            if let Some((_, epoch)) = senders.take() {
                                 epoch.cancel();
                             }
                         }
@@ -429,10 +328,10 @@ impl RtpTargetContext {
                             "[target] [{}] dropped {} stream events, reconciling",
                             self.stream, n
                         );
-                        if let Some(epoch) = senders.take() {
+                        if let Some((_, epoch)) = senders.take() {
                             epoch.cancel();
                         }
-                        desired = has_publisher(&self.manager, &self.stream).await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                     _ => {}
@@ -440,7 +339,7 @@ impl RtpTargetContext {
             }
         }
 
-        if let Some(epoch) = senders.take() {
+        if let Some((_, epoch)) = senders.take() {
             epoch.cancel();
         }
         info!(
@@ -451,18 +350,25 @@ impl RtpTargetContext {
 
     /// Open the destination socket and spawn one send task per media track
     /// (first video, first audio). Returns the epoch token cancelling the
-    /// tasks on teardown.
+    /// tasks on teardown. `generation` tags the tasks' exit notifications so
+    /// the supervisor can tell a live epoch's spontaneous exit from a stale
+    /// one.
     async fn start_senders(
         &self,
-        exit_tx: &mpsc::UnboundedSender<()>,
+        generation: u64,
+        exit_tx: &mpsc::UnboundedSender<u64>,
     ) -> anyhow::Result<CancellationToken> {
+        #[cfg(test)]
+        self.start_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let Some(forward) = self.manager.get_forward(&self.stream).await else {
             anyhow::bail!("stream forward not available yet");
         };
 
         let tracks = wait_for_tracks(&forward).await?;
 
-        let socket = Arc::new(build_sender_socket(
+        let socket = Arc::new(multicast::sender_socket(
             self.dest,
             self.multicast_interface.as_deref(),
             self.ttl,
@@ -563,11 +469,14 @@ impl RtpTargetContext {
             }
 
             tokio::spawn(track_send_task(
-                track.clone(),
-                socket.clone(),
-                *dest,
-                *payload_type,
-                codec.kind == "video",
+                TrackSend {
+                    track: track.clone(),
+                    socket: socket.clone(),
+                    dest: *dest,
+                    payload_type: *payload_type,
+                    is_video: codec.kind == "video",
+                    generation,
+                },
                 epoch.child_token(),
                 exit_tx.clone(),
             ));
@@ -603,7 +512,7 @@ impl RtpTargetContext {
 
 /// Build a receiver-side SDP describing a target's output: the multicast
 /// group as the connection address for multicast destinations (a unicast
-/// destination gets a `127.0.0.1` placeholder the receiver must replace),
+/// destination gets a loopback placeholder the receiver must replace),
 /// video on the URL's port, audio on port + 2, and the resolved payload
 /// types. The result parses with `rtsp::parse_media_info_from_sdp`, so
 /// another live777 can consume it directly as an SDP file source, like
@@ -613,18 +522,25 @@ fn build_receiver_sdp(
     dest: SocketAddr,
     tracks: &[(RtpCodecKind, Codec, u8)],
 ) -> String {
-    let connection = match dest.ip() {
-        IpAddr::V4(v4) if v4.is_multicast() => format!("c=IN IP4 {v4}"),
-        IpAddr::V6(v6) if v6.is_multicast() => format!("c=IN IP6 {v6}"),
+    let (origin, connection) = match dest.ip() {
+        IpAddr::V4(v4) if v4.is_multicast() => {
+            ("o=- 0 0 IN IP4 127.0.0.1", format!("c=IN IP4 {v4}"))
+        }
+        IpAddr::V6(v6) if v6.is_multicast() => ("o=- 0 0 IN IP6 ::1", format!("c=IN IP6 {v6}")),
         // Unicast receivers must point the connection address at themselves.
-        IpAddr::V4(_) => "c=IN IP4 127.0.0.1".to_string(),
-        IpAddr::V6(_) => "c=IN IP6 ::1".to_string(),
+        IpAddr::V4(_) => ("o=- 0 0 IN IP4 127.0.0.1", "c=IN IP4 127.0.0.1".to_string()),
+        IpAddr::V6(_) => ("o=- 0 0 IN IP6 ::1", "c=IN IP6 ::1".to_string()),
     };
+    // A CR/LF in the stream name would break the file's line structure.
+    let session: String = stream
+        .chars()
+        .filter(|c| !matches!(c, '\r' | '\n'))
+        .collect();
 
     let mut lines = vec![
         "v=0".to_string(),
-        "o=- 0 0 IN IP4 127.0.0.1".to_string(),
-        format!("s=live777-{stream}"),
+        origin.to_string(),
+        format!("s=live777-{session}"),
         connection,
         "t=0 0".to_string(),
     ];
@@ -635,7 +551,10 @@ fn build_receiver_sdp(
             RtpCodecKind::Audio => (
                 "audio",
                 dest.port().saturating_add(2),
-                Some(codec.channels as u8),
+                // 0 means the negotiated rtpmap carried no channel count
+                // (conventional for G.711/G.722): omit the parameter rather
+                // than emit an invalid `/0`.
+                Some(codec.channels as u8).filter(|ch| *ch > 0),
             ),
             _ => continue,
         };
@@ -670,15 +589,31 @@ fn build_receiver_sdp(
     lines.join("\r\n") + "\r\n"
 }
 
-async fn track_send_task(
+/// One send task's wiring: the tapped track, the shared socket, its
+/// destination and payload type, and the epoch generation tagged onto the
+/// exit notification.
+struct TrackSend {
     track: PublishTrackRemote,
     socket: Arc<UdpSocket>,
     dest: SocketAddr,
     payload_type: u8,
     is_video: bool,
+    generation: u64,
+}
+
+async fn track_send_task(
+    send: TrackSend,
     cancel: CancellationToken,
-    exit_tx: mpsc::UnboundedSender<()>,
+    exit_tx: mpsc::UnboundedSender<u64>,
 ) {
+    let TrackSend {
+        track,
+        socket,
+        dest,
+        payload_type,
+        is_video,
+        generation,
+    } = send;
     let codec = track.codec();
     let mime = format!("{}/{}", codec.kind, codec.codec);
     // Video is re-assembled and re-packetized: SPS/PPS get inlined ahead of
@@ -693,6 +628,9 @@ async fn track_send_task(
     };
 
     let mut rx = track.subscribe();
+    // Reused across packets: high-bitrate video means a thousand marshals a
+    // second.
+    let mut buf = Vec::with_capacity(1500);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -701,7 +639,8 @@ async fn track_send_task(
                     Ok(packet) => {
                         for mut out in rp.payload(&packet) {
                             out.header.payload_type = payload_type;
-                            let mut buf = vec![0u8; out.marshal_size()];
+                            buf.clear();
+                            buf.resize(out.marshal_size(), 0);
                             if Marshal::marshal_to(&out, &mut buf).is_err() {
                                 continue;
                             }
@@ -721,14 +660,16 @@ async fn track_send_task(
         }
     }
 
-    // Whatever the exit reason, tell the supervisor to reconcile: the track
-    // set may have changed under it.
-    let _ = exit_tx.send(());
+    // Whatever the exit reason, tell the supervisor which epoch ended so it
+    // can reconcile: the track set may have changed under it. The generation
+    // tag lets it ignore this message when it already tore the epoch down.
+    let _ = exit_tx.send(generation);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     fn rtp_target(url: &str) -> TargetConfig {
         TargetConfig {
@@ -861,54 +802,6 @@ mod tests {
             ..rtp_target("rtp://[ff12::1]:1720")
         };
         validate_rtp_target(&target).unwrap();
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn multicast_sender_reaches_joined_loopback_receiver() {
-        // The data plane: a datagram sent to the group out of the configured
-        // interface must surface on a receiver joined on loopback — what
-        // separates a real sender socket from one that merely bound.
-        let group_ip = Ipv4Addr::new(230, 1, 1, 1);
-        let group = SocketAddr::new(IpAddr::V4(group_ip), 1720);
-
-        // Receiver: join the group on loopback (SO_REUSEADDR, like the SDP
-        // source's bind_receiver_socket).
-        let recv = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )
-        .unwrap();
-        recv.set_reuse_address(true).unwrap();
-        recv.set_nonblocking(true).unwrap();
-        recv.bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 1720).into())
-            .unwrap();
-        let receiver = UdpSocket::from_std(recv.into()).unwrap();
-        receiver
-            .join_multicast_v4(group_ip, Ipv4Addr::LOCALHOST)
-            .unwrap();
-
-        let sender = build_sender_socket(group, Some("127.0.0.1"), None).unwrap();
-
-        let payload = b"live777-rtp-target-loopback";
-        let mut buf = [0u8; 64];
-        // Membership propagation is not instantaneous; resend until one
-        // datagram makes it through.
-        let received = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                sender.send_to(payload, group).await.unwrap();
-                if let Ok(Ok((n, _))) =
-                    tokio::time::timeout(Duration::from_millis(100), receiver.recv_from(&mut buf))
-                        .await
-                {
-                    break n;
-                }
-            }
-        })
-        .await
-        .expect("datagram sent to the group must reach the joined receiver");
-        assert_eq!(&buf[..received], payload);
     }
 
     fn test_codec(
@@ -1191,18 +1084,21 @@ mod tests {
         )));
 
         let socket =
-            Arc::new(build_sender_socket("127.0.0.1:0".parse().unwrap(), None, None).unwrap());
+            Arc::new(multicast::sender_socket("127.0.0.1:0".parse().unwrap(), None, None).unwrap());
         let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let dest = listener.local_addr().unwrap();
 
         let cancel = CancellationToken::new();
-        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u64>();
         let task = tokio::spawn(track_send_task(
-            track.clone(),
-            socket,
-            dest,
-            96,
-            true,
+            TrackSend {
+                track: track.clone(),
+                socket,
+                dest,
+                payload_type: 96,
+                is_video: true,
+                generation: 7,
+            },
             cancel.clone(),
             exit_tx,
         ));
@@ -1236,10 +1132,12 @@ mod tests {
             .await
             .expect("send task must exit on cancel")
             .unwrap();
-        // The task notifies its exit so the supervisor can reconcile.
-        tokio::time::timeout(Duration::from_secs(5), exit_rx.recv())
+        // The task notifies its exit (tagged with its epoch generation) so
+        // the supervisor can reconcile.
+        let exited = tokio::time::timeout(Duration::from_secs(5), exit_rx.recv())
             .await
             .expect("send task must signal its exit");
+        assert_eq!(exited, Some(7), "the exit carries the epoch generation");
     }
 
     /// `start_senders` end to end against a real manager and forward: the
@@ -1290,8 +1188,8 @@ mod tests {
             },
         )
         .unwrap();
-        let (bad_exit_tx, mut bad_exit_rx) = mpsc::unbounded_channel::<()>();
-        let bad_epoch = ctx_bad_sdp.start_senders(&bad_exit_tx).await.unwrap();
+        let (bad_exit_tx, mut bad_exit_rx) = mpsc::unbounded_channel::<u64>();
+        let bad_epoch = ctx_bad_sdp.start_senders(1, &bad_exit_tx).await.unwrap();
         bad_epoch.cancel();
         tokio::time::timeout(Duration::from_secs(5), bad_exit_rx.recv())
             .await
@@ -1311,8 +1209,8 @@ mod tests {
         )
         .unwrap();
 
-        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<()>();
-        let epoch = ctx.start_senders(&exit_tx).await.unwrap();
+        let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u64>();
+        let epoch = ctx.start_senders(2, &exit_tx).await.unwrap();
 
         let sdp = tokio::fs::read_to_string(&sdp_path).await.unwrap();
         assert!(
@@ -1378,6 +1276,94 @@ mod tests {
 
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("run() must exit when the manager is cancelled")
+            .unwrap();
+    }
+
+    /// Regression for the stale-exit restart storm: a `PublishStopped`/
+    /// `PublishStarted` cycle (source restart, publisher displacement) must
+    /// tear the epoch down and build exactly one new one. The torn-down
+    /// epoch's tasks report their exits too; without the generation tag
+    /// that belated message would cancel the *new* epoch, whose tasks
+    /// report their exits in turn — a self-sustaining restart storm that
+    /// rewrites the SDP, rebinds the socket and PLIs the publisher
+    /// thousands of times a second.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn publish_cycle_restarts_senders_exactly_once() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        use crate::event::SessionStopReason;
+
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+        let forward = manager.get_forward("cam").await.unwrap();
+        forward
+            .add_virtual_track(RtpCodecKind::Video, h264_codec_params())
+            .await
+            .unwrap();
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            rtp_target(&format!("rtp://{dest}")),
+        )
+        .unwrap();
+        let start_calls = ctx.start_calls.clone();
+        let supervisor = tokio::spawn(ctx.run());
+
+        // The first epoch comes up and media flows.
+        let track = forward
+            .publish_tracks()
+            .await
+            .into_iter()
+            .find(|t| t.kind() == RtpCodecKind::Video)
+            .expect("the virtual video track");
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+        recv_idr_stream(&listener, &IDR, 96).await;
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the initial publish starts one epoch"
+        );
+
+        // A source restart: the stop cancels the epoch (whose task then
+        // also reports its exit — the stale message), the start rebuilds
+        // against the lingering virtual track.
+        manager.emit_source_publish_stopped("cam", SessionStopReason::IdleTimeout);
+        manager.emit_source_publish_started("cam");
+        recv_idr_stream(&listener, &IDR, 96).await;
+
+        // Settle: a stale exit cancelling the fresh epoch would multiply
+        // the count within this window, hot-looping rebuilds.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "one teardown must yield exactly one rebuild, not a restart storm"
+        );
+
+        pump_stop.cancel();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
             .await
             .expect("run() must exit when the manager is cancelled")
             .unwrap();

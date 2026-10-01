@@ -651,7 +651,14 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
         let (media, clock_rate, channels) = match codec.codec.as_str() {
             "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => ("video", codec.clock_rate, None),
             "opus" | "g722" | "pcma" | "pcmu" => {
-                ("audio", codec.clock_rate, Some(codec.channels as u8))
+                // 0 means the negotiated rtpmap carried no channel count
+                // (conventional for G.711/G.722): omit the parameter rather
+                // than emit an invalid `/0`.
+                (
+                    "audio",
+                    codec.clock_rate,
+                    Some(codec.channels as u8).filter(|ch| *ch > 0),
+                )
             }
             _ => continue,
         };
