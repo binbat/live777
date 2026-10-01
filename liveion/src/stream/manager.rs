@@ -566,7 +566,11 @@ impl Manager {
     /// Whether `stream` currently has a live publisher session (a real WHIP
     /// publisher or a source bridge's virtual one). Drives the target
     /// supervisors' media-driven start/stop.
-    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub async fn has_publisher(&self, stream: &str) -> bool {
         self.info(vec![stream.to_string()])
             .await
@@ -581,7 +585,11 @@ impl Manager {
         feature = "recorder",
         all(
             feature = "source",
-            any(feature = "target-whip", feature = "target-rtp")
+            any(
+                feature = "target-whip",
+                feature = "target-rtp",
+                feature = "target-rtsp"
+            )
         )
     ))]
     pub fn is_on_demand_stream(&self, stream: &str) -> bool {
@@ -1043,7 +1051,11 @@ impl Manager {
     /// Static output targets declared in the config file, as
     /// `(stream, target)` pairs sorted by stream name for a deterministic
     /// startup order.
-    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub fn static_targets(&self) -> Vec<(String, crate::config::TargetConfig)> {
         let mut targets: Vec<(String, crate::config::TargetConfig)> = self
             .config
@@ -1062,7 +1074,11 @@ impl Manager {
     }
 
     /// Shutdown token shared by the manager's background tasks.
-    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -1765,7 +1781,12 @@ impl Manager {
         self.stats_version.subscribe()
     }
 
-    #[cfg(any(feature = "rtsp", feature = "recorder", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "rtsp",
+        feature = "recorder",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub(crate) async fn get_forward(&self, stream: &str) -> Option<crate::forward::PeerForward> {
         let map = self.stream_map.read().await;
         map.get(stream).cloned()

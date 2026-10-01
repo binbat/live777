@@ -141,6 +141,27 @@ url = "whip://edge-1:7777/whip/cam1"
 （5 秒起步翻倍，60 秒封顶）——on-demand 源的重新拉起也受同一退避约束，
 大约每分钟最多一次。
 
+### 静态 RTSP 推流（RTSP target）
+
+流也可以作为 RTSP 客户端推到 RTSP 服务器（`ANNOUNCE`/`SETUP`/`RECORD`）——
+mediamtx、另一个 live777 的 RTSP 服务器（见下文）或 gst-rtsp-server。
+它与 `rtsp://` 源互为镜像：构建时启用 `target-rtsp` feature，然后在
+预注册流上添加 `rtsp://` target：
+
+```toml
+[[stream.cam1.targets]]
+url = "rtsp://mediamtx:8554/cam1"
+# 需要 Digest/Basic 鉴权并使用 TCP interleaved 传输时（默认 UDP）：
+# url = "rtsp://admin:secret@mediamtx:8554/cam1?transport=tcp"
+```
+
+生命周期与 WHIP target 一致：流获得发布者时建立会话，发布者离开时拆除
+（UDP 发送 TEARDOWN，TCP 关闭连接，服务器立即释放已发布的路径），失败
+后以指数退避重建；`on_demand` 流上的 target 相当于常驻需求。只公告第
+一条视频轨和第一条音频轨；视频会重新打包并在每个 IDR 前内联 SPS/PPS；
+从服务器回传的关键帧请求（例如 mediamtx 转发的拉流端 PLI）会送达发布
+端。`whip://`、`rtp://`、`rtsp://` target 可以在同一条流上混用。
+
 ## DataChannel 转发
 
 > NOTE: 关于 `createDataChannel()`

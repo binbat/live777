@@ -479,6 +479,246 @@ pub async fn run_rtsp_push_mediamtx(
     server.stop().await;
 }
 
+/// RTSP target interop against mediamtx: liveion A is provisioned with a
+/// static `rtsp://` target that pushes its stream into mediamtx
+/// (ANNOUNCE/RECORD straight from the config, no livetwo bridge — the
+/// target-side counterpart of [`run_rtsp_push_mediamtx`]). ffprobe validates
+/// by pulling from mediamtx; stopping the publisher must retract the
+/// mediamtx path (TEARDOWN for UDP, connection close for TCP).
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+pub async fn run_rtsp_target_mediamtx(
+    profile: MediaProfile,
+    transport: RtspTransport,
+    bind_ip: IpAddr,
+) {
+    init_liveion_test_environment();
+
+    // mediamtx (downstream RTSP server).
+    let server =
+        crate::source::mediamtx::MediamtxServer::spawn().expect("Failed to spawn mediamtx");
+
+    // liveion A (upstream): provisioned stream with a static rtsp:// target
+    // pointing at mediamtx.
+    let stream_id = "relay";
+    let mut cfg_a = liveion::config::Config::default();
+    cfg_a.http.cors = true;
+    cfg_a.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            targets: vec![liveion::config::TargetConfig {
+                url: server.rtsp_url("/mt", transport),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+
+    // The TOML-facing config validator must accept every scheme the matrix
+    // provisions, or the same config would be rejected at `live777` startup.
+    cfg_a.validate().expect("RTSP target config must validate");
+
+    let listener_a = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr_a = SocketAddr::new(bind_ip, listener_a.local_addr().unwrap().port());
+    // A's target supervisor keeps re-establishing the push after this test
+    // tears the publisher down; shut A down on exit, panic included.
+    let cancel_a = CancellationToken::new();
+    let _cancel_a_on_drop = CancelOnDrop(cancel_a.clone());
+    tokio::spawn(liveion::serve(
+        cfg_a,
+        listener_a,
+        cancel_a.cancelled_owned(),
+    ));
+
+    let poll_ct = CancellationToken::new();
+
+    // The push is media-driven: A must not announce before media exists —
+    // the session negotiates its codecs from the publisher, so an early
+    // push would lock the wrong codec in. Give A's supervisor a moment to
+    // (not) act, so a broken eager-push implementation loses the race
+    // deterministically.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !server.path_ready("mt").await,
+        "RTSP target pushed before media existed"
+    );
+
+    // Publish the source into A; the target's push forwards the media to
+    // mediamtx.
+    let source = crate::source::ffmpeg::FfmpegSource::new(profile);
+    let start = tokio::time::Instant::now();
+    let (source_handle, whip_ct, whip_handle) =
+        start_sdp_whip_publish(&source, api_addr_a, stream_id).await;
+    source.wait_for_ready().await;
+
+    server.wait_path_ready("mt", &poll_ct, None).await;
+
+    // Give the publisher a moment so the pull sees media, not just SDP.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let pull_url = format!("rtsp://{}/mt", server.rtsp_addr);
+    let mut probe_args: Vec<&str> = transport.ffprobe_args().to_vec();
+    probe_args.extend(["-i", pull_url.as_str()]);
+    let probe_result = probe::run(&probe_args)
+        .await
+        .expect("ffprobe pull from mediamtx failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP target mediamtx result"
+    );
+
+    assert_playback_ok("rtsp-target-mediamtx", &profile, &playback);
+
+    // Media-driven teardown: once the publisher leaves A, the target must
+    // tear the RTSP session down and mediamtx's path must un-ready with it.
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+    server.wait_path_not_ready("mt", &poll_ct).await;
+
+    source_handle.stop().await;
+    server.stop().await;
+}
+
+/// RTSP target into live777's own RTSP server: liveion A is provisioned
+/// with a static `rtsp://` target pushing to liveion B's `[rtsp]` listener,
+/// and ffprobe validates by pulling from B. Exercises the target against
+/// the same server the RTSP round-trip matrix covers, with no third-party
+/// binary involved.
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+pub async fn run_rtsp_target_live777(
+    profile: MediaProfile,
+    transport: RtspTransport,
+    bind_ip: IpAddr,
+) {
+    init_liveion_test_environment();
+    let stream_id = "relay";
+
+    // liveion B (downstream): RTSP server enabled; the push creates the
+    // stream, so nothing is provisioned.
+    let mut cfg_b = liveion::config::Config::default();
+    cfg_b.http.cors = true;
+    let rtsp_port_b = reserve_and_release_tcp_port(bind_ip);
+    cfg_b.rtsp.listen = SocketAddr::new(bind_ip, rtsp_port_b).to_string();
+    let listener_b = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr_b = SocketAddr::new(bind_ip, listener_b.local_addr().unwrap().port());
+    let cancel_b = CancellationToken::new();
+    let _cancel_b_on_drop = CancelOnDrop(cancel_b.clone());
+    tokio::spawn(liveion::serve(
+        cfg_b,
+        listener_b,
+        cancel_b.cancelled_owned(),
+    ));
+
+    // B's RTSP server binds inside a spawned task — wait until the port is
+    // accepting connections before pointing A's target at it (the target
+    // retries with backoff, but a deterministic start keeps the logs clean).
+    let rtsp_addr_b = SocketAddr::new(bind_ip, rtsp_port_b);
+    for i in 0..50 {
+        match tokio::net::TcpStream::connect(rtsp_addr_b).await {
+            Ok(_) => break,
+            Err(_) if i == 49 => panic!("RTSP server did not start on {rtsp_addr_b} after 5 s"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+
+    // liveion A (upstream): provisioned stream with a static rtsp:// target
+    // pointing at B.
+    let mut cfg_a = liveion::config::Config::default();
+    cfg_a.http.cors = true;
+    cfg_a.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            targets: vec![liveion::config::TargetConfig {
+                url: format!(
+                    "rtsp://{rtsp_addr_b}/{stream_id}{}",
+                    transport.query_param()
+                ),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    cfg_a.validate().expect("RTSP target config must validate");
+
+    let listener_a = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr_a = SocketAddr::new(bind_ip, listener_a.local_addr().unwrap().port());
+    let cancel_a = CancellationToken::new();
+    let _cancel_a_on_drop = CancelOnDrop(cancel_a.clone());
+    tokio::spawn(liveion::serve(
+        cfg_a,
+        listener_a,
+        cancel_a.cancelled_owned(),
+    ));
+
+    // The push is media-driven: B must not gain the stream before media
+    // exists on A (the ANNOUNCE creates it downstream).
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let body = reqwest::get(format!("http://{api_addr_b}{}", api::path::streams("")))
+        .await
+        .unwrap()
+        .json::<Vec<api::response::Stream>>()
+        .await
+        .unwrap();
+    assert!(
+        body.iter().all(|i| i.id != stream_id),
+        "RTSP target pushed before media existed: {:?}",
+        body.iter().map(|i| &i.id).collect::<Vec<_>>()
+    );
+
+    // Publish the source into A; the target's push forwards the media to B.
+    let source = crate::source::ffmpeg::FfmpegSource::new(profile);
+    let start = tokio::time::Instant::now();
+    let (source_handle, whip_ct, whip_handle) =
+        start_sdp_whip_publish(&source, api_addr_a, stream_id).await;
+    source.wait_for_ready().await;
+
+    // The push appears on B as an RTSP publisher: wait for B to report the
+    // stream live with codecs so the pull does not race the setup.
+    wait_stream_publish_ready(&rtsp_addr_b, &api_addr_b, stream_id, None).await;
+
+    // Give the publisher a moment so the pull sees media, not just SDP.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let pull_url = format!("rtsp://{rtsp_addr_b}/{stream_id}");
+    let mut probe_args: Vec<&str> = transport.ffprobe_args().to_vec();
+    probe_args.extend(["-i", pull_url.as_str()]);
+    let probe_result = probe::run(&probe_args)
+        .await
+        .expect("ffprobe pull from live777 RTSP server failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(
+        transport = transport.as_str(),
+        ?playback,
+        "RTSP target live777 result"
+    );
+
+    assert_playback_ok("rtsp-target-live777", &profile, &playback);
+
+    // Media-driven teardown: once the publisher leaves A, the target must
+    // tear the RTSP session down and B's publisher must disappear with it
+    // (the RTSP server tears the stream down on disconnect).
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+    wait_for_no_live_publish(&api_addr_b, stream_id).await;
+
+    source_handle.stop().await;
+}
+
 /// Wait until a stream's publish session is Connected and liveion has
 /// learned its codecs.
 #[cfg(feature = "rtsp")]
@@ -843,7 +1083,7 @@ where
 /// Wait until a stream has no live publish session left: the WHIP target's
 /// push is torn down when the upstream media goes away, so the downstream
 /// publisher must disappear within the poll budget.
-#[cfg(feature = "target-whip")]
+#[cfg(any(feature = "target-whip", feature = "target-rtsp"))]
 async fn wait_for_no_live_publish(api_addr: &SocketAddr, stream_id: &str) {
     for attempt in 0..300 {
         let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))

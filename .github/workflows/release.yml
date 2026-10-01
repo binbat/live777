@@ -110,7 +110,7 @@ jobs:
           # images. The rsmpeg-enabled tools (whepprobe, whipsynth) are
           # built and tested in CI but are not part of the release matrix.
           $BUILD_CMD $BUILD_NDK build --locked --all-targets \
-            --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,rtsp \
+            --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,rtsp \
             --release --target=${{ matrix.job.target }}
 
       - name: Archive
@@ -337,7 +337,7 @@ jobs:
       - name: Build ${{ matrix.job.variant }} live777
         shell: bash
         run: |
-          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui,target-rtp
+          CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=${CROSS_IMAGE}             cross build --locked --bin live777 --release --target=${TARGET}             --no-default-features --features native-${VARIANT},webui,target-rtp,target-rtsp
 
       - name: Create ${{ matrix.job.variant }} live777 tarball
         shell: bash

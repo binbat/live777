@@ -35,6 +35,8 @@ use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
 use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
 use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_push_mediamtx, run_rtsp_roundtrip};
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+use runner::{run_rtsp_target_live777, run_rtsp_target_mediamtx};
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use source::gst_rtsp_server::GstRtspServerSource;
 #[cfg(feature = "rtsp")]
@@ -548,6 +550,57 @@ async fn rtsp_push_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTr
         return;
     }
     run_rtsp_push_mediamtx(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTSP target interop: liveion's static `rtsp://` target pushes its stream
+/// into mediamtx (ANNOUNCE/RECORD from a config entry, no livetwo bridge —
+/// the target-side counterpart of rtsp_push_mediamtx_matrix_test). ffprobe
+/// validates by pulling from mediamtx; stopping the publisher must retract
+/// the mediamtx path (TEARDOWN for UDP, connection close for TCP).
+///
+/// Runtime-skipped on Windows CI: see whep_mediamtx_pull_matrix_test.
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::H264, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::Vp8),
+        MediaProfile::video_only(VideoCodec::H265),
+        MediaProfile::audio_only(AudioCodec::Opus),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_target_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    if !mediamtx::available() {
+        tracing::warn!("skipping: mediamtx not available on this host");
+        return;
+    }
+    run_rtsp_target_mediamtx(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTSP target into live777's own RTSP server: liveion A pushes to liveion
+/// B's `[rtsp]` listener from a static `rtsp://` target; ffprobe validates
+/// by pulling from B. No third-party binary involved.
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::H264),
+        MediaProfile::audio_only(AudioCodec::G722),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_target_live777_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    run_rtsp_target_live777(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
 }
 
 // ============================================================

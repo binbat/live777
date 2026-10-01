@@ -47,7 +47,7 @@ build:
 [group('build')]
 build-size:
     cargo build --profile release-size --bins \
-        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp
+        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp
 
 # Extreme size build: build-size + UPX LZMA (needs upx installed)
 [group('build')]
@@ -173,18 +173,18 @@ rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
 [group('embedded')]
 rpi-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp
+        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp,target-rtsp
 
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
 [group('embedded')]
 rdk-pack-size:
     test -n "${RDK_SYSROOT:?set RDK_SYSROOT to the RDK sysroot first (see AGENTS.md)}" && \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui,target-rtp
+        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui,target-rtp,target-rtsp
 
 # Generic V4L2 device (native-generic-v4l2; override the target for 64-bit boards)
 [group('embedded')]
 v4l2-pack-size target="armv7-unknown-linux-gnueabihf":
-    just cross-pack-size {{target}} native-generic-v4l2,webui,target-rtp
+    just cross-pack-size {{target}} native-generic-v4l2,webui,target-rtp,target-rtsp
 
 # MacOS:
 #   brew install gstreamer
@@ -672,4 +672,4 @@ loadtest-channel mode="all":
 [group('embedded')]
 rkmpp-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui,target-rtp
+        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui,target-rtp,target-rtsp

@@ -609,7 +609,7 @@ impl PublishTrackRemote {
         }
     }
 
-    #[cfg(any(feature = "rtsp", feature = "target-rtp"))]
+    #[cfg(any(feature = "rtsp", feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) async fn source_ssrc(&self) -> u32 {
         match self {
             Self::Real { track, .. } => track.ssrcs().await.first().copied().unwrap_or(0),

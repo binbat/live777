@@ -559,7 +559,12 @@ impl PeerForward {
         None
     }
 
-    #[cfg(any(feature = "recorder", feature = "rtsp", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "recorder",
+        feature = "rtsp",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.internal.subscribe_publish_tracks_change()
     }
@@ -567,7 +572,7 @@ impl PeerForward {
     /// Snapshot of the current publish tracks (clone), for media taps that
     /// need per-track codec/subscribe handles (e.g. the RTP multicast
     /// target).
-    #[cfg(feature = "target-rtp")]
+    #[cfg(any(feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) async fn publish_tracks(&self) -> Vec<track::PublishTrackRemote> {
         self.internal.publish_tracks.read().await.clone()
     }
@@ -579,7 +584,7 @@ impl PeerForward {
         self.internal.first_video_track().await
     }
 
-    #[cfg(any(feature = "recorder", feature = "target-rtp"))]
+    #[cfg(any(feature = "recorder", feature = "target-rtp", feature = "target-rtsp"))]
     pub async fn send_rtcp_to_publish(&self, message: rtcp::RtcpMessage, ssrc: u32) -> Result<()> {
         self.internal.send_rtcp_to_publish(message, ssrc).await
     }

@@ -188,6 +188,8 @@ source-all = ["source-sdp", "source-rtsp", "source-whep"]
 target-whip = ["liveion/target-whip"]
 # Static RTP/UDP multicast (or unicast) output targets
 target-rtp = ["liveion/target-rtp"]
+# Static RTSP client-push output targets
+target-rtsp = ["liveion/target-rtsp"]
 rtsp = ["liveion/rtsp"]
 
 # Native source infrastructure (required by all capture-/encoder-* features)

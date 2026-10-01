@@ -479,7 +479,11 @@ impl Config {
             }
         }
 
-        #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+        #[cfg(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        ))]
         for (stream_id, entry) in &self.stream.streams {
             let mut seen_urls = std::collections::HashSet::new();
             for target in &entry.targets {
@@ -755,9 +759,14 @@ pub struct StreamEntry {
     #[serde(default = "default_on_demand_start_timeout_ms")]
     pub on_demand_start_timeout_ms: u64,
     /// Static output targets: push this stream to downstream WHIP endpoints
-    /// (declarative cascade-push) and/or send it out as plain RTP/UDP to a
-    /// multicast group or unicast address.
-    #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+    /// (declarative cascade-push), send it out as plain RTP/UDP to a
+    /// multicast group or unicast address, and/or push it to an RTSP server
+    /// as a client (ANNOUNCE/RECORD).
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -773,7 +782,11 @@ impl Default for StreamEntry {
             on_demand: false,
             on_demand_close_after_ms: default_on_demand_close_after_ms(),
             on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
-            #[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+            #[cfg(any(
+                feature = "target-whip",
+                feature = "target-rtp",
+                feature = "target-rtsp"
+            ))]
             targets: Vec::new(),
         }
     }
@@ -787,20 +800,26 @@ fn default_on_demand_start_timeout_ms() -> u64 {
     10_000
 }
 
-/// A static output target of a stream. Two flavors:
+/// A static output target of a stream. Three flavors:
 ///
 /// - `whip://`/`whips://`: media is pushed to a downstream WHIP endpoint
 ///   (declarative cascade-push), on par with how a WHEP source pulls media
 ///   in.
 /// - `rtp://`: media is sent out as plain RTP over UDP to a multicast group
 ///   (e.g. a Unitree video receiver) or a unicast address.
+/// - `rtsp://`: media is pushed to an RTSP server as a client
+///   (ANNOUNCE/SETUP/RECORD), mirroring how an RTSP source pulls media in.
 ///
-/// Both are media-driven: sending starts when the stream gains a publisher
+/// All are media-driven: sending starts when the stream gains a publisher
 /// and stops when the publisher goes away; failures are retried with
 /// backoff. A target on an `on_demand` stream acts as standing demand: its
 /// sources are (re)started whenever the stream has neither a publisher nor
 /// an active target session.
-#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetConfig {
     /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
@@ -833,7 +852,11 @@ pub struct TargetConfig {
     pub sdp_file: Option<String>,
 }
 
-#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
 impl TargetConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         let url = self.url.trim();
@@ -855,6 +878,8 @@ impl TargetConfig {
             }
             #[cfg(feature = "target-rtp")]
             "rtp" => crate::target_rtp::validate_rtp_target(self),
+            #[cfg(feature = "target-rtsp")]
+            "rtsp" => crate::target_rtsp::validate_rtsp_target(self),
             _ => anyhow::bail!("unsupported target url scheme: {url}"),
         }
     }
@@ -1268,7 +1293,11 @@ fn default_rtsp_realm() -> String {
     "live777".to_string()
 }
 
-#[cfg(any(feature = "target-whip", feature = "target-rtp"))]
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
 #[cfg(test)]
 mod target_tests {
     use super::*;
@@ -1310,7 +1339,7 @@ mod target_tests {
         for url in [
             "",
             "whep://edge-1/whep/cam1",
-            "rtsp://edge-1/cam1",
+            "rtmp://edge-1/cam1",
             "whip://user:pass@edge-1/whip/cam1",
         ] {
             let target = TargetConfig {
@@ -1321,6 +1350,42 @@ mod target_tests {
                 sdp_file: None,
             };
             assert!(target.validate().is_err(), "{url} must be rejected");
+        }
+        // A scheme whose feature is disabled falls through to the same
+        // unsupported-scheme rejection.
+        #[cfg(not(feature = "target-rtsp"))]
+        {
+            let target = TargetConfig {
+                url: "rtsp://edge-1/cam1".into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            assert!(
+                target.validate().is_err(),
+                "rtsp:// must be rejected without the target-rtsp feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-rtsp")]
+    #[test]
+    fn target_config_validate_accepts_rtsp_schemes() {
+        for url in [
+            "rtsp://mediamtx:8554/cam1",
+            "rtsp://user:pass@edge-1/cam1",
+            "rtsp://edge-1/cam1?transport=tcp",
+            "RTSP://edge-1/cam1",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
         }
     }
 

@@ -170,6 +170,40 @@ impl MediamtxServer {
         wait_path_ready(self.api_addr, path, ct, handle).await
     }
 
+    /// Whether the path currently has a ready publisher (one-shot).
+    pub async fn path_ready(&self, path: &str) -> bool {
+        let Ok(res) = reqwest::get(format!("http://{}/v3/paths/list", self.api_addr)).await else {
+            return false;
+        };
+        let Ok(body) = res.json::<serde_json::Value>().await else {
+            return false;
+        };
+        body["items"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|p| p["name"] == path && p["ready"] == true)
+        })
+    }
+
+    /// Wait until the path has no ready publisher: the inverse of
+    /// [`Self::wait_path_ready`], asserting a push tore its session down
+    /// (TEARDOWN or disconnect) when the media went away. Returns early
+    /// when `ct` is cancelled.
+    pub async fn wait_path_not_ready(&self, path: &str, ct: &CancellationToken) {
+        for attempt in 0..300 {
+            if ct.is_cancelled() || !self.path_ready(path).await {
+                return;
+            }
+            if attempt == 299 {
+                panic!("mediamtx path '{path}' is still ready after the publisher left");
+            }
+            tokio::select! {
+                () = ct.cancelled() => return,
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    }
+
     pub async fn stop(mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
