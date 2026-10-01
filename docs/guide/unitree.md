@@ -117,12 +117,12 @@ For a unicast target the generated `c=` line is a `127.0.0.1` placeholder;
 the receiver must replace it with its own address before use.
 
 Because the output is ordinary RTP/AVP, receivers do not need live777. The
-matching SDP:
+matching SDP (as written by `sdp_file`):
 
 ```
 v=0
-o=- 0 0 IN IP4 0.0.0.0
-s=live777
+o=- 0 0 IN IP4 127.0.0.1
+s=live777-robot-cam
 c=IN IP4 230.1.1.1
 t=0 0
 m=video 1720 RTP/AVP 96

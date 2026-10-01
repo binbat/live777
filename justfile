@@ -47,7 +47,7 @@ build:
 [group('build')]
 build-size:
     cargo build --profile release-size --bins \
-        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
+        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp
 
 # Extreme size build: build-size + UPX LZMA (needs upx installed)
 [group('build')]

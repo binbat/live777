@@ -107,12 +107,12 @@ url = "/etc/live777/robot-cam.sdp"
 替换为实际地址。
 
 由于输出就是普通的 RTP/AVP，接收端不需要 live777。与之匹配的
-SDP：
+SDP（即 `sdp_file` 写出的内容）：
 
 ```
 v=0
-o=- 0 0 IN IP4 0.0.0.0
-s=live777
+o=- 0 0 IN IP4 127.0.0.1
+s=live777-robot-cam
 c=IN IP4 230.1.1.1
 t=0 0
 m=video 1720 RTP/AVP 96

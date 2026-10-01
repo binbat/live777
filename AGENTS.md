@@ -145,6 +145,10 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
 - `target-whip`    — WHIP push targets (static cascade-push).
+- `target-rtp`     — RTP/UDP output targets: send a stream out as plain RTP
+  to a multicast group or unicast address (the sender counterpart of the
+  SDP-file source; multicast socket builders live in
+  `livetwo::transport::multicast`).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -153,7 +157,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip`
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp`
 instead of `--all-features`.
 
 ### Cross-Compilation
@@ -351,7 +355,30 @@ clients via Link headers).
   reconciled against the manager on event-bus lag; a target on an
   `on_demand` stream acts as standing demand: its sources are (re)started
   whenever the stream has neither a publisher nor a push session, paced by
-  the same backoff.
+  the same backoff. `target::init` dispatches per target by URL scheme, so
+  `whip://` and `rtp://` targets mix freely on one stream.
+- `liveion/src/target_rtp.rs` — static RTP/UDP output targets
+  (`rtp://group-or-host:port`; `target-rtp` feature), the sender
+  counterpart of the SDP-file source: live777 acts as the multicast sender,
+  keeping Unitree-style video-link receivers working unmodified. The
+  supervisor mirrors the WHIP one (media-driven, same backoff/reconcile/
+  standing-demand semantics) plus per-track send tasks that tap the forward
+  track broadcast directly (the recorder / RTSP-server pattern, no
+  subscribe session): first video track to the URL port, first audio track
+  to port + 2 (RTP/AVP convention). Send tasks report their exit tagged
+  with the epoch's generation, and the supervisor ignores tags that are not
+  the live epoch — a belated exit from an already torn-down epoch must
+  never cancel the fresh one, or every teardown self-sustains a restart
+  storm. Video is re-packetized through livetwo's `RePayloadCodec`
+  (SPS/PPS inlined ahead of every IDR, seeded from the codec fmtp via
+  `with_sprop_params`), a PLI nudges the publisher on attach, and the video
+  payload type can be pinned (`payload_type`, e.g. 96 for Unitree
+  receivers); `sdp_file` writes a receiver-side SDP on send start that
+  live777's own SDP-file source can ingest (live777 → live777 multicast
+  cascade). Multicast sender/receiver socket builders, interface
+  resolution (v4 address vs v6 index/name via `if_nametoindex`) and the
+  dual-stack RTCP socket are shared in `livetwo::transport::multicast`
+  (`multicast` feature), used by both `target-rtp` and `source-sdp`.
 - `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's
   streams table is SSE-pushed like liveion's: `GET /api/sse/streams`
   (`route/stream.rs::sse`, same `?nodes=` filter as `GET /api/streams/`)
