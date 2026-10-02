@@ -53,7 +53,7 @@ impl Codec {
     /// Default to 96 (dynamic PT range) for video and use the static PT
     /// defined in RFC 3551 for well-known audio codecs so the SDP remains
     /// valid.
-    #[cfg(any(feature = "rtsp", feature = "target-rtp"))]
+    #[cfg(any(feature = "rtsp", feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) fn sdp_payload_type(&self) -> u8 {
         if self.payload_type != 0 {
             self.payload_type

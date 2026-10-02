@@ -1844,6 +1844,21 @@ impl PeerForwardInternal {
         publish.as_ref().unwrap().media_info.video_transceiver.2
     }
 
+    /// The current publish session's negotiated send-track counts
+    /// `(video, audio)` from its media info, or `None` when the publisher is
+    /// virtual (source bridge / RTSP push carries no session media info).
+    /// Lets media taps wait for the full track set instead of racing the
+    /// first `on_track`.
+    #[cfg(feature = "target-rtsp")]
+    pub(crate) async fn negotiated_publish_track_counts(&self) -> Option<(usize, usize)> {
+        self.publish.read().await.as_ref().map(|p| {
+            (
+                p.media_info.video_transceiver.0 as usize,
+                p.media_info.audio_transceiver.0 as usize,
+            )
+        })
+    }
+
     pub async fn publish_svc_rids(&self) -> Result<Vec<String>> {
         let publish_tracks = self.publish_tracks.read().await;
         let rids = publish_tracks
@@ -2092,7 +2107,12 @@ impl PeerForwardInternal {
         Ok(())
     }
 
-    #[cfg(any(feature = "recorder", feature = "rtsp", feature = "target-rtp"))]
+    #[cfg(any(
+        feature = "recorder",
+        feature = "rtsp",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
     }
@@ -2108,7 +2128,7 @@ impl PeerForwardInternal {
         })
     }
 
-    #[cfg(any(feature = "recorder", feature = "target-rtp"))]
+    #[cfg(any(feature = "recorder", feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) async fn send_rtcp_to_publish(
         &self,
         message: crate::forward::rtcp::RtcpMessage,

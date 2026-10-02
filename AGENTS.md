@@ -149,6 +149,9 @@ Key feature groups defined in the root `Cargo.toml`:
   to a multicast group or unicast address (the sender counterpart of the
   SDP-file source; multicast socket builders live in
   `livetwo::transport::multicast`).
+- `target-rtsp`    — RTSP client-push output targets: push a stream to an
+  RTSP server with ANNOUNCE/SETUP/RECORD (the counterpart of `source-rtsp`;
+  built on the `libs/rtsp` client shared with whepfrom).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -157,7 +160,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp`
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp`
 instead of `--all-features`.
 
 ### Cross-Compilation
@@ -356,7 +359,7 @@ clients via Link headers).
   `on_demand` stream acts as standing demand: its sources are (re)started
   whenever the stream has neither a publisher nor a push session, paced by
   the same backoff. `target::init` dispatches per target by URL scheme, so
-  `whip://` and `rtp://` targets mix freely on one stream.
+  `whip://`, `rtp://` and `rtsp://` targets mix freely on one stream.
 - `liveion/src/target_rtp.rs` — static RTP/UDP output targets
   (`rtp://group-or-host:port`; `target-rtp` feature), the sender
   counterpart of the SDP-file source: live777 acts as the multicast sender,
@@ -379,6 +382,32 @@ clients via Link headers).
   resolution (v4 address vs v6 index/name via `if_nametoindex`) and the
   dual-stack RTCP socket are shared in `livetwo::transport::multicast`
   (`multicast` feature), used by both `target-rtp` and `source-sdp`.
+- `liveion/src/target_rtsp.rs` — static RTSP client-push output targets
+  (`rtsp://[user:pass@]host:port/path[?transport=tcp|udp]`; `target-rtsp`
+  feature), the counterpart of the RTSP source: live777 ANNOUNCE/SETUP/
+  RECORDs the stream to an RTSP server (mediamtx, another live777's RTSP
+  server, gst-rtsp-server) with the `libs/rtsp` client whepfrom also uses.
+  The supervisor mirrors the RTP one (media-driven, same backoff/reconcile/
+  standing-demand semantics, generation-tagged epochs) and the media plane
+  is the same track-broadcast tap + `RePayloadCodec` + payload-type
+  re-stamp; the ANNOUNCE SDP is built from the forward's track codecs in
+  the shape of the RTSP server's DESCRIBE (`a=control:` per media, which
+  the client session derives the SETUP URLs from). `PublishStarted` fires
+  at negotiation time while tracks arrive one `on_track` each, so the
+  epoch waits for the *negotiated* track counts
+  (`PeerForwardInternal::negotiated_publish_track_counts`) instead of the
+  first non-empty snapshot — an AV publisher whose audio track lands first
+  would otherwise announce audio-only. UDP is the default transport
+  (`?transport=tcp` selects interleaved, mirroring whepfrom); UDP senders
+  bind the SETUP-announced local port because strict servers (mediamtx)
+  drop RTP from any other source port. Teardown cancels the epoch token
+  threaded into `rtsp::setup_rtsp_session`: TCP closes the connection,
+  UDP sends TEARDOWN from the keep-alive loop, so the server releases the
+  published path immediately and a re-push cannot collide with a zombie
+  publisher. Server-side keyframe requests (a puller's PLI/FIR relayed by
+  mediamtx or another live777) arrive on the interleaved RTCP channel /
+  UDP RTCP port and are forwarded to the publisher via
+  `send_rtcp_to_publish`.
 - `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's
   streams table is SSE-pushed like liveion's: `GET /api/sse/streams`
   (`route/stream.rs::sse`, same `?nodes=` filter as `GET /api/streams/`)
@@ -423,7 +452,7 @@ Run tests:
 ```bash
 # full workspace with coverage, matching the CI feature set
 cargo llvm-cov nextest --profile ci --workspace \
-  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp \
   --lcov --output-path lcov.info
 
 # without coverage
@@ -459,7 +488,8 @@ pnpm exec playwright install --with-deps chromium
 export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright
 ```
 
-mediamtx interop tests (`whep_mediamtx_pull_*` and `rtsp_push_mediamtx_*` in
+mediamtx interop tests (`whep_mediamtx_pull_*`, `rtsp_push_mediamtx_*` and
+`rtsp_target_mediamtx_*` in
 the matrix binary, live777#212) need a mediamtx binary: `just mediamtx`
 downloads the pinned release into `target/`, or install mediamtx into `PATH`;
 `MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.

@@ -88,6 +88,8 @@ source-all = ["source-sdp", "source-rtsp", "source-whep"]
 target-whip = ["cascade"]
 # Static RTP/UDP multicast (or unicast) output targets
 target-rtp = ["dep:livetwo", "livetwo/multicast"]
+# Static RTSP client-push output targets (ANNOUNCE/SETUP/RECORD)
+target-rtsp = ["dep:livetwo", "rtsp/client", "dep:url"]
 
 native-source = ["source", "dep:livehal"]
 

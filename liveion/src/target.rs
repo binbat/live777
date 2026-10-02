@@ -5,7 +5,9 @@
 //! live777 node) — the static counterpart of `POST /api/cascade/{stream}`
 //! with a `target_url`, just as the WHEP source is the static counterpart
 //! of a cascade pull. An `rtp://` URL instead sends the media out as plain
-//! RTP over UDP, see [`crate::target_rtp`].
+//! RTP over UDP, see [`crate::target_rtp`]. An `rtsp://` URL pushes the
+//! media to an RTSP server as a client (ANNOUNCE/SETUP/RECORD), see
+//! [`crate::target_rtsp`].
 //!
 //! The push is media-driven: one supervisor task per target establishes the
 //! cascade-push session when the stream gains a publisher (`PublishStarted`,
@@ -78,6 +80,8 @@ pub fn init(manager: Arc<Manager>) {
             },
             #[cfg(feature = "target-rtp")]
             "rtp" => crate::target_rtp::spawn(manager.clone(), stream, target),
+            #[cfg(feature = "target-rtsp")]
+            "rtsp" => crate::target_rtsp::spawn(manager.clone(), stream, target),
             _ => error!(
                 "[target] [{}] unsupported target url scheme: {}",
                 stream, target.url

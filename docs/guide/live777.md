@@ -149,6 +149,32 @@ provisioned-stream reset) is re-established with exponential backoff
 (5s doubling, 60s cap) — the same pacing bounds the on-demand source
 restarts, at roughly one attempt per minute.
 
+### Static RTSP push (RTSP target)
+
+A stream can also be pushed to an RTSP server as a client
+(`ANNOUNCE`/`SETUP`/`RECORD`) — mediamtx, another live777's RTSP server
+(see below), or gst-rtsp-server. It is the mirror of the `rtsp://` source:
+build with the `target-rtsp` feature and add an `rtsp://` target to a
+provisioned stream:
+
+```toml
+[[stream.cam1.targets]]
+url = "rtsp://mediamtx:8554/cam1"
+# With Digest/Basic auth and TCP interleaved transport (UDP by default):
+# url = "rtsp://admin:secret@mediamtx:8554/cam1?transport=tcp"
+```
+
+The lifecycle matches the WHIP target: the session is established when the
+stream gains a publisher, torn down when the publisher goes away (TEARDOWN
+for UDP, connection close for TCP, so the server releases the published
+path immediately), and re-established with exponential backoff after a
+failure; a target on an `on_demand` stream acts as standing demand. Only
+the first video and the first audio track are announced; video is
+re-packetized with SPS/PPS inlined ahead of every IDR, and keyframe
+requests coming back from the server (e.g. a puller's PLI relayed by
+mediamtx) reach the publisher. `whip://`, `rtp://` and `rtsp://` targets
+mix freely on one stream.
+
 ## DataChannel Forward
 
 > NOTE: About `createDataChannel()`
