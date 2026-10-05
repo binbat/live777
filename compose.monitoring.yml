@@ -1,0 +1,49 @@
+# Prometheus + Grafana monitoring stack for live777 (issue #24).
+#
+# Usage:
+#   docker compose -f compose.monitoring.yml up -d
+#   # Grafana: http://localhost:3000 (admin/admin, change on first login)
+#   # Prometheus: http://localhost:9090
+#
+# The stack scrapes the live777 node's `GET /metrics` endpoint
+# (always compiled in, no feature flag needed). The scrape targets are in
+# conf/monitoring/prometheus.yml — by default a live777 running on the Docker
+# host at port 7777; add more targets there to monitor a cluster.
+
+services:
+    prometheus:
+        image: prom/prometheus:latest
+        command:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time=30d
+        volumes:
+            - ./conf/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+            - prometheus-data:/prometheus
+        ports:
+            - 9090:9090
+        # Linux: resolve host.docker.internal to the Docker host gateway so
+        # Prometheus can reach a live777 running outside containers.
+        extra_hosts:
+            - host.docker.internal:host-gateway
+        restart: unless-stopped
+
+    grafana:
+        image: grafana/grafana:latest
+        environment:
+            # Change these for anything beyond a local deployment.
+            GF_SECURITY_ADMIN_USER: admin
+            GF_SECURITY_ADMIN_PASSWORD: admin
+            GF_USERS_ALLOW_SIGN_UP: "false"
+        volumes:
+            - ./conf/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+            - ./conf/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+            - grafana-data:/var/lib/grafana
+        ports:
+            - 3000:3000
+        depends_on:
+            - prometheus
+        restart: unless-stopped
+
+volumes:
+    prometheus-data:
+    grafana-data:

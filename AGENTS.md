@@ -523,6 +523,12 @@ carries the check.
   `ghcr.io/binbat/<app>`.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
+- **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana
+  stack scraping the live777 `/metrics` endpoint (always compiled in);
+  scrape config in `conf/monitoring/prometheus.yml`, provisioned datasource
+  and the `live777 overview` dashboard under `conf/monitoring/grafana/`.
+  Just recipes: `just monitoring-up` / `just monitoring-down`. liveman has
+  no Prometheus endpoint — scrape the live777 nodes directly.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
 - **Size-optimized builds are opt-in**: official release binaries use the
