@@ -410,7 +410,11 @@ clients via Link headers).
   with the epoch's generation, and the supervisor ignores tags that are not
   the live epoch — a belated exit from an already torn-down epoch must
   never cancel the fresh one, or every teardown self-sustains a restart
-  storm. Video is re-packetized through livetwo's `RePayloadCodec`
+  storm. While media flows, each send task also emits a periodic RTCP
+  sender report to its RTP port + 1 (packet/octet counters and the NTP ↔
+  RTP timestamp mapping are maintained at the marshal point, live777#471);
+  inbound receiver reports are not consumed. Video is re-packetized through
+  livetwo's `RePayloadCodec`
   (SPS/PPS inlined ahead of every IDR, seeded from the codec fmtp via
   `with_sprop_params`), a PLI nudges the publisher on attach, and the video
   payload type can be pinned (`payload_type`, e.g. 96 for Unitree

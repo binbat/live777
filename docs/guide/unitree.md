@@ -96,11 +96,12 @@ url = "rtp://230.1.1.1:1720"
 Sending is media-driven, mirroring the WHIP push target: it starts when
 the stream gains a publisher (`PublishStarted`) and stops when the
 publisher goes away. The first video track goes to the URL's port, the
-first audio track to port + 2 (the RTP/AVP convention leaves port + 1 for
-RTCP). Video is re-assembled and re-packetized before sending: SPS/PPS are
-inlined ahead of every IDR, so a receiver joining mid-GOP decodes from the
-next keyframe — the same guarantee the ingest side gives. Audio passes
-through untouched.
+first audio track to port + 2, and each track's RTCP sender reports go to
+its RTP port + 1 (the RTP/AVP convention), so receivers can estimate
+jitter/loss and lip-sync. Video is re-assembled and re-packetized before
+sending: SPS/PPS are inlined ahead of every IDR, so a receiver joining
+mid-GOP decodes from the next keyframe — the same guarantee the ingest
+side gives. Audio passes through untouched.
 
 With `sdp_file` set, live777 writes a receiver-side SDP file every time
 sending starts (the file is not deleted when sending stops — the group and
