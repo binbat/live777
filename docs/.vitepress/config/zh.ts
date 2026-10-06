@@ -61,6 +61,7 @@ export const zh: LocaleConfig = {
                         items: [
                             { text: 'Live777 API', link: 'live777-api' },
                             { text: 'LiveMan API', link: 'liveman-api' },
+                            { text: '监控', link: 'monitoring' },
                         ]
                     }
                 ]

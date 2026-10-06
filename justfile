@@ -665,6 +665,19 @@ livewrk-whep sessions="100" duration="60" target_stream=stream:
 loadtest-channel mode="all":
     cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}
 
+# Prometheus + Grafana monitoring stack (scrapes the live777 /metrics endpoint)
+# Usage: just monitoring-up    # Grafana: http://localhost:3000 (admin/admin)
+#        just monitoring-down
+# ============================================================
+
+[group('monitoring')]
+monitoring-up:
+    docker compose -f compose.monitoring.yml up -d
+
+[group('monitoring')]
+monitoring-down:
+    docker compose -f compose.monitoring.yml down
+
 
 # Rockchip RKMPP (RK3588, RV1126B): V4L2 capture, Rockchip MPP encoder
 # Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set

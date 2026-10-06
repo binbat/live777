@@ -412,6 +412,15 @@ pub fn metrics_register() {
     metrics::REGISTRY
         .register(Box::new(metrics::RTP_BYTES_TOTAL.clone()))
         .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::RTCP_PACKETS_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_RTP_BYTES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_SESSIONS.clone()))
+        .unwrap();
 }
 
 async fn metrics() -> String {

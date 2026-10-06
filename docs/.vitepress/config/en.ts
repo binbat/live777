@@ -61,6 +61,7 @@ export const en: LocaleConfig = {
                         items: [
                             { text: 'Live777 API', link: 'live777-api' },
                             { text: 'LiveMan API', link: 'liveman-api' },
+                            { text: 'Monitoring', link: 'monitoring' },
                         ]
                     }
                 ]

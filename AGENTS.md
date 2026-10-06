@@ -243,7 +243,25 @@ clients via Link headers).
   the aggregate bitrate immediately so closed directions do not keep a stale
   rate until the next tick. Stats surface as the `stats` field on the
   stream/session API types and as the
-  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. The
+  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. RTCP is
+  counted separately as
+  `live777_rtcp_packets_total{direction="to_publisher|from_subscriber", kind="pli|fir|nack|rr|sr|twcc|remb|other"}`:
+  `to_publisher` comes from the publish chain's outermost interceptor
+  (`rtcp_egress_probe` in `forward/internal.rs`, which sees both
+  interceptor-generated and application-written packets, e.g. relayed
+  PLI/FIR), `from_subscriber` from the subscribe-quality tap
+  (`forward/subscribe_quality.rs`, compiled only with the `source` feature).
+  Per-stream series: `live777_stream_rtp_bytes_total{stream, direction}`
+  shares the RTP accounting points (tick deltas plus final folds), and
+  `live777_stream_sessions{stream, kind="publish|subscribe"}` is *set* from
+  the live session counts in the same stats tick — poll-model gauges that
+  cannot drift, unlike inc/dec counters. A stream's series are removed from
+  the vecs at teardown (`emit_stream_deleted`): the prometheus client never
+  drops vec children on its own, so without the removal deleted streams
+  would stay in /metrics forever (registry growth on churn, and Prometheus
+  would never mark them stale). The `stream` label is still unbounded on
+  auto-create deployments while the streams are *live*; the removal keeps
+  the registry bounded to live streams. The
   stream API includes `statsScope`: `node` for liveion snapshots and
   `clusterNodeWork` for liveman's merged sum of per-node work, where cascade
   hops are counted on each relay node.
@@ -523,6 +541,12 @@ carries the check.
   `ghcr.io/binbat/<app>`.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
+- **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana
+  stack scraping the live777 `/metrics` endpoint (always compiled in);
+  scrape config in `conf/monitoring/prometheus.yml`, provisioned datasource
+  and the `live777 overview` dashboard under `conf/monitoring/grafana/`.
+  Just recipes: `just monitoring-up` / `just monitoring-down`. liveman has
+  no Prometheus endpoint — scrape the live777 nodes directly.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
 - **Size-optimized builds are opt-in**: official release binaries use the
