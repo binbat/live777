@@ -16,6 +16,9 @@ mod profile;
 mod runner;
 mod source;
 
+#[cfg(target_os = "linux")]
+use player::livetwo::LivetwoWhepMulticastPlayer;
+use player::livetwo::LivetwoWhepRtpUrlPlayer;
 use player::{Player, livetwo::LivetwoWhepPlayer};
 use profile::{AudioCodec, MediaProfile, VideoCodec};
 #[cfg(feature = "source-whep")]
@@ -73,6 +76,45 @@ use source::{gst_rtp::GstRtpSource, gst_whip::GstWhipSource};
 )]
 #[tokio::test]
 async fn whep_ffmpeg_livetwo_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// whepfrom's `rtp://host:port` output (live777#475): the URL's own port
+/// addresses the tracks (video on P, audio on P + 2), validated end to end
+/// by ffprobe reading the output SDP.
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepRtpUrlPlayer]
+)]
+#[tokio::test]
+async fn whep_ffmpeg_livetwo_rtp_url_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// whepfrom as a WHEP → multicast bridge (live777#475): `rtp://group:port`
+/// output, ffprobe joins the group on loopback and validates the media.
+/// Linux-only: multicast loopback needs a working group route.
+#[cfg(target_os = "linux")]
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepMulticastPlayer]
+)]
+#[tokio::test]
+async fn whep_ffmpeg_livetwo_rtp_multicast_matrix_test<S, P>(source: S, player: P)
 where
     S: Source,
     P: Player,

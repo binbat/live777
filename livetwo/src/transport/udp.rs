@@ -56,6 +56,7 @@ impl UdpHandler {
         audio_recv: Receiver<Vec<u8>>,
         media_info: &rtsp::MediaInfo,
         target_host: &str,
+        rtp_options: &crate::protocol::RtpOutputOptions,
     ) -> Result<()> {
         if let Some(rtsp::TransportInfo::Udp {
             rtp_send_port: Some(target_port),
@@ -67,10 +68,19 @@ impl UdpHandler {
             let target_addr = resolve_target_address(server_addr, target_host);
             let listen_host = utils::host::derive_listen_host(&target_addr);
 
-            // Bind upfront so a bind failure (e.g. the SETUP-announced
-            // client port was grabbed by someone else) is propagated instead
-            // of silently leaving the session with zero media.
-            let socket = Self::bind_sender_socket(&listen_host, *local_port, "video").await?;
+            // Build the socket upfront so a setup failure (e.g. the
+            // SETUP-announced client port was grabbed by someone else, or a
+            // bad multicast interface) is propagated instead of silently
+            // leaving the session with zero media.
+            let socket = Self::sender_socket_for(
+                &listen_host,
+                *local_port,
+                &target_addr,
+                *target_port,
+                rtp_options,
+                "video",
+            )
+            .await?;
 
             info!(
                 "Starting video RTP sender to {}:{}",
@@ -98,7 +108,15 @@ impl UdpHandler {
             let target_addr = resolve_target_address(server_addr, target_host);
             let listen_host = utils::host::derive_listen_host(&target_addr);
 
-            let socket = Self::bind_sender_socket(&listen_host, *local_port, "audio").await?;
+            let socket = Self::sender_socket_for(
+                &listen_host,
+                *local_port,
+                &target_addr,
+                *target_port,
+                rtp_options,
+                "audio",
+            )
+            .await?;
 
             info!(
                 "Starting audio RTP sender to {}:{}",
@@ -117,6 +135,39 @@ impl UdpHandler {
         }
 
         Ok(())
+    }
+
+    /// Build one track's send socket: a multicast-aware socket (honoring the
+    /// output's TTL/interface options) for a group destination, the plain
+    /// bound socket otherwise.
+    async fn sender_socket_for(
+        listen_host: &str,
+        local_port: Option<u16>,
+        target_addr: &str,
+        target_port: u16,
+        #[cfg_attr(not(feature = "multicast"), allow(unused))]
+        options: &crate::protocol::RtpOutputOptions,
+        media_type: &'static str,
+    ) -> Result<UdpSocket> {
+        let is_multicast = target_addr
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_multicast())
+            .unwrap_or(false);
+        if is_multicast {
+            #[cfg(feature = "multicast")]
+            {
+                return crate::transport::multicast::sender_socket(
+                    std::net::SocketAddr::new(target_addr.parse()?, target_port),
+                    options.multicast_interface.as_deref(),
+                    options.ttl,
+                );
+            }
+            #[cfg(not(feature = "multicast"))]
+            anyhow::bail!(
+                "multicast destination {target_addr} requires livetwo's 'multicast' feature"
+            );
+        }
+        Self::bind_sender_socket(listen_host, local_port, media_type).await
     }
 
     /// Bind the sender socket to the port announced to the server via SETUP

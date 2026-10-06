@@ -84,6 +84,7 @@ pub async fn connect_webrtc_to_output(
                 audio_recv,
                 output_target.media_info(),
                 output_target.target_host(),
+                output_target.rtp_options(),
             )
             .await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

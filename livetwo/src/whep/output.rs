@@ -22,6 +22,9 @@ pub struct OutputTarget {
     media_info: rtsp::MediaInfo,
     target_host: String,
     interleaved_channels: Option<rtsp::channels::InterleavedChannel>,
+    /// Options of an `rtp://` output (multicast TTL/interface); default for
+    /// every other scheme.
+    rtp_options: protocol::RtpOutputOptions,
 }
 
 impl OutputTarget {
@@ -42,6 +45,10 @@ impl OutputTarget {
     }
     pub fn take_channels(&mut self) -> Option<rtsp::channels::InterleavedChannel> {
         self.interleaved_channels.take()
+    }
+
+    pub fn rtp_options(&self) -> &protocol::RtpOutputOptions {
+        &self.rtp_options
     }
 }
 
@@ -95,17 +102,28 @@ pub async fn setup_output_target(
                 media_info,
                 target_host,
                 interleaved_channels: channels,
+                rtp_options: Default::default(),
             })
         }
         OutputScheme::Rtp => {
-            let media_info =
-                protocol::rtp::setup_rtp_output(&input, filtered_sdp, sdp_file, notify).await?;
+            // Only the rtp:// scheme reads the URL's own port; sdp:// keeps
+            // its historical query-only port behavior.
+            let authority_port = input.scheme() == "rtp";
+            let (media_info, rtp_options) = protocol::rtp::setup_rtp_output(
+                &input,
+                filtered_sdp,
+                sdp_file,
+                notify,
+                authority_port,
+            )
+            .await?;
             Ok(OutputTarget {
                 connection_id: 1,
                 scheme,
                 media_info,
                 target_host,
                 interleaved_channels: None,
+                rtp_options,
             })
         }
     }
