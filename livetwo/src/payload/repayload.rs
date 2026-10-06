@@ -76,6 +76,8 @@ struct RePayloadBase {
     /// is a valid RTP value, so we cannot use `0` as a sentinel for the first
     /// packet.
     has_baseline: bool,
+    /// Cumulative count of input sequence gaps, for rate-limited logging.
+    gap_count: u64,
 }
 
 impl RePayloadBase {
@@ -85,6 +87,7 @@ impl RePayloadBase {
             sequence_number: 0,
             src_sequence_number: 0,
             has_baseline: false,
+            gap_count: 0,
         }
     }
 
@@ -107,11 +110,27 @@ impl RePayloadBase {
             true
         };
         if !continuous {
-            error!(
-                "Expected sequence {}, received {}",
-                self.src_sequence_number.wrapping_add(1),
-                packet.header.sequence_number
-            );
+            // A gap is routine on UDP paths (publisher-side loss, multicast
+            // delivery, a lagging broadcast): the fragments are dropped and
+            // the next packet re-baselines, so this is not an error. Rate-limit
+            // the logging the way the WHEP track handler's drop counter does.
+            self.gap_count += 1;
+            let gaps = self.gap_count;
+            if gaps <= 10 || gaps.is_multiple_of(100) {
+                warn!(
+                    "Input sequence gap: expected {}, received {} (total gaps {})",
+                    self.src_sequence_number.wrapping_add(1),
+                    packet.header.sequence_number,
+                    gaps
+                );
+            } else {
+                debug!(
+                    "Input sequence gap: expected {}, received {} (total gaps {})",
+                    self.src_sequence_number.wrapping_add(1),
+                    packet.header.sequence_number,
+                    gaps
+                );
+            }
             // Reset the baseline so the next packet re-establishes it instead
             // of being misidentified as a second gap against the stale baseline.
             self.has_baseline = false;
