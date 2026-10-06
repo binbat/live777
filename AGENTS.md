@@ -211,12 +211,13 @@ clients via Link headers).
 
 - Rust crate source lives in `src/` or `<crate>/src/`.
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
-  stream, source, recorder, info, sdp).
+  stream, source, recorder, info, sdp, target).
 - `liveion/src/forward/` — SFU forwarding core (media stats, RTCP metrics,
   DataChannel cables).
 - `liveion/src/stream/` — stream manager + source adapters (provisioned
   streams, on-demand lifecycle, bitrate tiers, Wayland compositor).
-- `liveion/src/target*.rs` — static WHIP/RTP/RTSP output targets.
+- `liveion/src/target*.rs` — WHIP/RTP/RTSP output targets (static config
+  plus the runtime `/api/targets` management API).
 - `liveion/src/event.rs`, `src/recorder/`, `src/hook.rs` — lifecycle event
   bus, recording pipeline, hook scripts.
 
