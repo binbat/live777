@@ -1098,3 +1098,98 @@ async fn test_liveion_stream_stats_churn() {
     // error instead of a clean shutdown — either is fine here.
     let _ = handle_whep2.await;
 }
+
+/// Runtime output targets (live777#473): `POST`/`GET`/`DELETE
+/// `/api/targets/{stream}` manage a stream's targets at runtime. Runtime
+/// targets do not persist across restarts; config-owned ones are listed but
+/// not removable.
+#[cfg(feature = "target-rtp")]
+#[tokio::test]
+async fn test_liveion_runtime_targets_api() {
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("http://{addr}{}", api::path::streams("-")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NO_CONTENT, res.status());
+
+    let targets_url = format!("http://{addr}{}", api::path::targets("-"));
+
+    // Unknown stream: 404.
+    let res = client
+        .post(format!("http://{addr}{}", api::path::targets("ghost")))
+        .json(&serde_json::json!({"url": "rtp://127.0.0.1:5004"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    // Invalid target (port 0): 400.
+    let res = client
+        .post(&targets_url)
+        .json(&serde_json::json!({"url": "rtp://127.0.0.1:0"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::BAD_REQUEST, res.status());
+
+    // Create: 200, echoing the redacted URL and the runtime origin.
+    let res = client
+        .post(&targets_url)
+        .json(&serde_json::json!({"url": "rtp://127.0.0.1:5004", "payload_type": 96}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::OK, res.status());
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["stream"], "-");
+    assert_eq!(body["url"], "rtp://127.0.0.1:5004");
+    assert_eq!(body["origin"], "runtime");
+    assert_eq!(body["payload_type"], 96);
+
+    // Duplicate: 409.
+    let res = client
+        .post(&targets_url)
+        .json(&serde_json::json!({"url": "rtp://127.0.0.1:5004"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::CONFLICT, res.status());
+
+    // Listed, per stream and globally.
+    let res = reqwest::get(&targets_url).await.unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["targets"].as_array().unwrap().len(), 1);
+    let res = reqwest::get(format!("http://{addr}/api/targets"))
+        .await
+        .unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["targets"].as_array().unwrap().len(), 1);
+
+    // Delete: 200; deleting again: 404.
+    let res = client
+        .delete(format!("{targets_url}?url=rtp://127.0.0.1:5004"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::OK, res.status());
+    let res = client
+        .delete(format!("{targets_url}?url=rtp://127.0.0.1:5004"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::NOT_FOUND, res.status());
+
+    let res = reqwest::get(&targets_url).await.unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["targets"].as_array().unwrap().is_empty());
+}

@@ -214,6 +214,61 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## 输出目标
+
+流的输出目标（target）的运行时管理——静态配置
+`[[stream.<name>.targets]]` 的动态对应物（见
+[live777 配置](./live777.md)）。支持 `whip://`、`rtp://`、`rtsp://`
+三种 URL，选项与 supervisor 语义和静态 target 完全一致（media-driven
+启停、退避重试、`on_demand` 流的 standing demand）。运行时 target 不
+跨重启持久化，与动态级联推送一致。
+
+### 列出 Target
+
+`GET` `/api/targets` —— 所有流。`GET` `/api/targets/:streamId` —— 单个流。
+
+响应：[200]
+
+```json
+{
+  "targets": [
+    {
+      "stream": "robot-cam",
+      "url": "rtp://230.1.1.1:1720",
+      "origin": "runtime",
+      "payload_type": 96
+    }
+  ]
+}
+```
+
+`origin` 为 `config`（静态配置项）或 `runtime`（API 添加）。URL 不含
+凭据（以 userinfo 携带的 WHIP token 会被抹除）。
+
+### 添加 Target
+
+`POST` `/api/targets/:streamId`
+
+请求体：与配置项相同的 target 条目：
+
+```json
+{
+  "url": "rtp://230.1.1.1:1720",
+  "payload_type": 96,
+  "sdp_file": "/etc/live777/robot-cam.sdp"
+}
+```
+
+响应：[200] 返回创建的 target。错误：[404] 流不存在；[400] URL 或选项
+非法；[409] 该流已注册相同 URL 的 target。
+
+### 删除 Target
+
+`DELETE` `/api/targets/:streamId?url=<target-url>`
+
+响应：[200] 返回删除的 target。错误：[404] target 不存在；[409] 该
+target 在配置文件中声明，不能通过 API 删除。
+
 ## 媒体源
 
 码率端点是只读的*编码器*遥测（仅限原生采集/编码源，见

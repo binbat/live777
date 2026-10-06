@@ -40,7 +40,7 @@ use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::TargetConfig;
 use crate::event::{Event, StreamDeleteReason};
@@ -54,17 +54,6 @@ use crate::stream::manager::Manager;
 /// server would park the supervisor (and with it event handling) on a
 /// connect that the kernel only gives up on after minutes.
 const ESTABLISH_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Spawn one supervisor for a configured static RTSP target. Parse failures
-/// are reported once and dropped, mirroring `target::init`.
-pub(crate) fn spawn(manager: Arc<Manager>, stream: String, target: TargetConfig) {
-    match RtspTargetContext::new(manager, stream, target) {
-        Ok(ctx) => {
-            tokio::spawn(ctx.run());
-        }
-        Err(e) => error!("[target] {}", e),
-    }
-}
 
 /// A parsed `rtsp://` target: the URL handed to the RTSP client (credentials
 /// kept for the auth exchange, query stripped), the server host, and the
@@ -200,7 +189,9 @@ async fn wait_for_tracks(forward: &PeerForward) -> anyhow::Result<Vec<PublishTra
     }
 }
 
-struct RtspTargetContext {
+/// The RTSP target supervisor; constructed and spawned by
+/// `crate::target::start_target` (static config and runtime API alike).
+pub(crate) struct RtspTargetContext {
     manager: Arc<Manager>,
     stream: String,
     /// URL handed to the RTSP client: query stripped, credentials kept (they
@@ -214,12 +205,16 @@ struct RtspTargetContext {
 }
 
 impl RtspTargetContext {
-    fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        manager: Arc<Manager>,
+        stream: String,
+        target: TargetConfig,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Self> {
         let parsed = parse_rtsp_url(&target.url)
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTSP target: {}", stream, e))?;
         validate_rtsp_options(&target)
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTSP target: {}", stream, e))?;
-        let cancel = manager.cancel_token();
         Ok(Self {
             manager,
             stream,
@@ -231,7 +226,7 @@ impl RtspTargetContext {
         })
     }
 
-    async fn run(self) {
+    pub(crate) async fn run(self) {
         // Subscribe before the initial snapshot/kick so media transitions
         // happening in between are still observed.
         let mut events = self.manager.subscribe_event();

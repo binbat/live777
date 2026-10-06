@@ -41,7 +41,7 @@ use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::TargetConfig;
 use crate::event::{Event, StreamDeleteReason};
@@ -50,17 +50,6 @@ use crate::forward::track::PublishTrackRemote;
 use crate::forward::{PeerForward, rtcp::RtcpMessage};
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
-
-/// Spawn one supervisor for a configured static RTP target. Parse failures
-/// are reported once and dropped, mirroring `target::init`.
-pub(crate) fn spawn(manager: Arc<Manager>, stream: String, target: TargetConfig) {
-    match RtpTargetContext::new(manager, stream, target) {
-        Ok(ctx) => {
-            tokio::spawn(ctx.run());
-        }
-        Err(e) => error!("[target] {}", e),
-    }
-}
 
 /// Parse an `rtp://host:port` target URL into a socket address.
 /// The host must be an IP literal (v4 or v6 in brackets); no userinfo,
@@ -146,7 +135,9 @@ async fn wait_for_tracks(forward: &PeerForward) -> anyhow::Result<Vec<PublishTra
     }
 }
 
-struct RtpTargetContext {
+/// The RTP target supervisor; constructed and spawned by
+/// `crate::target::start_target` (static config and runtime API alike).
+pub(crate) struct RtpTargetContext {
     manager: Arc<Manager>,
     stream: String,
     dest: SocketAddr,
@@ -166,7 +157,12 @@ struct RtpTargetContext {
 }
 
 impl RtpTargetContext {
-    fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        manager: Arc<Manager>,
+        stream: String,
+        target: TargetConfig,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Self> {
         let dest = parse_rtp_url(&target.url)
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTP target: {}", stream, e))?;
         // Config validation already reports these; re-checking covers
@@ -174,7 +170,6 @@ impl RtpTargetContext {
         // destination would otherwise silently do nothing).
         validate_rtp_options(&dest, &target)
             .map_err(|e| anyhow::anyhow!("[{}] invalid RTP target: {}", stream, e))?;
-        let cancel = manager.cancel_token();
         Ok(Self {
             manager,
             stream,
@@ -189,7 +184,7 @@ impl RtpTargetContext {
         })
     }
 
-    async fn run(self) {
+    pub(crate) async fn run(self) {
         // Subscribe before the initial snapshot/kick so media transitions
         // happening in between are still observed.
         let mut events = self.manager.subscribe_event();
@@ -1199,6 +1194,7 @@ mod tests {
                 sdp_file: Some(bad_sdp_path.to_string()),
                 ..rtp_target(&format!("rtp://{dest}"))
             },
+            manager.cancel_token(),
         )
         .unwrap();
         let (bad_exit_tx, mut bad_exit_rx) = mpsc::unbounded_channel::<u64>();
@@ -1219,6 +1215,7 @@ mod tests {
                 sdp_file: Some(sdp_path.to_string_lossy().into_owned()),
                 ..rtp_target(&format!("rtp://{dest}"))
             },
+            manager.cancel_token(),
         )
         .unwrap();
 
@@ -1283,6 +1280,7 @@ mod tests {
             manager.clone(),
             "cam".to_string(),
             rtp_target("rtp://127.0.0.1:5004"),
+            manager.cancel_token(),
         )
         .unwrap();
         let handle = tokio::spawn(ctx.run());
@@ -1337,6 +1335,7 @@ mod tests {
             manager.clone(),
             "cam".to_string(),
             rtp_target(&format!("rtp://{dest}")),
+            manager.cancel_token(),
         )
         .unwrap();
         let start_calls = ctx.start_calls.clone();
@@ -1380,6 +1379,72 @@ mod tests {
             .await
             .expect("run() must exit when the manager is cancelled")
             .unwrap();
+    }
+
+    /// A runtime-added target (the POST /api/targets path, live777#473)
+    /// starts sending on an already-published stream — the supervisor's
+    /// initial `has_publisher` snapshot covers media that pre-dates it —
+    /// and removing the target stops the send.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn runtime_target_sends_and_stops() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+        let forward = manager.get_forward("cam").await.unwrap();
+        forward
+            .add_virtual_track(RtpCodecKind::Video, h264_codec_params())
+            .await
+            .unwrap();
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let track = forward
+            .publish_tracks()
+            .await
+            .into_iter()
+            .find(|t| t.kind() == RtpCodecKind::Video)
+            .expect("the virtual video track");
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+
+        // The publisher predates the target: media must still arrive.
+        let url = format!("rtp://{dest}");
+        crate::target::start_runtime_target(&manager, "cam".to_string(), rtp_target(&url))
+            .await
+            .unwrap();
+        recv_idr_stream(&listener, &IDR, 96).await;
+
+        // Removing the runtime target cancels its supervisor; the send stops.
+        let entry = manager.remove_runtime_target("cam", &url).unwrap();
+        entry.cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut buf = [0u8; 1500];
+        let stray =
+            tokio::time::timeout(Duration::from_secs(1), listener.recv_from(&mut buf)).await;
+        assert!(stray.is_err(), "the removed runtime target kept sending");
+        assert!(
+            manager.list_targets().is_empty(),
+            "the removed target must leave the registry"
+        );
+
+        pump_stop.cancel();
+        cancel.cancel();
     }
 
     /// Regression for live777#481: a target on an on-demand stream is
@@ -1442,6 +1507,7 @@ mod tests {
             manager.clone(),
             "od".to_string(),
             rtp_target(&format!("rtp://{dest}")),
+            manager.cancel_token(),
         )
         .unwrap();
         let start_calls = ctx.start_calls.clone();

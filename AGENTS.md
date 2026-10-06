@@ -397,7 +397,15 @@ clients via Link headers).
   idle-stopped underneath it, and (re)starts them whenever the stream has
   neither a publisher nor a push session, paced by the same backoff.
   `target::init` dispatches per target by URL scheme, so `whip://`,
-  `rtp://` and `rtsp://` targets mix freely on one stream.
+  `rtp://` and `rtsp://` targets mix freely on one stream. Targets of every
+  scheme can also be managed at runtime (`POST`/`GET`/`DELETE
+  `/api/targets/{stream}`, `DELETE` takes `?url=`; live777#473):
+  `target::start_target` is the shared spawn path — it registers the target
+  in the manager's `(stream, url)` registry (`Manager::register_target` /
+  `remove_runtime_target` / `list_targets`) with a per-target child cancel
+  token, and the registry entry drops when the supervisor exits. Runtime
+  targets share all supervisor semantics and do not persist across
+  restarts; config-owned targets are listed but rejected on DELETE (409).
 - `liveion/src/target_rtp.rs` — static RTP/UDP output targets
   (`rtp://group-or-host:port`; `target-rtp` feature), the sender
   counterpart of the SDP-file source: live777 acts as the multicast sender,

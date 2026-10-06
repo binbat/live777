@@ -14,6 +14,16 @@ pub enum AppError {
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     StreamSourceActive(String),
     SessionNotFound(String),
+    /// No output target with the requested URL is registered for the stream.
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
+    TargetNotFound(String),
     /// No media source is registered for the requested stream.
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     SourceNotFound(String),
@@ -52,6 +62,21 @@ impl AppError {
         T: ToString,
     {
         AppError::SessionNotFound(t.to_string())
+    }
+
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub fn target_not_found<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::TargetNotFound(t.to_string())
     }
 
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
@@ -110,6 +135,7 @@ impl IntoResponse for AppError {
             AppError::StreamProvisioned(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::StreamSourceActive(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
+            AppError::TargetNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::SourceNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::SourceBitrateUnsupported(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::HookFailed(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),
