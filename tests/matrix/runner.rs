@@ -19,10 +19,18 @@ use crate::common::shutdown_signal;
 
 /// Cancels the wrapped token on drop, so a panicking test cannot leak the
 /// server it spawned.
-#[cfg(any(feature = "source-whep", feature = "target-whip"))]
+#[cfg(any(
+    feature = "source-whep",
+    feature = "target-whip",
+    feature = "target-rtp"
+))]
 struct CancelOnDrop(CancellationToken);
 
-#[cfg(any(feature = "source-whep", feature = "target-whip"))]
+#[cfg(any(
+    feature = "source-whep",
+    feature = "target-whip",
+    feature = "target-rtp"
+))]
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
@@ -31,7 +39,12 @@ impl Drop for CancelOnDrop {
 
 /// Whether this is a GitHub-hosted Windows runner: media-heavy matrix cases
 /// skip there (they run everywhere else, including local Windows hosts).
-#[cfg(any(feature = "source-whep", feature = "target-whip", feature = "rtsp"))]
+#[cfg(any(
+    feature = "source-whep",
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "rtsp"
+))]
 pub fn windows_ci() -> bool {
     cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
 }
@@ -57,7 +70,7 @@ pub fn require_gst(elements: &[&str]) -> bool {
     })
 }
 
-#[cfg(feature = "rtsp")]
+#[cfg(any(feature = "rtsp", feature = "target-rtp"))]
 use crate::probe;
 
 /// RTSP transport variant used by the round-trip matrix cases: both the
@@ -717,6 +730,104 @@ pub async fn run_rtsp_target_live777(
     wait_for_no_live_publish(&api_addr_b, stream_id).await;
 
     source_handle.stop().await;
+}
+
+/// RTP target end to end (live777#472): liveion is provisioned with a
+/// static unicast `rtp://` target that writes a receiver SDP (`sdp_file`);
+/// ffprobe then joins mid-GOP by reading that SDP — receiving the target's
+/// RTP on the advertised ports — and the decoded media must match the
+/// source profile. Exercises the target's repayloader (SPS/PPS inlined
+/// ahead of every IDR, without which a mid-GOP join has no parameter sets)
+/// and the audio-on-port-+2 split, with no third-party binary involved.
+#[cfg(feature = "target-rtp")]
+pub async fn run_rtp_target(profile: MediaProfile, bind_ip: IpAddr) {
+    init_liveion_test_environment();
+    let stream_id = "relay";
+
+    // Video rides the URL port, audio port + 2, each track's RTCP the port
+    // above its RTP: reserve the whole four-port block.
+    let dest = SocketAddr::new(bind_ip, alloc_udp_ports(bind_ip, 4));
+
+    let sdp_path = std::env::temp_dir().join(format!(
+        "live777-matrix-rtp-target-{}-{}.sdp",
+        std::process::id(),
+        dest.port()
+    ));
+    let sdp_path_str = sdp_path.to_string_lossy().into_owned();
+
+    // Provisioned stream with the static rtp:// target; the stream exists
+    // (and the target supervisor runs) from startup.
+    let mut cfg = liveion::config::Config::default();
+    cfg.http.cors = true;
+    cfg.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            targets: vec![liveion::config::TargetConfig {
+                url: format!("rtp://{dest}"),
+                sdp_file: Some(sdp_path_str.clone()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    cfg.validate().expect("RTP target config must validate");
+
+    let listener = TcpListener::bind(SocketAddr::new(bind_ip, 0))
+        .await
+        .unwrap();
+    let api_addr = SocketAddr::new(bind_ip, listener.local_addr().unwrap().port());
+    let cancel = CancellationToken::new();
+    let _cancel_on_drop = CancelOnDrop(cancel.clone());
+    tokio::spawn(liveion::serve(cfg, listener, cancel.cancelled_owned()));
+
+    // The send is media-driven: before a publisher exists nothing is sent,
+    // so the receiver SDP must not be written yet.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !sdp_path.exists(),
+        "rtp target wrote the receiver SDP before media existed"
+    );
+
+    // Publish the source; the target starts sending with it.
+    let source = crate::source::ffmpeg::FfmpegSource::new(profile);
+    let start = tokio::time::Instant::now();
+    let (source_handle, whip_ct, whip_handle) =
+        start_sdp_whip_publish(&source, api_addr, stream_id).await;
+    source.wait_for_ready().await;
+
+    // ffprobe binds the SDP's ports mid-stream: it must identify the media
+    // from the next keyframe on, which is what the target's inline SPS/PPS
+    // injection guarantees.
+    let expected_tracks = profile.video.is_some() as usize + profile.audio.is_some() as usize;
+    let probe_result = crate::player::livetwo::probe_output_sdp(&sdp_path_str, expected_tracks)
+        .await
+        .expect("ffprobe on the rtp target's receiver SDP failed");
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let playback = probe::into_play_result(probe_result, &profile, true, duration_ms);
+
+    tracing::info!(?playback, "RTP target result");
+
+    assert_playback_ok("rtp-target", &profile, &playback);
+
+    // Media-driven teardown: once the publisher leaves, the target's send
+    // epoch is torn down and the destination ports go silent.
+    whip_ct.cancel();
+    let result_whip = whip_handle.await.unwrap();
+    assert!(result_whip.is_ok());
+    source_handle.stop().await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let rtp_listener = tokio::net::UdpSocket::bind(dest).await.unwrap();
+    let mut buf = [0u8; 1500];
+    let stray =
+        tokio::time::timeout(Duration::from_secs(2), rtp_listener.recv_from(&mut buf)).await;
+    assert!(
+        stray.is_err(),
+        "rtp target kept sending after the publisher left"
+    );
+
+    let _ = std::fs::remove_file(&sdp_path);
 }
 
 /// Wait until a stream's publish session is Connected and liveion has

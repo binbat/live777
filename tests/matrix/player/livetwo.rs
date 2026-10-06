@@ -125,10 +125,13 @@ impl Player for LivetwoWhepPlayer {
 
 /// Wait for the output SDP to be fully populated, then probe it with ffprobe.
 ///
-/// `expected_tracks` is the number of `m=` lines the SDP must contain; whepfrom
-/// may rewrite the file as tracks arrive, so stopping at the first `m=` could
-/// probe a half-written SDP for AV profiles.
-async fn probe_output_sdp(sdp_path: &str, expected_tracks: usize) -> Result<probe::Ffprobe> {
+/// `expected_tracks` is the number of `m=` lines the SDP must contain; the
+/// writer may rewrite the file as tracks arrive, so stopping at the first
+/// `m=` could probe a half-written SDP for AV profiles.
+pub(crate) async fn probe_output_sdp(
+    sdp_path: &str,
+    expected_tracks: usize,
+) -> Result<probe::Ffprobe> {
     let mut populated = false;
     for _ in 0..300 {
         if let Ok(contents) = std::fs::read_to_string(sdp_path) {
@@ -145,7 +148,7 @@ async fn probe_output_sdp(sdp_path: &str, expected_tracks: usize) -> Result<prob
     }
     anyhow::ensure!(
         populated,
-        "whepfrom did not write a complete SDP ({expected_tracks} m= lines) to {sdp_path} within 30s"
+        "no complete SDP ({expected_tracks} m= lines) at {sdp_path} within 30s"
     );
 
     probe::run(&["-protocol_whitelist", "file,rtp,udp", "-i", sdp_path]).await

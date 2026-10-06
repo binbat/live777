@@ -31,6 +31,8 @@ use player::playwright::PlaywrightWhepPlayer;
 use player::rsmpeg_receiver::RsmpegWhepReceiver;
 #[cfg(not(target_os = "windows"))]
 use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
+#[cfg(feature = "target-rtp")]
+use runner::run_rtp_target;
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
@@ -601,6 +603,30 @@ async fn rtsp_target_live777_matrix_test(profile: MediaProfile, transport: RtspT
         return;
     }
     run_rtsp_target_live777(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTP target end to end: liveion sends the stream as plain RTP/UDP to a
+/// loopback unicast `rtp://` target; ffprobe validates by reading the
+/// receiver SDP the target writes (`sdp_file`), joining mid-GOP. Covers the
+/// H264 parameter-set injection, the audio port + 2 split, and an
+/// audio-only stream.
+///
+/// Runtime-skipped on Windows CI: see whep_mediamtx_pull_matrix_test.
+#[cfg(feature = "target-rtp")]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::H264, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::H264),
+        MediaProfile::audio_only(AudioCodec::Opus),
+    ]
+)]
+#[tokio::test]
+async fn rtp_target_matrix_test(profile: MediaProfile) {
+    if runner::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    run_rtp_target(profile, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
 }
 
 // ============================================================

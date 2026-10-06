@@ -406,7 +406,12 @@ clients via Link headers).
   standing-demand semantics) plus per-track send tasks that tap the forward
   track broadcast directly (the recorder / RTSP-server pattern, no
   subscribe session): first video track to the URL port, first audio track
-  to port + 2 (RTP/AVP convention). Send tasks report their exit tagged
+  to port + 2 (RTP/AVP convention). Like the RTSP target, the epoch waits
+  for the *negotiated* publish track counts
+  (`PeerForwardInternal::negotiated_publish_track_counts`) instead of the
+  first non-empty snapshot — tracks arrive one `on_track` each after
+  `PublishStarted`, so a snapshot would race an AV publisher into a
+  video-only send and SDP. Send tasks report their exit tagged
   with the epoch's generation, and the supervisor ignores tags that are not
   the live epoch — a belated exit from an already torn-down epoch must
   never cancel the fresh one, or every teardown self-sustains a restart
