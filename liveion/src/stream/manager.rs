@@ -53,6 +53,17 @@ fn emit_stream_deleted(
     reason: StreamDeleteReason,
 ) {
     metrics::STREAM.dec();
+    // Drop the stream's per-stream series outright. The prometheus client
+    // never removes vec children on its own, so without this the series
+    // would stay in /metrics forever (registry growth on churn) and
+    // Prometheus would never mark them stale. Counter children restart at 0
+    // if the stream name is recreated; the very last un-scraped tail of a
+    // deleted stream is only lost from the per-stream series — the
+    // server-wide counter keeps it.
+    _ = metrics::STREAM_SESSIONS.remove_label_values(&[stream, "publish"]);
+    _ = metrics::STREAM_SESSIONS.remove_label_values(&[stream, "subscribe"]);
+    _ = metrics::STREAM_RTP_BYTES_TOTAL.remove_label_values(&[stream, "in"]);
+    _ = metrics::STREAM_RTP_BYTES_TOTAL.remove_label_values(&[stream, "out"]);
     let _ = event_sender.send(Event::StreamDeleted {
         stream: stream.to_string(),
         reason,
@@ -1032,17 +1043,33 @@ impl Manager {
             // (write lock on the map) is not blocked while sampling.
             let forwards: Vec<PeerForward> = stream_map.read().await.values().cloned().collect();
             for forward in forwards {
-                let deltas = forward.sample_stats().await;
+                let sample = forward.sample_stats().await;
+                let deltas = sample.deltas;
                 if deltas.inbound > 0 {
                     metrics::RTP_BYTES_TOTAL
                         .with_label_values(&["in"])
+                        .inc_by(deltas.inbound);
+                    metrics::STREAM_RTP_BYTES_TOTAL
+                        .with_label_values(&[forward.stream.as_str(), "in"])
                         .inc_by(deltas.inbound);
                 }
                 if deltas.outbound > 0 {
                     metrics::RTP_BYTES_TOTAL
                         .with_label_values(&["out"])
                         .inc_by(deltas.outbound);
+                    metrics::STREAM_RTP_BYTES_TOTAL
+                        .with_label_values(&[forward.stream.as_str(), "out"])
+                        .inc_by(deltas.outbound);
                 }
+                // Set (not inc/dec) per-stream session gauges from the live
+                // counts so they cannot drift across churn; series of
+                // deleted streams are removed by `emit_stream_deleted`.
+                metrics::STREAM_SESSIONS
+                    .with_label_values(&[forward.stream.as_str(), "publish"])
+                    .set(sample.publishers as f64);
+                metrics::STREAM_SESSIONS
+                    .with_label_values(&[forward.stream.as_str(), "subscribe"])
+                    .set(sample.subscribers as f64);
             }
             stats_version.send_modify(|v| *v += 1);
         }

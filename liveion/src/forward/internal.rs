@@ -43,7 +43,7 @@ use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
-use super::stats::{ByteDeltas, MediaStats};
+use super::stats::{MediaStats, StreamSample};
 use super::subscribe::SubscribeRTCPeerConnection;
 #[cfg(feature = "source")]
 use super::subscribe_quality::{self, SubscribeQualityInterceptor};
@@ -484,6 +484,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
 // layer in the publish peer chain so it sees every RTCP packet before it hits
 // the wire (ICE/DTLS/SRTP).
 mod rtcp_egress_probe {
+    use crate::metrics;
     use rtc::interceptor::StreamInfo;
     use rtc::interceptor::{Packet, TaggedPacket};
     use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
@@ -562,9 +563,15 @@ mod rtcp_egress_probe {
         }
 
         pub fn tally(&self, pkts: &[Box<dyn rtc::rtcp::packet::Packet>], stream: &str) {
+            // Mirror every packet into the server-wide Prometheus counter
+            // (`direction="to_publisher"`); the per-stream atomics below stay
+            // for the trace-level debug snapshot.
             for pkt in pkts {
                 match Self::classify(pkt.as_ref()) {
                     Some(RtcpType::Twcc(info)) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "twcc"])
+                            .inc();
                         let cnt = self
                             .transport_layer_cc
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -581,26 +588,47 @@ mod rtcp_egress_probe {
                         );
                     }
                     Some(RtcpType::ReceiverReport) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "rr"])
+                            .inc();
                         self.receiver_report
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::SenderReport) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "sr"])
+                            .inc();
                         self.sender_report
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Pli) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "pli"])
+                            .inc();
                         self.pli.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Fir) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "fir"])
+                            .inc();
                         self.fir.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Nack) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "nack"])
+                            .inc();
                         self.nack.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Remb) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "remb"])
+                            .inc();
                         self.remb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     None => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "other"])
+                            .inc();
                         self.other
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -1091,41 +1119,49 @@ impl PeerForwardInternal {
         Self::aggregate_publish_stats(&publish_tracks)
     }
 
-    /// Sample all per-track/per-session counters: refresh their bitrates and
-    /// fold the byte/packet deltas into the stream-level totals, which stay
-    /// monotonic across republishes and subscriber churn. Returns the byte
-    /// deltas for server-wide metrics.
-    pub(crate) async fn sample_stats(&self) -> ByteDeltas {
-        let mut deltas = ByteDeltas::default();
+    /// Sample all per-track/per-session counters: refresh their bitrates,
+    /// fold the byte/packet deltas into the stream-level totals (which stay
+    /// monotonic across republishes and subscriber churn), and report the
+    /// live session counts. The returned [`StreamSample`] feeds both the
+    /// server-wide and the per-stream Prometheus series.
+    pub(crate) async fn sample_stats(&self) -> StreamSample {
+        let mut result = StreamSample::default();
         let mut in_packets = 0u64;
         let mut in_bitrate = 0u64;
         {
             let publish_tracks = self.publish_tracks.read().await;
             for track in publish_tracks.iter() {
                 let sample = track.stats().sample();
-                deltas.inbound += sample.bytes;
+                result.deltas.inbound += sample.bytes;
                 in_packets += sample.packets;
                 in_bitrate += sample.bitrate;
             }
+            // Virtual (source) publishers own tracks but no publish peer.
+            let publisher_attached =
+                !publish_tracks.is_empty() || self.publish.read().await.is_some();
+            result.publishers = publisher_attached as u64;
         }
-        self.stats_publish.add_delta(deltas.inbound, in_packets);
+        self.stats_publish
+            .add_delta(result.deltas.inbound, in_packets);
         self.stats_publish.set_bitrate(in_bitrate);
 
         let mut out_packets = 0u64;
         let mut out_bitrate = 0u64;
         {
             let subscribe_group = self.subscribe_group.read().await;
+            result.subscribers = subscribe_group.len() as u64;
             for subscribe in subscribe_group.iter() {
                 let sample = subscribe.stats.sample();
-                deltas.outbound += sample.bytes;
+                result.deltas.outbound += sample.bytes;
                 out_packets += sample.packets;
                 out_bitrate += sample.bitrate;
             }
         }
-        self.stats_subscribe.add_delta(deltas.outbound, out_packets);
+        self.stats_subscribe
+            .add_delta(result.deltas.outbound, out_packets);
         self.stats_subscribe.set_bitrate(out_bitrate);
 
-        deltas
+        result
     }
 
     /// Fold the un-sampled tail of departing publish tracks into the stream
@@ -1144,6 +1180,9 @@ impl PeerForwardInternal {
             metrics::RTP_BYTES_TOTAL
                 .with_label_values(&["in"])
                 .inc_by(bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "in"])
+                .inc_by(bytes);
         }
     }
 
@@ -1161,6 +1200,9 @@ impl PeerForwardInternal {
         if sample.bytes > 0 {
             metrics::RTP_BYTES_TOTAL
                 .with_label_values(&["out"])
+                .inc_by(sample.bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "out"])
                 .inc_by(sample.bytes);
         }
     }
@@ -2168,8 +2210,11 @@ impl PeerForwardInternal {
 
         // Outermost layer: tap inbound subscriber feedback (NACK / RR /
         // TWCC / PLI) into per-subscriber quality counters for the
-        // adaptive-bitrate controller (issue #409).  Pure observer — the
-        // packets continue down the chain untouched.
+        // adaptive-bitrate controller (issue #409), also mirrored into the
+        // server-wide `from_subscriber` RTCP Prometheus counters.  Pure
+        // observer — the packets continue down the chain untouched.  Only
+        // built with the `source` feature, so that counter direction is
+        // absent in builds without it.
         #[cfg(feature = "source")]
         let registry = {
             let stats = subscribe_quality::SubscribeRtcpStats::new();

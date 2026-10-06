@@ -40,6 +40,20 @@ pub(crate) struct ByteDeltas {
     pub outbound: u64,
 }
 
+/// One stats-tick sample of a stream: the byte deltas plus its live session
+/// counts, taken under the same lock pass so the per-stream Prometheus
+/// series stay consistent with each other.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StreamSample {
+    pub deltas: ByteDeltas,
+    /// 1 while the stream has a publisher attached (a real publish peer or
+    /// virtual source tracks), else 0.
+    pub publishers: u64,
+    /// Current subscriber count (including reforward sessions, matching the
+    /// outbound byte semantics).
+    pub subscribers: u64,
+}
+
 /// Lock-free media counters for one packet flow: a publish track, a
 /// subscribe session, or a whole stream.
 ///

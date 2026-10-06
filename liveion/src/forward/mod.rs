@@ -251,8 +251,8 @@ impl PeerForward {
 
     /// Sample this stream's media counters; see
     /// [`PeerForwardInternal::sample_stats`]. Returns the byte deltas since
-    /// the previous sample.
-    pub(crate) async fn sample_stats(&self) -> stats::ByteDeltas {
+    /// the previous sample plus the live session counts.
+    pub(crate) async fn sample_stats(&self) -> stats::StreamSample {
         self.internal.sample_stats().await
     }
 
