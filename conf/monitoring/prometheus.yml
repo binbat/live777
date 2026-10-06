@@ -12,13 +12,15 @@ scrape_configs:
     - job_name: live777
       # live777 running on the Docker host. On Linux this works because
       # compose.monitoring.yml maps host.docker.internal to the host gateway.
-      targets:
-          - host.docker.internal:7777
+      static_configs:
+          - targets:
+                - host.docker.internal:7777
 
     # Cluster example: list every live777 node, or use service discovery.
     # (liveman has no Prometheus endpoint; scrape the live777 nodes directly.)
     # - job_name: live777-cluster
-    #   targets:
-    #       - live777-0:7777
-    #       - live777-1:7777
-    #       - live777-2:7777
+    #   static_configs:
+    #       - targets:
+    #             - live777-0:7777
+    #             - live777-1:7777
+    #             - live777-2:7777

@@ -19,6 +19,17 @@ curl http://localhost:7777/metrics
 | `live777_subscribe` | gauge | 订阅会话数量 |
 | `live777_reforward` | gauge | 转发（级联）会话数量 |
 | `live777_rtp_bytes_total{direction="in\|out"}` | counter | RTP 媒体字节数（线上大小）；`in` = 从发布端接收，`out` = 发送给订阅端 |
+| `live777_rtcp_packets_total{direction="to_publisher\|from_subscriber", kind="pli\|fir\|nack\|rr\|sr\|twcc\|remb\|other"}` | counter | RTCP 包按方向和类型计数；`to_publisher` = 发往发布端（含订阅者转发来的 PLI/FIR 关键帧请求），`from_subscriber` = 来自订阅端（需要以 `source` feature 构建） |
+| `live777_stream_rtp_bytes_total{stream, direction="in\|out"}` | counter | 按流细分的 RTP 媒体字节数 —— 与服务器级计数同一记账口径，仅多出流名标签 |
+| `live777_stream_sessions{stream, kind="publish\|subscribe"}` | gauge | 按流细分的会话数量，在服务器 2 秒的统计 tick 上从实时状态刷新 |
+
+::: warning
+`stream` 标签在动态建流的部署中是无界的（WHIP/WHEP auto-create 默认开启）：
+每条活跃的流都会新增序列。流被删除时其序列会从导出端移除，registry
+始终与活跃流数量相当 —— 但高 churn 部署仍会在 Prometheus 里留下大量
+短期序列。使用配置声明流（provisioned）的部署标签集合有界，是按流指标
+的安全使用场景。
+:::
 
 每条流、每个会话的码率和累计总量也可以通过流/会话 REST API 的 `stats`
 字段获取（并通过 SSE 实时推送到 WebUI 仪表盘），交互式查看时通常比指标
@@ -55,9 +66,9 @@ docker compose -f compose.monitoring.yml up -d
 
 然后打开：
 
-- Grafana：<http://localhost:3000>（默认登录 `admin` / `admin` ——
+- Grafana：`http://localhost:3000`（默认登录 `admin` / `admin` ——
   本地以外的部署请修改）
-- Prometheus：<http://localhost:9090>
+- Prometheus：`http://localhost:9090`
 
 默认抓取目标是 `host.docker.internal:7777`，即运行在 Docker 宿主机上的
 live777（Linux 下 compose 文件已把 `host.docker.internal` 映射到宿主机
@@ -67,14 +78,17 @@ live777（Linux 下 compose 文件已把 `host.docker.internal` 映射到宿主�
 ```yaml
 scrape_configs:
     - job_name: live777-cluster
-      targets:
-          - host.docker.internal:7777
-          - host.docker.internal:7778
-          - host.docker.internal:7779
+      static_configs:
+          - targets:
+                - host.docker.internal:7777
+                - host.docker.internal:7778
+                - host.docker.internal:7779
 ```
 
-Grafana 仪表盘展示流/发布者/订阅者/转发数量、随时间变化的会话数，以及
-每个节点的 RTP 码率/吞吐量，每 5 秒刷新一次。
+Grafana 仪表盘展示流/发布者/订阅者/转发数量、随时间变化的会话数、RTP
+码率、按流细分的码率与会话数，以及 RTCP 包速率，每 5 秒刷新一次。当
+Prometheus 抓取多个节点或节点上有多条流时，顶部的 `Instance` 和
+`Stream` 下拉框可以过滤面板。
 
 ## 配合负载测试
 
