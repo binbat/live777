@@ -113,6 +113,19 @@ live777 → live777 multicast cascade:
 url = "/etc/live777/robot-cam.sdp"
 ```
 
+::: warning
+Multicast loopback (`IP_MULTICAST_LOOP`) is on by default on the sender
+socket — it is what lets a same-host receiver (the SDP file source, a
+gst-launch pipeline) see the target's output, and the loopback examples
+here rely on it. The same default is a feedback footgun: a live777 that
+sends to a group and joins the same group:port on one host — directly,
+or via a liveman cascade that loops back to the same host — ingests its
+own output and re-publishes it. Sending and ingesting the same
+group:port on one host is a misconfiguration; if you must run both sides
+on one machine for a demo, use distinct groups or ports, or disable
+loopback at the receiver.
+:::
+
 For a unicast target the generated `c=` line is a `127.0.0.1` placeholder;
 the receiver must replace it with its own address before use.
 
