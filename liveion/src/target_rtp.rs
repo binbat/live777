@@ -213,6 +213,16 @@ impl RtpTargetContext {
         // per minute.
         #[cfg(feature = "source")]
         let standing_demand = self.manager.is_on_demand_stream(&self.stream);
+        // Register as a virtual subscriber for the supervisor's whole
+        // lifetime: the senders tap the forward track broadcast directly (no
+        // subscribe session), so without this the on-demand idle check would
+        // stop the sources every close_after underneath them (live777#481).
+        // The registration also lists the target in the stream's
+        // `subscribe.sessions`.
+        let virtual_id = crate::target::virtual_target_session_id(&format!("rtp://{}", self.dest));
+        self.manager
+            .add_virtual_subscriber(&self.stream, virtual_id.clone())
+            .await;
 
         info!(
             "[target] [{}] rtp target towards {}",
@@ -342,6 +352,9 @@ impl RtpTargetContext {
         if let Some((_, epoch)) = senders.take() {
             epoch.cancel();
         }
+        self.manager
+            .remove_virtual_subscriber(&self.stream, &virtual_id)
+            .await;
         info!(
             "[target] [{}] stopped rtp send to {}",
             self.stream, self.dest
@@ -1367,5 +1380,116 @@ mod tests {
             .await
             .expect("run() must exit when the manager is cancelled")
             .unwrap();
+    }
+
+    /// Regression for live777#481: a target on an on-demand stream is
+    /// standing demand, so the on-demand idle timer must never stop the
+    /// sources underneath the senders. Without the standing-demand
+    /// registration the supervisor's kick re-arms the close-after safety
+    /// net, which stops the source, and the resulting PublishStopped
+    /// re-kick flaps the stream forever (bridge teardown/rebuild every
+    /// close_after).
+    #[cfg(feature = "source-sdp")]
+    #[tokio::test]
+    async fn on_demand_stream_with_target_does_not_flap() {
+        // Minimal H264 SDP file source, port 0: OS-assigned receive ports.
+        let sdp_path = std::env::temp_dir().join(format!(
+            "live777-target-on-demand-{}.sdp",
+            std::process::id()
+        ));
+        let sdp = "v=0\r\n\
+                   o=- 0 0 IN IP4 127.0.0.1\r\n\
+                   s=test\r\n\
+                   c=IN IP4 127.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=video 0 RTP/AVP 96\r\n\
+                   a=rtpmap:96 H264/90000\r\n";
+        tokio::fs::write(&sdp_path, sdp).await.unwrap();
+
+        let mut streams = std::collections::HashMap::new();
+        streams.insert(
+            "od".to_string(),
+            crate::config::StreamEntry {
+                sources: vec![crate::config::SourceConfig {
+                    url: Some(format!("file://{}", sdp_path.to_string_lossy())),
+                    multicast_interface: None,
+                    #[cfg(feature = "native-source")]
+                    capture: None,
+                    #[cfg(feature = "native-source")]
+                    encoder: None,
+                    #[cfg(feature = "native-source")]
+                    output: Default::default(),
+                    #[cfg(feature = "native-source")]
+                    tiers: vec![],
+                }],
+                on_demand: true,
+                on_demand_close_after_ms: 200,
+                on_demand_start_timeout_ms: 3000,
+                ..Default::default()
+            },
+        );
+        let config = crate::config::Config {
+            stream: crate::config::StreamConfig { streams },
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        let manager = Arc::new(Manager::new(config, cancel.clone()).await);
+        manager.provision_streams().await;
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "od".to_string(),
+            rtp_target(&format!("rtp://{dest}")),
+        )
+        .unwrap();
+        let start_calls = ctx.start_calls.clone();
+        let supervisor = tokio::spawn(ctx.run());
+
+        // The standing demand kicks the on-demand sources and the senders
+        // attach to the source's virtual tracks.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !manager.source_manager.has_bridge("od").await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the standing demand must start the on-demand sources");
+
+        // The supervisor is registered as a virtual subscriber, listed in
+        // the API like the source's `virtual-source` publisher.
+        let virtual_id = crate::target::virtual_target_session_id(&format!("rtp://{dest}"));
+        let infos = manager.info(vec!["od".to_string()]).await;
+        assert!(
+            infos[0]
+                .subscribe
+                .sessions
+                .iter()
+                .any(|s| s.id == virtual_id),
+            "target must be listed as a virtual subscriber: {:?}",
+            infos[0].subscribe.sessions
+        );
+
+        // Well past close_after (200ms): the idle timer must not have
+        // stopped the sources, and exactly one send epoch must exist — the
+        // flap would show up as repeated teardown/restart cycles.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            manager.source_manager.has_source("od").await,
+            "on-demand source stopped while the target was standing demand"
+        );
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the send epoch restarted: the stream is flapping"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("run() must exit when the manager is cancelled")
+            .unwrap();
+        let _ = std::fs::remove_file(&sdp_path);
     }
 }

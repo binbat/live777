@@ -21,10 +21,12 @@
 //! A failed push (downstream down, ICE failure, session loss) is retried
 //! with exponential backoff, mirroring the reconnect policy of the
 //! RTSP/WHEP sources. For an `on_demand` stream the configured target acts
-//! as standing demand: whenever the stream has neither a publisher nor a
-//! push session, the supervisor starts its sources, retried with the same
-//! backoff — so the relay recovers on its own once an unreachable
-//! downstream is back, capped at roughly one source restart per minute.
+//! as standing demand: the supervisor registers with the manager's
+//! on-demand idle accounting for its whole lifetime, so the sources are
+//! never idle-stopped underneath it (live777#481), and whenever the stream
+//! has neither a publisher nor a push session the supervisor starts its
+//! sources, retried with the same backoff — so the relay recovers on its
+//! own once an unreachable downstream is back.
 
 use std::sync::Arc;
 #[cfg(feature = "target-whip")]
@@ -47,6 +49,26 @@ use crate::event::{Event, StreamDeleteReason};
 #[cfg(feature = "target-whip")]
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
+
+/// Session id under which a static target registers as a virtual subscriber
+/// (mirroring the source's `virtual-source` publisher): derived from the
+/// credential-free target URL with the scheme separator collapsed and
+/// path-hostile characters flattened, e.g.
+/// `virtual-target-rtp-230.1.1.2:1720`.
+pub(crate) fn virtual_target_session_id(display: &str) -> String {
+    let display = display.replacen("://", "-", 1);
+    let sanitized: String = display
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("virtual-target-{sanitized}")
+}
 
 /// Spawn one supervisor per configured static target. Must run after
 /// `Manager::provision_streams`: the supervisors snapshot stream state from
@@ -141,6 +163,18 @@ impl TargetContext {
         // downstream is back.
         #[cfg(feature = "source")]
         let standing_demand = self.manager.is_on_demand_stream(&self.stream);
+        // Register as a virtual subscriber for the supervisor's whole
+        // lifetime: the push session only exists while the downstream is up,
+        // so during push retries nothing would otherwise keep the on-demand
+        // idle check from stopping the sources between attempts
+        // (live777#481). The registration also lists the target in the
+        // stream's `subscribe.sessions`. `self.url` is the credential-free
+        // http(s) form of the configured whip(s) URL; map the scheme back
+        // for the session id.
+        let virtual_id = virtual_target_session_id(&self.url.replacen("http", "whip", 1));
+        self.manager
+            .add_virtual_subscriber(&self.stream, virtual_id.clone())
+            .await;
 
         info!("[target] [{}] pushing to {}", self.stream, self.url);
 
@@ -305,6 +339,9 @@ impl TargetContext {
                 .remove_stream_session(self.stream.clone(), id)
                 .await;
         }
+        self.manager
+            .remove_virtual_subscriber(&self.stream, &virtual_id)
+            .await;
         info!("[target] [{}] stopped push to {}", self.stream, self.url);
     }
 
@@ -342,4 +379,25 @@ pub(crate) fn validate_target_url(raw: &str) -> anyhow::Result<()> {
     // The token reaches the Authorization header verbatim on every push.
     Client::get_authorization_header_map(token)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::virtual_target_session_id;
+
+    #[test]
+    fn virtual_target_session_id_is_path_safe_and_readable() {
+        assert_eq!(
+            virtual_target_session_id("rtp://230.1.1.2:1720"),
+            "virtual-target-rtp-230.1.1.2:1720"
+        );
+        assert_eq!(
+            virtual_target_session_id("rtsp://mediamtx.example.com:8554/live/dog"),
+            "virtual-target-rtsp-mediamtx.example.com:8554_live_dog"
+        );
+        assert_eq!(
+            virtual_target_session_id("whips://edge.example.com/whip/cam?x=1"),
+            "virtual-target-whips-edge.example.com_whip_cam_x_1"
+        );
+    }
 }
