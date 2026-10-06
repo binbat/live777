@@ -122,6 +122,17 @@ pub struct Manager {
     /// `PublishStarted`/`PublishStopped`. The recorder deliberately does not
     /// register: it must not keep an on-demand source alive by itself.
     virtual_subscribers: Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
+    /// Output target registry keyed by `(stream, trimmed url)`: static
+    /// config targets register at startup, runtime API additions
+    /// (`POST /api/targets/{stream}`, live777#473) alongside them. The
+    /// entry's cancel token stops the target's supervisor individually.
+    /// std Mutex: every op is O(1), no lock is ever held across an await.
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
+    targets: Arc<std::sync::Mutex<HashMap<(String, String), crate::target::TargetEntry>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
     /// Bumped by the stats tick on every sample, so SSE stream subscribers
@@ -261,6 +272,12 @@ impl Manager {
             #[cfg(feature = "source")]
             on_demand_locks: Default::default(),
             virtual_subscribers,
+            #[cfg(any(
+                feature = "target-whip",
+                feature = "target-rtp",
+                feature = "target-rtsp"
+            ))]
+            targets: Default::default(),
             #[cfg(feature = "source")]
             source_manager,
             stats_version,
@@ -1259,6 +1276,87 @@ impl Manager {
     ))]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+
+    /// Register a target; `false` when the `(stream, url)` pair is taken.
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
+    pub(crate) fn register_target(
+        &self,
+        key: (String, String),
+        entry: crate::target::TargetEntry,
+    ) -> bool {
+        self.targets
+            .lock()
+            .expect("target registry lock poisoned")
+            .insert(key, entry)
+            .is_none()
+    }
+
+    /// Drop a target's registry entry (its supervisor has exited).
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
+    pub(crate) fn unregister_target(&self, key: &(String, String)) {
+        self.targets
+            .lock()
+            .expect("target registry lock poisoned")
+            .remove(key);
+    }
+
+    /// Every registered output target as `(stream, config, origin)`, sorted
+    /// by stream then URL for a deterministic API response.
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
+    pub(crate) fn list_targets(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::config::TargetConfig,
+        crate::target::TargetOrigin,
+    )> {
+        let mut targets: Vec<_> = self
+            .targets
+            .lock()
+            .expect("target registry lock poisoned")
+            .iter()
+            .map(|((stream, _), entry)| (stream.clone(), entry.config.clone(), entry.origin))
+            .collect();
+        targets.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.url.cmp(&b.1.url)));
+        targets
+    }
+
+    /// Remove a *runtime* target's registry entry; cancelling the returned
+    /// entry's token stops its supervisor. Config-owned targets stay
+    /// registered.
+    #[cfg(any(
+        feature = "target-whip",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
+    pub(crate) fn remove_runtime_target(
+        &self,
+        stream: &str,
+        url: &str,
+    ) -> std::result::Result<crate::target::TargetEntry, crate::target::RemoveTargetError> {
+        use crate::target::{RemoveTargetError, TargetOrigin};
+        let key = (stream.to_string(), url.trim().to_string());
+        let mut targets = self.targets.lock().expect("target registry lock poisoned");
+        match targets.get(&key) {
+            None => Err(RemoveTargetError::NotFound),
+            Some(entry) if entry.origin == TargetOrigin::Config => {
+                Err(RemoveTargetError::ConfigOwned)
+            }
+            Some(_) => Ok(targets.remove(&key).expect("entry checked above")),
+        }
     }
 
     async fn do_snapshot(

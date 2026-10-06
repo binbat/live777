@@ -216,6 +216,64 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Targets
+
+Runtime management of a stream's output targets — the dynamic counterpart
+of the static `[[stream.<name>.targets]]` config entries (see
+[live777 configuration](./live777.md#static-cascade-push-whip-target)).
+`whip://`, `rtp://` and `rtsp://` URLs are supported with the same options
+and supervisor semantics as static targets (media-driven start/stop,
+backoff retries, standing demand on `on_demand` streams). Runtime targets
+do not persist across restarts, mirroring dynamic cascade pushes.
+
+### List Targets
+
+`GET` `/api/targets` — all streams. `GET` `/api/targets/:streamId` — one
+stream.
+
+Response: [200]
+
+```json
+{
+  "targets": [
+    {
+      "stream": "robot-cam",
+      "url": "rtp://230.1.1.1:1720",
+      "origin": "runtime",
+      "payload_type": 96
+    }
+  ]
+}
+```
+
+`origin` is `config` for static entries and `runtime` for API-added ones.
+URLs are credential-free (a WHIP token carried as userinfo is redacted).
+
+### Add a Target
+
+`POST` `/api/targets/:streamId`
+
+Request: a target entry in the same shape as the config:
+
+```json
+{
+  "url": "rtp://230.1.1.1:1720",
+  "payload_type": 96,
+  "sdp_file": "/etc/live777/robot-cam.sdp"
+}
+```
+
+Response: [200] the created target. Errors: [404] stream not found, [400]
+invalid URL or options, [409] a target with the same URL is already
+registered for the stream.
+
+### Remove a Target
+
+`DELETE` `/api/targets/:streamId?url=<target-url>`
+
+Response: [200] the removed target. Errors: [404] no such target, [409] the
+target is declared in the config file and cannot be removed through the API.
+
 ## Source
 
 The bitrate endpoint is read-only *encoder* telemetry (native

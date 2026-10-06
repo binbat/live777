@@ -1,4 +1,5 @@
-//! Static output targets (declarative cascade-push / RTP sender).
+//! Output targets (declarative cascade-push / RTP sender / RTSP push),
+//! static and runtime-managed.
 //!
 //! A `[[stream.<name>.targets]]` config entry with a `whip://`/`whips://` URL
 //! pushes the stream to a downstream WHIP endpoint (typically another
@@ -7,7 +8,11 @@
 //! of a cascade pull. An `rtp://` URL instead sends the media out as plain
 //! RTP over UDP, see [`crate::target_rtp`]. An `rtsp://` URL pushes the
 //! media to an RTSP server as a client (ANNOUNCE/SETUP/RECORD), see
-//! [`crate::target_rtsp`].
+//! [`crate::target_rtsp`]. The same three schemes can also be added, listed
+//! and removed at runtime through `POST`/`GET`/`DELETE /api/targets/...`
+//! (live777#473): runtime targets share the supervisor semantics below, are
+//! registered in the manager's target registry next to the static ones, and
+//! — like cascade pushes — do not persist across restarts.
 //!
 //! The push is media-driven: one supervisor task per target establishes the
 //! cascade-push session when the stream gains a publisher (`PublishStarted`,
@@ -28,6 +33,8 @@
 //! sources, retried with the same backoff — so the relay recovers on its
 //! own once an unreachable downstream is back.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 #[cfg(feature = "target-whip")]
 use std::time::Duration;
@@ -36,19 +43,178 @@ use std::time::Duration;
 use libwish::{Client, parse_whip_url};
 #[cfg(feature = "target-whip")]
 use tokio::sync::broadcast;
-#[cfg(feature = "target-whip")]
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "target-whip")]
 use tracing::{debug, warn};
 use tracing::{error, info};
 
-#[cfg(feature = "target-whip")]
 use crate::config::TargetConfig;
 #[cfg(feature = "target-whip")]
 use crate::event::{Event, StreamDeleteReason};
 #[cfg(feature = "target-whip")]
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
+
+/// Where a registered target came from: static config entries are owned by
+/// the config file (the runtime API cannot remove them); runtime entries
+/// were added through the API and vanish on restart, like cascade pushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetOrigin {
+    Config,
+    Runtime,
+}
+
+impl TargetOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TargetOrigin::Config => "config",
+            TargetOrigin::Runtime => "runtime",
+        }
+    }
+}
+
+/// One registered output target: its config and the per-target cancel token
+/// stopping its supervisor (a child of the manager's shutdown token).
+pub(crate) struct TargetEntry {
+    pub config: TargetConfig,
+    pub origin: TargetOrigin,
+    pub cancel: CancellationToken,
+}
+
+/// Why adding a runtime target failed.
+#[derive(Debug)]
+pub(crate) enum StartTargetError {
+    /// The stream does not exist (not provisioned, not live).
+    StreamNotFound(String),
+    /// A target with the same URL is already registered for the stream.
+    Duplicate(String),
+    /// URL or option validation failed.
+    Invalid(anyhow::Error),
+}
+
+/// Why removing a runtime target failed.
+#[derive(Debug)]
+pub(crate) enum RemoveTargetError {
+    /// No target with the URL is registered for the stream.
+    NotFound,
+    /// The target is a static config entry, not removable through the API.
+    ConfigOwned,
+}
+
+/// The target URL as it may appear in API responses: credentials (the
+/// WHIP token rides as userinfo) stripped.
+pub(crate) fn redact_target_url(raw: &str) -> String {
+    let raw = raw.trim();
+    match raw.split_once("://") {
+        Some((scheme, rest)) => {
+            let rest = rest
+                .rsplit_once('@')
+                .map(|(_, after)| after)
+                .unwrap_or(rest);
+            format!("{scheme}://{rest}")
+        }
+        None => raw.to_string(),
+    }
+}
+
+/// Add a target through the runtime API: the stream must exist (provisioned
+/// or live), the URL must validate, and no target with the same URL may be
+/// registered for the stream yet.
+pub(crate) async fn start_runtime_target(
+    manager: &Arc<Manager>,
+    stream: String,
+    target: TargetConfig,
+) -> Result<(), StartTargetError> {
+    if manager.info(vec![stream.clone()]).await.is_empty() {
+        return Err(StartTargetError::StreamNotFound(stream));
+    }
+    start_target(manager, stream, target, TargetOrigin::Runtime)
+}
+
+/// Register one output target and spawn its supervisor. Shared by
+/// [`init`] (static config) and the runtime API: the supervisor gets a
+/// per-target child of the manager's shutdown token, so a runtime target
+/// can be stopped individually, and the registry entry is dropped when the
+/// supervisor exits (stream deleted, or removed via the API).
+pub(crate) fn start_target(
+    manager: &Arc<Manager>,
+    stream: String,
+    target: TargetConfig,
+    origin: TargetOrigin,
+) -> Result<(), StartTargetError> {
+    target
+        .validate()
+        .map_err(|e| StartTargetError::Invalid(anyhow::anyhow!("[{stream}] {e}")))?;
+
+    // Config validation already rejected unknown schemes; stay defensive so
+    // a programmatic caller cannot panic the dispatch.
+    let scheme = target
+        .url
+        .trim()
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let cancel = manager.cancel_token().child_token();
+    let run: Pin<Box<dyn Future<Output = ()> + Send>> = match scheme.as_str() {
+        #[cfg(feature = "target-whip")]
+        "whip" | "whips" => {
+            match TargetContext::new(
+                manager.clone(),
+                stream.clone(),
+                target.clone(),
+                cancel.clone(),
+            ) {
+                Ok(ctx) => Box::pin(ctx.run()),
+                Err(e) => return Err(StartTargetError::Invalid(anyhow::anyhow!(e))),
+            }
+        }
+        #[cfg(feature = "target-rtp")]
+        "rtp" => match crate::target_rtp::RtpTargetContext::new(
+            manager.clone(),
+            stream.clone(),
+            target.clone(),
+            cancel.clone(),
+        ) {
+            Ok(ctx) => Box::pin(ctx.run()),
+            Err(e) => return Err(StartTargetError::Invalid(anyhow::anyhow!(e))),
+        },
+        #[cfg(feature = "target-rtsp")]
+        "rtsp" => match crate::target_rtsp::RtspTargetContext::new(
+            manager.clone(),
+            stream.clone(),
+            target.clone(),
+            cancel.clone(),
+        ) {
+            Ok(ctx) => Box::pin(ctx.run()),
+            Err(e) => return Err(StartTargetError::Invalid(anyhow::anyhow!(e))),
+        },
+        other => {
+            return Err(StartTargetError::Invalid(anyhow::anyhow!(
+                "[{stream}] unsupported target url scheme: {other}"
+            )));
+        }
+    };
+
+    let key = (stream, target.url.trim().to_string());
+    if !manager.register_target(
+        key.clone(),
+        TargetEntry {
+            config: target,
+            origin,
+            cancel,
+        },
+    ) {
+        return Err(StartTargetError::Duplicate(key.1));
+    }
+
+    let cleanup = manager.clone();
+    tokio::spawn(async move {
+        run.await;
+        cleanup.unregister_target(&key);
+    });
+    Ok(())
+}
 
 /// Session id under which a static target registers as a virtual subscriber
 /// (mirroring the source's `virtual-source` publisher): derived from the
@@ -83,31 +249,8 @@ pub fn init(manager: Arc<Manager>) {
         targets.len()
     );
     for (stream, target) in targets {
-        // Config validation already rejected unknown schemes; stay
-        // defensive so a programmatic config cannot panic the dispatch.
-        let scheme = target
-            .url
-            .trim()
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        match scheme.as_str() {
-            #[cfg(feature = "target-whip")]
-            "whip" | "whips" => match TargetContext::new(manager.clone(), stream, target) {
-                Ok(ctx) => {
-                    tokio::spawn(ctx.run());
-                }
-                Err(e) => error!("[target] {}", e),
-            },
-            #[cfg(feature = "target-rtp")]
-            "rtp" => crate::target_rtp::spawn(manager.clone(), stream, target),
-            #[cfg(feature = "target-rtsp")]
-            "rtsp" => crate::target_rtsp::spawn(manager.clone(), stream, target),
-            _ => error!(
-                "[target] [{}] unsupported target url scheme: {}",
-                stream, target.url
-            ),
+        if let Err(e) = start_target(&manager, stream, target, TargetOrigin::Config) {
+            error!("[target] {:?}", e);
         }
     }
 }
@@ -125,7 +268,12 @@ struct TargetContext {
 
 #[cfg(feature = "target-whip")]
 impl TargetContext {
-    fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
+    fn new(
+        manager: Arc<Manager>,
+        stream: String,
+        target: TargetConfig,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Self> {
         let (url, token) = parse_whip_url(&target.url)
             .map_err(|e| anyhow::anyhow!("[{}] invalid WHIP target: {}", stream, e))?;
         // The token reaches the Authorization header verbatim on every push;
@@ -133,7 +281,6 @@ impl TargetContext {
         // loop.
         Client::get_authorization_header_map(token.clone())
             .map_err(|e| anyhow::anyhow!("[{}] invalid WHIP target: {}", stream, e))?;
-        let cancel = manager.cancel_token();
         Ok(Self {
             manager,
             stream,
@@ -399,5 +546,140 @@ mod tests {
             virtual_target_session_id("whips://edge.example.com/whip/cam?x=1"),
             "virtual-target-whips-edge.example.com_whip_cam_x_1"
         );
+    }
+
+    #[cfg(feature = "target-rtp")]
+    mod runtime_registry {
+        use std::sync::Arc;
+
+        use tokio_util::sync::CancellationToken;
+
+        use super::super::{
+            RemoveTargetError, StartTargetError, TargetOrigin, init, redact_target_url,
+            start_runtime_target,
+        };
+        use crate::config::{Config, StreamConfig, StreamEntry, TargetConfig};
+        use crate::stream::manager::Manager;
+
+        fn rtp_target(url: &str) -> TargetConfig {
+            TargetConfig {
+                url: url.to_string(),
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            }
+        }
+
+        #[test]
+        fn redact_target_url_strips_userinfo() {
+            assert_eq!(
+                redact_target_url("whip://secret-token@edge.example.com/whip/cam"),
+                "whip://edge.example.com/whip/cam"
+            );
+            assert_eq!(
+                redact_target_url("rtp://230.1.1.1:1720"),
+                "rtp://230.1.1.1:1720"
+            );
+        }
+
+        /// The runtime lifecycle: add, list, duplicate and invalid
+        /// rejection, remove, not-found. Unknown streams are rejected.
+        #[tokio::test]
+        async fn runtime_target_registry_lifecycle() {
+            let cancel = CancellationToken::new();
+            let manager = Arc::new(Manager::new(Config::default(), cancel.clone()).await);
+            manager.stream_create("cam".to_string()).await.unwrap();
+
+            let err = start_runtime_target(
+                &manager,
+                "ghost".to_string(),
+                rtp_target("rtp://127.0.0.1:5004"),
+            )
+            .await;
+            assert!(matches!(err, Err(StartTargetError::StreamNotFound(_))));
+
+            start_runtime_target(
+                &manager,
+                "cam".to_string(),
+                rtp_target("rtp://127.0.0.1:5004"),
+            )
+            .await
+            .unwrap();
+            let targets = manager.list_targets();
+            assert_eq!(targets.len(), 1);
+            assert_eq!(targets[0].0, "cam");
+            assert_eq!(targets[0].2, TargetOrigin::Runtime);
+
+            // Same URL on the same stream conflicts; on another stream it
+            // does not.
+            let err = start_runtime_target(
+                &manager,
+                "cam".to_string(),
+                rtp_target("rtp://127.0.0.1:5004"),
+            )
+            .await;
+            assert!(matches!(err, Err(StartTargetError::Duplicate(_))));
+
+            let err =
+                start_runtime_target(&manager, "cam".to_string(), rtp_target("rtp://127.0.0.1:0"))
+                    .await;
+            assert!(matches!(err, Err(StartTargetError::Invalid(_))));
+
+            let entry = manager
+                .remove_runtime_target("cam", "rtp://127.0.0.1:5004")
+                .unwrap();
+            entry.cancel.cancel();
+            assert!(manager.list_targets().is_empty());
+            assert!(matches!(
+                manager.remove_runtime_target("cam", "rtp://127.0.0.1:5004"),
+                Err(RemoveTargetError::NotFound)
+            ));
+
+            cancel.cancel();
+        }
+
+        /// Static config targets register at startup with origin `config`;
+        /// the runtime path cannot remove them, and a runtime target with
+        /// the same URL conflicts.
+        #[tokio::test]
+        async fn config_target_is_registered_and_not_removable() {
+            let mut streams = std::collections::HashMap::new();
+            streams.insert(
+                "cam".to_string(),
+                StreamEntry {
+                    targets: vec![rtp_target("rtp://127.0.0.1:5004")],
+                    ..Default::default()
+                },
+            );
+            let config = Config {
+                stream: StreamConfig { streams },
+                ..Default::default()
+            };
+            let cancel = CancellationToken::new();
+            let manager = Arc::new(Manager::new(config, cancel.clone()).await);
+            manager.provision_streams().await;
+            init(manager.clone());
+
+            let targets = manager.list_targets();
+            assert_eq!(targets.len(), 1);
+            assert_eq!(targets[0].2, TargetOrigin::Config);
+
+            assert!(matches!(
+                manager.remove_runtime_target("cam", "rtp://127.0.0.1:5004"),
+                Err(RemoveTargetError::ConfigOwned)
+            ));
+            assert_eq!(manager.list_targets().len(), 1);
+
+            let err = start_runtime_target(
+                &manager,
+                "cam".to_string(),
+                rtp_target("rtp://127.0.0.1:5004"),
+            )
+            .await;
+            assert!(matches!(err, Err(StartTargetError::Duplicate(_))));
+
+            cancel.cancel();
+        }
     }
 }

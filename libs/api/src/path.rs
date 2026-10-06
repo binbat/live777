@@ -31,6 +31,10 @@ pub fn cascade(stream: &str) -> String {
     format!("/api/cascade/{stream}")
 }
 
+pub fn targets(stream: &str) -> String {
+    format!("/api/targets/{stream}")
+}
+
 pub fn streams_sse() -> &'static str {
     "/api/sse/streams"
 }
