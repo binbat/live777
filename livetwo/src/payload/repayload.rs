@@ -723,6 +723,43 @@ mod tests {
             .collect()
     }
 
+    /// A sequence gap drops the incomplete frame's buffered fragments and
+    /// re-baselines: the next packet starts a fresh frame. Repeated gaps
+    /// (past the rate-limited log's warn window) keep re-baselining.
+    #[test]
+    fn sequence_gap_drops_buffer_and_rebaselines() {
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+        const SLICE_A: [u8; 3] = [0x41, 0x9a, 0x22];
+        const SLICE_B: [u8; 3] = [0x41, 0x77, 0x77];
+
+        let mut codec = RePayloadCodec::new(MIME_TYPE_H264.to_owned());
+
+        // Frame fragment (no marker), then a gap (1 → 5): the buffered
+        // pre-gap fragment is dropped; the gap packet re-baselines and starts
+        // the next frame.
+        assert!(codec.payload(&h264_packet(false, 1, &IDR)).is_empty());
+        assert!(codec.payload(&h264_packet(false, 5, &SLICE_A)).is_empty());
+        let out = codec.payload(&h264_packet(true, 6, &SLICE_B));
+        assert!(!out.is_empty(), "the frame after the gap must be emitted");
+        let payload = concatenated_payload(&out);
+        assert!(
+            !payload.windows(IDR.len()).any(|w| w == IDR),
+            "the pre-gap fragment must not leak: {payload:02x?}"
+        );
+        assert!(
+            payload.windows(SLICE_A.len()).any(|w| w == SLICE_A)
+                && payload.windows(SLICE_B.len()).any(|w| w == SLICE_B),
+            "the frame is the post-gap packets: {payload:02x?}"
+        );
+
+        // Past the rate-limited log's warn window (gaps 11+), gaps still
+        // re-baseline.
+        for i in 0..12u16 {
+            codec.payload(&h264_packet(false, 10 + i * 2, &SLICE_A));
+        }
+        assert!(!codec.payload(&h264_packet(true, 100, &IDR)).is_empty());
+    }
+
     /// A constructor seeded from the SDP fmtp's `sprop-parameter-sets`
     /// injects those parameter sets ahead of the very first IDR, so a
     /// receiver joining from the start (or mid-GOP, after the sender's own
