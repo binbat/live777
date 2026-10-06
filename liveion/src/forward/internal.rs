@@ -1930,7 +1930,7 @@ impl PeerForwardInternal {
     /// virtual (source bridge / RTSP push carries no session media info).
     /// Lets media taps wait for the full track set instead of racing the
     /// first `on_track`.
-    #[cfg(feature = "target-rtsp")]
+    #[cfg(any(feature = "target-rtsp", feature = "target-rtp"))]
     pub(crate) async fn negotiated_publish_track_counts(&self) -> Option<(usize, usize)> {
         self.publish.read().await.as_ref().map(|p| {
             (
