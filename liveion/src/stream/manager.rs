@@ -1058,7 +1058,6 @@ impl Manager {
         });
         stats
     }
-
     /// Remove a virtual subscriber previously added with
     /// [`Manager::add_virtual_subscriber`]. Idempotent: unknown ids are a
     /// no-op, mirroring `remove_subscribe`. The consumer's media counter is
@@ -1079,6 +1078,16 @@ impl Manager {
                 all.remove(stream);
             }
         }
+        // Detach the consumer's counter from the forward's tap list (the
+        // fold keeps the stream total monotonic). Only the tap-capable
+        // features carry a live forward lookup; without them no tap was
+        // ever registered.
+        #[cfg(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        ))]
         if let Some(forward) = self.get_forward(stream).await {
             forward.remove_tap_stats(id).await;
         }

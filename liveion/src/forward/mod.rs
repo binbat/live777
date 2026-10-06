@@ -259,12 +259,7 @@ impl PeerForward {
     /// Register a direct-tap consumer's media counter (its virtual
     /// subscriber id); see [`PeerForwardInternal::add_tap_stats`].
     #[cfg_attr(
-        not(any(
-            feature = "target-whip",
-            feature = "target-rtp",
-            feature = "target-rtsp",
-            feature = "rtsp"
-        )),
+        not(any(feature = "target-rtp", feature = "target-rtsp")),
         allow(dead_code)
     )]
     pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<stats::MediaStats>) {
@@ -275,10 +270,10 @@ impl PeerForward {
     /// [`PeerForwardInternal::remove_tap_stats`].
     #[cfg_attr(
         not(any(
-            feature = "target-whip",
+            feature = "rtsp",
+            feature = "recorder",
             feature = "target-rtp",
-            feature = "target-rtsp",
-            feature = "rtsp"
+            feature = "target-rtsp"
         )),
         allow(dead_code)
     )]

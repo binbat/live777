@@ -1284,6 +1284,10 @@ impl PeerForwardInternal {
     /// Register a direct-tap consumer's counter (keyed by its virtual
     /// subscriber id). The tick's `sample_stats` folds its deltas into the
     /// stream's outbound totals like any subscriber's.
+    #[cfg_attr(
+        not(any(feature = "target-rtp", feature = "target-rtsp")),
+        allow(dead_code)
+    )]
     pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<MediaStats>) {
         self.tap_stats
             .lock()
@@ -1293,6 +1297,15 @@ impl PeerForwardInternal {
 
     /// Detach a direct-tap consumer: fold its un-sampled tail (exactly once)
     /// and refresh the aggregate subscribe bitrate.
+    #[cfg_attr(
+        not(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
     pub(crate) async fn remove_tap_stats(&self, id: &str) {
         let stats = self
             .tap_stats
