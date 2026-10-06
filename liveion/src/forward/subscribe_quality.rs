@@ -396,4 +396,20 @@ mod tests {
         assert!(!q.twcc);
         assert_eq!(q.loss, 0.0);
     }
+
+    #[test]
+    fn fir_remb_and_other_kinds_counted() {
+        let stats = SubscribeRtcpStats::new();
+        let fir = FullIntraRequest {
+            sender_ssrc: 0,
+            media_ssrc: 1,
+            fir: vec![],
+        };
+        let remb = ReceiverEstimatedMaximumBitrate::default();
+        // No dedicated arm in observe(): unclassified packets land in the
+        // "other" metric kind (a SenderReport as a convenient example).
+        let sr = rtc::rtcp::sender_report::SenderReport::default();
+        let q = sample_after(&stats, vec![Box::new(fir), Box::new(remb), Box::new(sr)]);
+        assert_eq!(q.pli_fir, 1);
+    }
 }

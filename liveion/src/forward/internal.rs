@@ -861,6 +861,45 @@ mod rtcp_egress_probe {
             self.inner.unbind_remote_stream(info);
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use rtc::rtcp::goodbye::Goodbye;
+
+        #[test]
+        fn tally_counts_every_kind() {
+            let counters = Counters::new();
+            let pkts: Vec<Box<dyn rtc::rtcp::packet::Packet>> = vec![
+                Box::new(TransportLayerCc::default()),
+                Box::new(ReceiverReport::default()),
+                Box::new(SenderReport::default()),
+                Box::new(PictureLossIndication {
+                    sender_ssrc: 0,
+                    media_ssrc: 1,
+                }),
+                Box::new(FullIntraRequest {
+                    sender_ssrc: 0,
+                    media_ssrc: 1,
+                    fir: vec![],
+                }),
+                Box::new(TransportLayerNack::default()),
+                Box::new(ReceiverEstimatedMaximumBitrate::default()),
+                // Unclassified by the probe: lands in the "other" bucket.
+                Box::new(Goodbye::default()),
+            ];
+            counters.tally(&pkts, "test");
+            let snap = counters.snapshot();
+            assert_eq!(snap.twcc, 1);
+            assert_eq!(snap.rr, 1);
+            assert_eq!(snap.sr, 1);
+            assert_eq!(snap.pli, 1);
+            assert_eq!(snap.fir, 1);
+            assert_eq!(snap.nack, 1);
+            assert_eq!(snap.remb, 1);
+            assert_eq!(snap.other, 1);
+        }
+    }
 }
 
 pub(crate) struct PeerForwardInternal {
