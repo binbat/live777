@@ -300,6 +300,23 @@ impl RtpTargetContext {
                     {
                         epoch.cancel();
                         desired = self.manager.has_publisher(&self.stream).await;
+                        // Pace the rebuild the way the WHIP target paces a
+                        // dead push session (the SubscribeStopped arm): a
+                        // flapping track set (a publisher renegotiating in a
+                        // loop) must not rebind the socket, rewrite the SDP
+                        // file and PLI the publisher at the churn rate
+                        // (live777#477). An epoch that was up resets the
+                        // backoff, but the first retry still waits the base
+                        // delay. No wait when the media is gone.
+                        failures = 1;
+                        if desired {
+                            if self.wait(reconnect_delay(1)).await {
+                                break;
+                            }
+                            // The wait is event-blind: re-check the media is
+                            // still there before rebuilding.
+                            desired = self.manager.has_publisher(&self.stream).await;
+                        }
                     }
                 }
                 event = events.recv() => match event {
@@ -338,10 +355,21 @@ impl RtpTargetContext {
                             "[target] [{}] dropped {} stream events, reconciling",
                             self.stream, n
                         );
+                        let mut torn_down = false;
                         if let Some((_, epoch)) = senders.take() {
                             epoch.cancel();
+                            torn_down = true;
                         }
                         desired = self.manager.has_publisher(&self.stream).await;
+                        // Same rebuild pacing as the spontaneous-exit path,
+                        // including the post-wait media re-check.
+                        if torn_down && desired {
+                            failures = 1;
+                            if self.wait(reconnect_delay(1)).await {
+                                break;
+                            }
+                            desired = self.manager.has_publisher(&self.stream).await;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                     _ => {}
