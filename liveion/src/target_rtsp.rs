@@ -223,7 +223,8 @@ impl RtspTargetContext {
         // (live777#481). The registration also lists the target in the
         // stream's `subscribe.sessions`.
         let virtual_id = crate::target::virtual_target_session_id(&self.display);
-        self.manager
+        let tap_stats = self
+            .manager
             .add_virtual_subscriber(&self.stream, virtual_id.clone())
             .await;
 
@@ -258,7 +259,7 @@ impl RtspTargetContext {
 
             if desired && session.is_none() {
                 generation = generation.wrapping_add(1);
-                match self.start_session(generation, &exit_tx).await {
+                match self.start_session(generation, &exit_tx, &tap_stats).await {
                     Ok(epoch) => {
                         session = Some((generation, epoch));
                         failures = 0;
@@ -375,10 +376,19 @@ impl RtspTargetContext {
         &self,
         generation: u64,
         exit_tx: &mpsc::UnboundedSender<u64>,
+        tap_stats: &Arc<crate::forward::stats::MediaStats>,
     ) -> anyhow::Result<CancellationToken> {
         let Some(forward) = self.manager.get_forward(&self.stream).await else {
             anyhow::bail!("stream forward not available yet");
         };
+
+        // Register the target's counter on every epoch: a stream reset
+        // recreates the forward, and only the live forward's tap list is
+        // sampled. Re-registering the same id/counter is idempotent.
+        forward.add_tap_stats(
+            crate::target::virtual_target_session_id(&self.display),
+            tap_stats.clone(),
+        );
 
         let tracks = forward.wait_for_publish_tracks().await?;
 
@@ -484,6 +494,7 @@ impl RtspTargetContext {
                         sink: TrackSink::Tcp(tx.clone(), *rtp_channel),
                         payload_type: *payload_type,
                         is_video: codec.kind == "video",
+                        stats: tap_stats.clone(),
                         generation,
                     });
                 }
@@ -538,6 +549,7 @@ impl RtspTargetContext {
                         ),
                         payload_type: *payload_type,
                         is_video: codec.kind == "video",
+                        stats: tap_stats.clone(),
                         generation,
                     });
                 }
@@ -712,12 +724,16 @@ enum TrackSink {
 }
 
 /// One send task's wiring: the tapped track, its egress and payload type,
-/// and the epoch generation tagged onto the exit notification.
+/// the target's media counter, and the epoch generation tagged onto the
+/// exit notification.
 struct TrackSend {
     track: PublishTrackRemote,
     sink: TrackSink,
     payload_type: u8,
     is_video: bool,
+    /// The target's outbound media counter (one per target, shared across
+    /// tracks and session epochs; live777#474).
+    stats: Arc<crate::forward::stats::MediaStats>,
     generation: u64,
 }
 
@@ -731,6 +747,7 @@ async fn track_send_task(
         sink,
         payload_type,
         is_video,
+        stats,
         generation,
     } = send;
     let codec = track.codec();
@@ -768,6 +785,9 @@ async fn track_send_task(
                                     if tx.send((*channel, bytes.to_vec())).await.is_err() {
                                         break 'outer;
                                     }
+                                    // The RTP wire size (the 4-byte interleave
+                                    // framing is transport, not media).
+                                    stats.inc(bytes.len() as u64);
                                 }
                                 TrackSink::Udp(socket, dest) => {
                                     buf.clear();
@@ -777,6 +797,8 @@ async fn track_send_task(
                                     }
                                     if let Err(e) = socket.send_to(&buf, dest).await {
                                         debug!("[target] rtsp udp send to {dest} failed: {e}");
+                                    } else {
+                                        stats.inc(buf.len() as u64);
                                     }
                                 }
                             }

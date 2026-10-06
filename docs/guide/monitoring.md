@@ -39,14 +39,6 @@ as the `stats` field of the stream/session REST API (and pushed live to the
 WebUI dashboard over SSE), which is usually more convenient than metrics for
 interactive inspection.
 
-::: warning
-`live777_rtp_bytes_total{direction="out"}` counts subscriber sessions only.
-Traffic sent by static RTP/RTSP output targets (`rtp://` / `rtsp://`
-targets) bypasses these counters until
-[issue #474](https://github.com/binbat/live777/issues/474) is fixed, so a
-stream multicasting at several Mbit/s may show zero outbound traffic.
-:::
-
 ::: info
 `liveman` has no Prometheus endpoint. To monitor a cluster, scrape every
 `live777` node directly.

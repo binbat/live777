@@ -200,9 +200,12 @@ impl RtpTargetContext {
         // subscribe session), so without this the on-demand idle check would
         // stop the sources every close_after underneath them (live777#481).
         // The registration also lists the target in the stream's
-        // `subscribe.sessions`.
+        // `subscribe.sessions`, and its returned media counter carries the
+        // target's outbound bytes into the stream totals and Prometheus
+        // (live777#474).
         let virtual_id = crate::target::virtual_target_session_id(&format!("rtp://{}", self.dest));
-        self.manager
+        let tap_stats = self
+            .manager
             .add_virtual_subscriber(&self.stream, virtual_id.clone())
             .await;
 
@@ -235,7 +238,7 @@ impl RtpTargetContext {
 
             if desired && senders.is_none() {
                 generation = generation.wrapping_add(1);
-                match self.start_senders(generation, &exit_tx).await {
+                match self.start_senders(generation, &exit_tx, &tap_stats).await {
                     Ok(epoch) => {
                         senders = Some((generation, epoch));
                         failures = 0;
@@ -380,6 +383,7 @@ impl RtpTargetContext {
         &self,
         generation: u64,
         exit_tx: &mpsc::UnboundedSender<u64>,
+        tap_stats: &Arc<crate::forward::stats::MediaStats>,
     ) -> anyhow::Result<CancellationToken> {
         #[cfg(test)]
         self.start_calls
@@ -388,6 +392,14 @@ impl RtpTargetContext {
         let Some(forward) = self.manager.get_forward(&self.stream).await else {
             anyhow::bail!("stream forward not available yet");
         };
+
+        // Register the target's counter on every epoch: a stream reset
+        // recreates the forward, and only the live forward's tap list is
+        // sampled. Re-registering the same id/counter is idempotent.
+        forward.add_tap_stats(
+            crate::target::virtual_target_session_id(&format!("rtp://{}", self.dest)),
+            tap_stats.clone(),
+        );
 
         let tracks = forward.wait_for_publish_tracks().await?;
 
@@ -521,6 +533,7 @@ impl RtpTargetContext {
                     rtcp_dest: sel.rtcp_dest,
                     payload_type: sel.payload_type,
                     is_video: sel.codec.kind == "video",
+                    stats: tap_stats.clone(),
                     generation,
                 },
                 epoch.child_token(),
@@ -648,8 +661,8 @@ struct SelectedTrack {
 }
 
 /// One send task's wiring: the tapped track, the shared socket, its
-/// destination and payload type, and the epoch generation tagged onto the
-/// exit notification.
+/// destination and payload type, the target's media counter, and the epoch
+/// generation tagged onto the exit notification.
 struct TrackSend {
     track: PublishTrackRemote,
     socket: Arc<UdpSocket>,
@@ -659,6 +672,9 @@ struct TrackSend {
     rtcp_dest: Option<SocketAddr>,
     payload_type: u8,
     is_video: bool,
+    /// The target's outbound media counter (one per target, shared across
+    /// tracks and send epochs; live777#474).
+    stats: Arc<crate::forward::stats::MediaStats>,
     generation: u64,
 }
 
@@ -678,6 +694,7 @@ async fn track_send_task(
         rtcp_dest,
         payload_type,
         is_video,
+        stats,
         generation,
     } = send;
     let codec = track.codec();
@@ -763,6 +780,9 @@ async fn track_send_task(
                                     .unwrap_or_default()
                                     .as_millis()
                                     as u64;
+                                // Wire-size bytes, matching the subscribe
+                                // sessions' counting convention.
+                                stats.inc(buf.len() as u64);
                             }
                         }
                     }
@@ -1215,6 +1235,7 @@ mod tests {
                 rtcp_dest: None,
                 payload_type: 96,
                 is_video: true,
+                stats: Arc::new(crate::forward::stats::MediaStats::new()),
                 generation: 7,
             },
             cancel.clone(),
@@ -1324,6 +1345,7 @@ mod tests {
                 rtcp_dest: Some(rtcp_dest),
                 payload_type: 96,
                 is_video: true,
+                stats: Arc::new(crate::forward::stats::MediaStats::new()),
                 generation: 1,
             },
             cancel.clone(),
@@ -1431,7 +1453,14 @@ mod tests {
         )
         .unwrap();
         let (bad_exit_tx, mut bad_exit_rx) = mpsc::unbounded_channel::<u64>();
-        let bad_epoch = ctx_bad_sdp.start_senders(1, &bad_exit_tx).await.unwrap();
+        let bad_epoch = ctx_bad_sdp
+            .start_senders(
+                1,
+                &bad_exit_tx,
+                &Arc::new(crate::forward::stats::MediaStats::new()),
+            )
+            .await
+            .unwrap();
         bad_epoch.cancel();
         tokio::time::timeout(Duration::from_secs(5), bad_exit_rx.recv())
             .await
@@ -1452,7 +1481,14 @@ mod tests {
         .unwrap();
 
         let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<u64>();
-        let epoch = ctx.start_senders(2, &exit_tx).await.unwrap();
+        let epoch = ctx
+            .start_senders(
+                2,
+                &exit_tx,
+                &Arc::new(crate::forward::stats::MediaStats::new()),
+            )
+            .await
+            .unwrap();
 
         let sdp = tokio::fs::read_to_string(&sdp_path).await.unwrap();
         assert!(
@@ -1698,6 +1734,100 @@ mod tests {
             start_calls.load(std::sync::atomic::Ordering::Relaxed),
             2,
             "exactly one paced rebuild"
+        );
+
+        pump_stop.cancel();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("run() must exit when the manager is cancelled")
+            .unwrap();
+    }
+
+    /// The target's outbound traffic counts like a subscriber's
+    /// (live777#474): the virtual session carries the counters, the stream's
+    /// subscribe totals include them (exactly, via the un-sampled tail — no
+    /// stats-tick wait), and detaching folds the tail so the stream total
+    /// stays monotonic.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn target_traffic_counts_as_subscribe_stats() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+        let forward = manager.get_forward("cam").await.unwrap();
+        forward
+            .add_virtual_track(RtpCodecKind::Video, h264_codec_params())
+            .await
+            .unwrap();
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            rtp_target(&format!("rtp://{dest}")),
+        )
+        .unwrap();
+        let supervisor = tokio::spawn(ctx.run());
+
+        let track = forward
+            .publish_tracks()
+            .await
+            .into_iter()
+            .find(|t| t.kind() == RtpCodecKind::Video)
+            .expect("the virtual video track");
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+        recv_idr_stream(&listener, &IDR, 96).await;
+
+        // The target's session shows the sent bytes, and the stream total
+        // matches it exactly (the un-sampled tail bridges the 2 s tick).
+        let virtual_id = crate::target::virtual_target_session_id(&format!("rtp://{dest}"));
+        let info = manager.info(vec!["cam".to_string()]).await.remove(0);
+        let session = info
+            .subscribe
+            .sessions
+            .iter()
+            .find(|s| s.id == virtual_id)
+            .expect("the target's virtual session");
+        assert!(
+            session.stats.bytes > 0 && session.stats.packets > 0,
+            "the target session must count its traffic: {:?}",
+            session.stats
+        );
+        assert_eq!(
+            info.stats.subscribe.bytes, session.stats.bytes,
+            "with no other subscribers the stream total is the target's counter"
+        );
+
+        // Detaching folds the tail: the session goes away, the stream total
+        // keeps the bytes.
+        manager.remove_virtual_subscriber("cam", &virtual_id).await;
+        let info = manager.info(vec!["cam".to_string()]).await.remove(0);
+        assert!(
+            info.subscribe.sessions.iter().all(|s| s.id != virtual_id),
+            "the detached session must disappear"
+        );
+        assert!(
+            info.stats.subscribe.bytes >= session.stats.bytes,
+            "the folded total must not lose bytes: {:?}",
+            info.stats.subscribe
         );
 
         pump_stop.cancel();

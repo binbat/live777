@@ -256,6 +256,36 @@ impl PeerForward {
         self.internal.sample_stats().await
     }
 
+    /// Register a direct-tap consumer's media counter (its virtual
+    /// subscriber id); see [`PeerForwardInternal::add_tap_stats`].
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp",
+            feature = "rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<stats::MediaStats>) {
+        self.internal.add_tap_stats(id, stats);
+    }
+
+    /// Detach a direct-tap consumer, folding its un-sampled tail; see
+    /// [`PeerForwardInternal::remove_tap_stats`].
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp",
+            feature = "rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn remove_tap_stats(&self, id: &str) {
+        self.internal.remove_tap_stats(id).await;
+    }
+
     pub(crate) fn strategy(&self) -> &api::strategy::Strategy {
         &self.internal.strategy
     }
