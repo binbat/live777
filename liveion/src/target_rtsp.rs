@@ -257,6 +257,16 @@ impl RtspTargetContext {
         // restart per minute.
         #[cfg(feature = "source")]
         let standing_demand = self.manager.is_on_demand_stream(&self.stream);
+        // Register as a virtual subscriber for the supervisor's whole
+        // lifetime: the session taps the forward track broadcast directly
+        // (no subscribe session), so without this the on-demand idle check
+        // would stop the sources every close_after underneath it
+        // (live777#481). The registration also lists the target in the
+        // stream's `subscribe.sessions`.
+        let virtual_id = crate::target::virtual_target_session_id(&self.display);
+        self.manager
+            .add_virtual_subscriber(&self.stream, virtual_id.clone())
+            .await;
 
         info!(
             "[target] [{}] rtsp target towards {} ({})",
@@ -388,6 +398,9 @@ impl RtspTargetContext {
         if let Some((_, epoch)) = session.take() {
             epoch.cancel();
         }
+        self.manager
+            .remove_virtual_subscriber(&self.stream, &virtual_id)
+            .await;
         info!(
             "[target] [{}] stopped rtsp push to {}",
             self.stream, self.display

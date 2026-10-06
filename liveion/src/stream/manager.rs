@@ -1,7 +1,5 @@
 use crate::config::Config;
-#[cfg(feature = "source")]
-use crate::event::SessionStopReason;
-use crate::event::{Event, StreamDeleteReason};
+use crate::event::{Event, SessionStopReason, StreamDeleteReason};
 
 use crate::result::Result;
 
@@ -82,6 +80,17 @@ fn emit_stream_created(event_sender: &broadcast::Sender<Event>, stream: &str) {
 #[cfg(feature = "source")]
 use crate::stream::source::*;
 
+/// One registered virtual subscriber; see the `virtual_subscribers` field on
+/// [`Manager`].
+#[derive(Clone)]
+struct VirtualSubscriber {
+    /// Session id shown in the API, following the reserved `virtual-…`
+    /// naming (mirroring `virtual-source` on the publish side), e.g.
+    /// `virtual-target-rtp-230.1.1.2:1720`.
+    id: String,
+    create_at: i64,
+}
+
 #[derive(Clone)]
 pub struct Manager {
     stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
@@ -101,11 +110,18 @@ pub struct Manager {
     /// subscribers.
     #[cfg(feature = "source")]
     on_demand_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    /// Active RTSP pull sessions per stream. RTSP pull clients tap tracks
-    /// directly (no subscribe session), so they are counted separately to
-    /// keep on-demand sources alive while they are attached.
-    #[cfg(feature = "source")]
-    rtsp_pull_counts: Arc<RwLock<HashMap<String, usize>>>,
+    /// Virtual subscribers per stream: internal media consumers that tap the
+    /// forward's track broadcast directly instead of holding a subscribe
+    /// session — static targets (`[[stream.<name>.targets]]`) and RTSP pull
+    /// clients. This is the subscribe-side counterpart of the source's
+    /// virtual publisher: registration makes the on-demand idle check count
+    /// them as demand (live777#481), `Manager::info` synthesizes them into
+    /// the stream's `subscribe.sessions` (reserved `virtual-…` ids,
+    /// mirroring `virtual-source`), and attach/detach emits
+    /// `SubscribeStarted`/`SubscribeStopped` like the virtual publisher's
+    /// `PublishStarted`/`PublishStopped`. The recorder deliberately does not
+    /// register: it must not keep an on-demand source alive by itself.
+    virtual_subscribers: Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
     /// Bumped by the stats tick on every sample, so SSE stream subscribers
@@ -225,8 +241,11 @@ impl Manager {
         ));
 
         let (stats_version, _) = watch::channel(0u64);
+        let virtual_subscribers: Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>> =
+            Default::default();
         tokio::spawn(Self::stats_tick(
             stream_map.clone(),
+            virtual_subscribers.clone(),
             stats_version.clone(),
             cancel.clone(),
         ));
@@ -241,8 +260,7 @@ impl Manager {
             on_demand_stop_timers: Default::default(),
             #[cfg(feature = "source")]
             on_demand_locks: Default::default(),
-            #[cfg(feature = "source")]
-            rtsp_pull_counts: Default::default(),
+            virtual_subscribers,
             #[cfg(feature = "source")]
             source_manager,
             stats_version,
@@ -846,6 +864,20 @@ impl Manager {
     }
 
     pub async fn remove_stream_session(&self, stream: String, session: String) -> Result<()> {
+        // Virtual subscribers (static targets, RTSP pulls) are listed in the
+        // API but owned by their consumer's supervisor; deleting them through
+        // the session API would desync the supervisor's own bookkeeping.
+        if self
+            .virtual_subscribers
+            .read()
+            .await
+            .get(&stream)
+            .is_some_and(|entries| entries.iter().any(|v| v.id == session))
+        {
+            return Err(AppError::BadRequest(format!(
+                "session '{session}' on stream '{stream}' is a virtual subscriber owned by a static target or RTSP pull client and cannot be deleted"
+            )));
+        }
         let streams = self.stream_map.read().await;
         let forward = streams.get(&stream).cloned();
         drop(streams);
@@ -947,15 +979,124 @@ impl Manager {
         let mut streams = streams.clone();
         streams.retain(|stream| !stream.trim().is_empty());
         let mut resp = vec![];
-        let stream_map = self.stream_map.read().await;
-        for (stream, forward) in stream_map.iter() {
-            if streams.is_empty() || streams.contains(stream) {
-                let mut info: api::response::Stream = forward.info().await.into();
-                Self::backfill_stream_flags(&self.config.stream, &mut info);
-                resp.push(info);
+        {
+            let stream_map = self.stream_map.read().await;
+            for (stream, forward) in stream_map.iter() {
+                if streams.is_empty() || streams.contains(stream) {
+                    let mut info: api::response::Stream = forward.info().await.into();
+                    Self::backfill_stream_flags(&self.config.stream, &mut info);
+                    resp.push(info);
+                }
             }
         }
+        Self::backfill_virtual_subscribers(&self.virtual_subscribers, &mut resp).await;
         resp
+    }
+
+    /// Append the registered virtual subscribers (static targets, RTSP pull
+    /// clients) to each stream's subscribe session list. They tap tracks
+    /// directly and have no real session in the forward, so — mirroring the
+    /// `virtual-source` publisher synthesized in `PeerForward::info` — they
+    /// surface here as always-Connected sessions with reserved `virtual-…`
+    /// ids.
+    async fn backfill_virtual_subscribers(
+        virtual_subscribers: &Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
+        streams: &mut [api::response::Stream],
+    ) {
+        let virtual_subscribers = virtual_subscribers.read().await;
+        for stream in streams.iter_mut() {
+            let Some(entries) = virtual_subscribers.get(&stream.id) else {
+                continue;
+            };
+            stream
+                .subscribe
+                .sessions
+                .extend(entries.iter().map(|v| api::response::Session {
+                    id: v.id.clone(),
+                    created_at: v.create_at,
+                    leave_at: 0,
+                    state: api::response::RTCPeerConnectionState::Connected,
+                    cascade: None,
+                    has_data_channel: false,
+                    stats: Default::default(),
+                }));
+        }
+    }
+
+    /// Register a virtual subscriber on `stream`: an internal consumer that
+    /// taps the forward's track broadcast directly (a static target, an RTSP
+    /// pull client). While at least one is registered, the on-demand idle
+    /// check treats the stream as consumed. Emits `SubscribeStarted` like a
+    /// real subscriber, so dashboards and the on-demand supervisor observe
+    /// the same lifecycle.
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp",
+            feature = "rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub async fn add_virtual_subscriber(&self, stream: &str, id: String) {
+        self.virtual_subscribers
+            .write()
+            .await
+            .entry(stream.to_string())
+            .or_default()
+            .push(VirtualSubscriber {
+                id: id.clone(),
+                create_at: Utc::now().timestamp_millis(),
+            });
+        metrics::SUBSCRIBE.inc();
+        // A pending on-demand stop is obsolete the moment a consumer
+        // arrives — cancel it eagerly; the event below re-cancels it for
+        // any consumer listening asynchronously.
+        #[cfg(feature = "source")]
+        self.cancel_on_demand_stop(stream).await;
+        let _ = self.event_sender.send(Event::SubscribeStarted {
+            stream: stream.to_string(),
+            session: id,
+        });
+    }
+
+    /// Remove a virtual subscriber previously added with
+    /// [`Manager::add_virtual_subscriber`]. Idempotent: unknown ids are a
+    /// no-op, mirroring `remove_subscribe`.
+    #[cfg_attr(
+        not(any(
+            feature = "target-whip",
+            feature = "target-rtp",
+            feature = "target-rtsp",
+            feature = "rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub async fn remove_virtual_subscriber(&self, stream: &str, id: &str) {
+        {
+            let mut all = self.virtual_subscribers.write().await;
+            let Some(entries) = all.get_mut(stream) else {
+                return;
+            };
+            let Some(pos) = entries.iter().position(|s| s.id == id) else {
+                return;
+            };
+            entries.remove(pos);
+            if entries.is_empty() {
+                all.remove(stream);
+            }
+        }
+        metrics::SUBSCRIBE.dec();
+        let _ = self.event_sender.send(Event::SubscribeStopped {
+            stream: stream.to_string(),
+            session: id.to_string(),
+            reason: SessionStopReason::PeerClosed,
+        });
+        // The last consumer may have gone away: arm the close-after timer
+        // eagerly instead of relying on the event alone (which broadcast
+        // lag can drop).
+        #[cfg(feature = "source")]
+        self.maybe_arm_on_demand_stop(stream).await;
     }
 
     /// Fill in the config-derived flags (`provisioned`, `on_demand`) on an
@@ -1031,6 +1172,7 @@ impl Manager {
     /// stats freshness is driven by cadence, not detection.
     async fn stats_tick(
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
+        virtual_subscribers: Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
         stats_version: watch::Sender<u64>,
         cancel: CancellationToken,
     ) {
@@ -1067,9 +1209,18 @@ impl Manager {
                 metrics::STREAM_SESSIONS
                     .with_label_values(&[forward.stream.as_str(), "publish"])
                     .set(sample.publishers as f64);
+                // Virtual subscribers (static targets, RTSP pulls) have no
+                // session in the forward, so the sample cannot see them;
+                // count them like the virtual publisher is counted on the
+                // publish side.
+                let virtual_count = virtual_subscribers
+                    .read()
+                    .await
+                    .get(forward.stream.as_str())
+                    .map_or(0, Vec::len) as u64;
                 metrics::STREAM_SESSIONS
                     .with_label_values(&[forward.stream.as_str(), "subscribe"])
-                    .set(sample.subscribers as f64);
+                    .set((sample.subscribers + virtual_count) as f64);
             }
             stats_version.send_modify(|v| *v += 1);
         }
@@ -1113,6 +1264,7 @@ impl Manager {
     async fn do_snapshot(
         stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
         stream_cfg: &crate::config::StreamConfig,
+        virtual_subscribers: &Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
         streams: &[String],
     ) -> Vec<api::response::Stream> {
         let stream_map = stream_map.read().await;
@@ -1126,6 +1278,7 @@ impl Manager {
             infos.push(info);
         }
         drop(stream_map);
+        Self::backfill_virtual_subscribers(virtual_subscribers, &mut infos).await;
         infos.sort_by(|a, b| a.id.cmp(&b.id));
         for info in &mut infos {
             info.publish.sessions.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1136,7 +1289,13 @@ impl Manager {
 
     #[cfg(any(feature = "net4mqtt", feature = "recorder"))]
     pub async fn snapshot(&self, streams: &[String]) -> Vec<api::response::Stream> {
-        Self::do_snapshot(&self.stream_map, &self.config.stream, streams).await
+        Self::do_snapshot(
+            &self.stream_map,
+            &self.config.stream,
+            &self.virtual_subscribers,
+            streams,
+        )
+        .await
     }
 
     pub async fn sse_handler(
@@ -1147,6 +1306,7 @@ impl Manager {
         let mut event_recv = self.event_sender.subscribe();
         let stream_map = self.stream_map.clone();
         let stream_cfg = self.config.stream.clone();
+        let virtual_subscribers = self.virtual_subscribers.clone();
         let mut stats_version = self.stats_version.subscribe();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
@@ -1160,11 +1320,14 @@ impl Manager {
             async fn send_snapshot(
                 stream_map: &Arc<RwLock<HashMap<String, PeerForward>>>,
                 stream_cfg: &crate::config::StreamConfig,
+                virtual_subscribers: &Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
                 streams: &[String],
                 last_payload: &mut Option<String>,
                 send: &tokio::sync::mpsc::Sender<Vec<api::response::Stream>>,
             ) -> bool {
-                let infos = Manager::do_snapshot(stream_map, stream_cfg, streams).await;
+                let infos =
+                    Manager::do_snapshot(stream_map, stream_cfg, virtual_subscribers, streams)
+                        .await;
                 let Ok(payload) = serde_json::to_string(&infos) else {
                     // Plain-data structs cannot realistically fail to
                     // serialize; keep the stream alive if they ever do.
@@ -1179,7 +1342,16 @@ impl Manager {
             }
 
             // Send an initial snapshot so the consumer has current state immediately.
-            if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
+            if !send_snapshot(
+                &stream_map,
+                &stream_cfg,
+                &virtual_subscribers,
+                &streams,
+                &mut last_payload,
+                &send,
+            )
+            .await
+            {
                 return;
             }
 
@@ -1196,7 +1368,7 @@ impl Manager {
                             Err(broadcast::error::RecvError::Lagged(_)) => {}
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
+                        if !send_snapshot(&stream_map, &stream_cfg, &virtual_subscribers, &streams, &mut last_payload, &send).await {
                             break;
                         }
                     }
@@ -1209,7 +1381,7 @@ impl Manager {
                         if result.is_err() {
                             break;
                         }
-                        if !send_snapshot(&stream_map, &stream_cfg, &streams, &mut last_payload, &send).await {
+                        if !send_snapshot(&stream_map, &stream_cfg, &virtual_subscribers, &streams, &mut last_payload, &send).await {
                             break;
                         }
                     }
@@ -1577,17 +1749,18 @@ impl Manager {
     }
 
     /// `true` when nothing consumes the stream's media right now: no
-    /// subscriber sessions (WHEP/cascade) and no RTSP pull clients.
+    /// subscriber sessions (WHEP/cascade) and no registered virtual
+    /// subscribers (static targets, RTSP pull clients).
     /// The recorder is intentionally not counted: it taps tracks internally
     /// and must not keep an on-demand source alive by itself.
     #[cfg(feature = "source")]
     async fn on_demand_stream_idle(&self, stream: &str) -> bool {
         if self
-            .rtsp_pull_counts
+            .virtual_subscribers
             .read()
             .await
             .get(stream)
-            .is_some_and(|n| *n > 0)
+            .is_some_and(|v| !v.is_empty())
         {
             return false;
         }
@@ -1595,40 +1768,6 @@ impl Manager {
         match stream_map.get(stream) {
             Some(forward) => forward.has_no_subscribers().await,
             None => true,
-        }
-    }
-
-    /// Register an RTSP pull client attach/detach for on-demand accounting.
-    /// The returned guard is unused by callers; counting is internal.
-    #[cfg(all(feature = "source", feature = "rtsp"))]
-    pub async fn rtsp_pull_attach(&self, stream: &str) {
-        *self
-            .rtsp_pull_counts
-            .write()
-            .await
-            .entry(stream.to_string())
-            .or_insert(0) += 1;
-        self.cancel_on_demand_stop(stream).await;
-    }
-
-    #[cfg(all(feature = "source", feature = "rtsp"))]
-    pub async fn rtsp_pull_detach(&self, stream: &str) {
-        let remaining = {
-            let mut counts = self.rtsp_pull_counts.write().await;
-            match counts.get_mut(stream) {
-                Some(n) => {
-                    *n = n.saturating_sub(1);
-                    let r = *n;
-                    if r == 0 {
-                        counts.remove(stream);
-                    }
-                    r
-                }
-                None => 0,
-            }
-        };
-        if remaining == 0 {
-            self.maybe_arm_on_demand_stop(stream).await;
         }
     }
 
@@ -2046,6 +2185,41 @@ mod tests {
         );
     }
 
+    /// Virtual subscribers are listed in the API but owned by their
+    /// consumer's supervisor: the session-delete path must reject them
+    /// instead of desyncing the supervisor's bookkeeping.
+    #[tokio::test]
+    async fn virtual_subscriber_cannot_be_deleted_via_session_api() {
+        let cancel = CancellationToken::new();
+        let manager = Manager::new(Config::default(), cancel.clone()).await;
+        manager.stream_create("cam".to_string()).await.unwrap();
+        manager
+            .add_virtual_subscriber("cam", "virtual-target-rtp-230.1.1.2:1720".to_string())
+            .await;
+
+        let err = manager
+            .remove_stream_session(
+                "cam".to_string(),
+                "virtual-target-rtp-230.1.1.2:1720".to_string(),
+            )
+            .await;
+        assert!(
+            matches!(err, Err(AppError::BadRequest(_))),
+            "deleting a virtual subscriber must be rejected: {err:?}"
+        );
+        // Still registered and visible.
+        let infos = manager.info(vec!["cam".to_string()]).await;
+        assert!(
+            infos[0]
+                .subscribe
+                .sessions
+                .iter()
+                .any(|s| s.id == "virtual-target-rtp-230.1.1.2:1720")
+        );
+
+        cancel.cancel();
+    }
+
     #[cfg(feature = "source-sdp")]
     mod on_demand {
         use super::*;
@@ -2218,6 +2392,100 @@ mod tests {
                 .stop_stream_source("od", crate::event::SessionStopReason::PeerClosed)
                 .await
                 .unwrap();
+            cancel.cancel();
+            let _ = std::fs::remove_file(&sdp_path);
+        }
+
+        /// Regression for live777#481: a static target taps the track
+        /// broadcast directly (no subscribe session), so without
+        /// virtual-subscriber accounting the idle check stops the on-demand
+        /// sources every close_after and the target supervisor kicks them
+        /// back up — a permanent flap. While a virtual subscriber is
+        /// registered the sources must survive subscriber-less periods; its
+        /// removal re-arms the close-after timer.
+        #[tokio::test]
+        async fn virtual_subscriber_keeps_sources_alive_until_detach() {
+            let sdp_path = write_test_sdp("virtual-sub").await;
+            let cancel = CancellationToken::new();
+            let manager = Manager::new(on_demand_config(&sdp_path), cancel.clone()).await;
+            let mut events = manager.event_sender.subscribe();
+            manager.provision_streams().await;
+
+            // A target supervisor registers at startup, then kicks the
+            // sources (its standing demand).
+            let virtual_id = "virtual-target-rtp-230.1.1.2:1720".to_string();
+            manager
+                .add_virtual_subscriber("od", virtual_id.clone())
+                .await;
+            manager.ensure_on_demand_source("od").await.unwrap();
+            assert!(manager.source_manager.has_source("od").await);
+
+            // The registration is visible in the API as a synthesized
+            // subscribe session, and its lifecycle rides the event bus.
+            let infos = manager.info(vec!["od".to_string()]).await;
+            let session = infos[0]
+                .subscribe
+                .sessions
+                .iter()
+                .find(|s| s.id == virtual_id)
+                .expect("virtual subscriber must be listed in subscribe.sessions");
+            assert_eq!(session.leave_at, 0);
+            let started = timeout(Duration::from_secs(1), async {
+                loop {
+                    match events.recv().await {
+                        Ok(Event::SubscribeStarted { stream, session })
+                            if stream == "od" && session == virtual_id =>
+                        {
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(e) => panic!("event bus error: {e}"),
+                    }
+                }
+            })
+            .await;
+            assert!(
+                started.is_ok(),
+                "no SubscribeStarted for the virtual subscriber"
+            );
+
+            // The last viewer leaves: with the virtual subscriber present
+            // the close-after timer must not stop the sources.
+            let _ = manager
+                .event_sender
+                .send(Event::SubscribeStopped {
+                    stream: "od".to_string(),
+                    session: "some-viewer".to_string(),
+                    reason: crate::event::SessionStopReason::PeerClosed,
+                })
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            assert!(
+                manager.source_manager.has_source("od").await,
+                "on-demand source stopped while a virtual subscriber was registered"
+            );
+
+            // The consumer goes away: the close-after timer is re-armed and
+            // stops the now-idle sources.
+            manager.remove_virtual_subscriber("od", &virtual_id).await;
+            let infos = manager.info(vec!["od".to_string()]).await;
+            assert!(
+                !infos[0]
+                    .subscribe
+                    .sessions
+                    .iter()
+                    .any(|s| s.id == virtual_id),
+                "virtual subscriber lingered in the API after removal"
+            );
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            assert!(
+                !manager.source_manager.has_source("od").await,
+                "on-demand source kept running after the last virtual subscriber left"
+            );
+
+            // Removal is idempotent.
+            manager.remove_virtual_subscriber("od", &virtual_id).await;
+
             cancel.cancel();
             let _ = std::fs::remove_file(&sdp_path);
         }

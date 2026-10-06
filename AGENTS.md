@@ -303,7 +303,24 @@ clients via Link headers).
   with the synthesized `virtual-source` session id. On-demand readiness is
   judged by the source *bridge* (`SourceManager::has_bridge`), not source
   existence, and starts/stops serialize on a per-stream lock
-  (`on_demand_locks`). A WHIP publish onto a stream with an active source
+  (`on_demand_locks`). The idle check (`on_demand_stream_idle`) counts real
+  subscriber sessions (WHEP/cascade) and registered *virtual subscribers*
+  (`Manager::virtual_subscribers`): internal consumers that tap the forward
+  track broadcast directly instead of holding a subscribe session — static
+  targets and RTSP pull clients. This is the subscribe-side counterpart of
+  the `virtual-source` publisher: attach/detach
+  (`add_virtual_subscriber`/`remove_virtual_subscriber`) emits
+  `SubscribeStarted`/`SubscribeStopped`, `Manager::info`/`do_snapshot`
+  synthesize always-Connected sessions with reserved `virtual-…` ids
+  (e.g. `virtual-target-rtp-230.1.1.2:1720`, so dashboards show why an
+  on-demand stream is running), the per-stream
+  `live777_stream_sessions{kind="subscribe"}` gauge and the global
+  `live777_subscribe` gauge include them, and the session-delete API
+  rejects their ids (400 — they are owned by their consumer's supervisor).
+  Without the registration the idle check stopped an on-demand stream's
+  sources every `on_demand_close_after_ms` underneath its targets
+  (live777#481). The recorder is intentionally not registered: it must not
+  keep an on-demand source alive by itself. A WHIP publish onto a stream with an active source
   bridge is rejected (409) to avoid mixing two publishers' tracks. A second
   WHIP publish on an already-published stream instead *displaces* the
   incumbent (mediamtx-style override): the old session is torn down with
@@ -374,10 +391,13 @@ clients via Link headers).
   negotiates per media epoch, so its codecs always match the current
   publisher), retried with source-style backoff (5 s doubling, 60 s cap),
   reconciled against the manager on event-bus lag; a target on an
-  `on_demand` stream acts as standing demand: its sources are (re)started
-  whenever the stream has neither a publisher nor a push session, paced by
-  the same backoff. `target::init` dispatches per target by URL scheme, so
-  `whip://`, `rtp://` and `rtsp://` targets mix freely on one stream.
+  `on_demand` stream is standing demand: the supervisor registers as a
+  virtual subscriber (`Manager::add_virtual_subscriber`, id
+  `virtual-target-…`) for its whole lifetime so the sources are never
+  idle-stopped underneath it, and (re)starts them whenever the stream has
+  neither a publisher nor a push session, paced by the same backoff.
+  `target::init` dispatches per target by URL scheme, so `whip://`,
+  `rtp://` and `rtsp://` targets mix freely on one stream.
 - `liveion/src/target_rtp.rs` — static RTP/UDP output targets
   (`rtp://group-or-host:port`; `target-rtp` feature), the sender
   counterpart of the SDP-file source: live777 acts as the multicast sender,

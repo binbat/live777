@@ -23,6 +23,12 @@ use rtsp::{ServerConfig, udp_route};
 
 const DEFAULT_STREAM: &str = "rtsp";
 
+/// Sequence for the virtual-subscriber ids of RTSP pull clients
+/// (`virtual-rtsp-pull-N`): each PLAYing pull taps tracks directly, so it
+/// registers on the manager to stay visible and counted as on-demand
+/// demand.
+static PULL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub async fn start_rtsp_server(
     manager: Arc<Manager>,
     config: RtspConfig,
@@ -290,26 +296,36 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     }
                 });
 
-                // On-demand accounting: a pull client keeps the stream's
-                // sources alive even though it taps tracks directly (no
-                // subscribe session).
+                // A pull client taps tracks directly (no subscribe
+                // session): register it as a virtual subscriber so it shows
+                // up in the API and keeps the on-demand sources alive.
                 #[cfg(feature = "source")]
                 {
                     let manager = self.manager.clone();
                     let stream_id = stream_id.clone();
                     let detach_cancel = pull_cancel.clone();
-                    manager.rtsp_pull_attach(&stream_id).await;
+                    let pull_id = format!(
+                        "virtual-rtsp-pull-{}",
+                        PULL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    manager
+                        .add_virtual_subscriber(&stream_id, pull_id.clone())
+                        .await;
                     // The safety-net timer may have stopped the source
                     // between DESCRIBE and PLAY (or this client never sent
                     // DESCRIBE): make sure the on-demand source is running
                     // before tapping its tracks.
                     if let Err(e) = manager.ensure_on_demand_source(&stream_id).await {
-                        manager.rtsp_pull_detach(&stream_id).await;
+                        manager
+                            .remove_virtual_subscriber(&stream_id, &pull_id)
+                            .await;
                         return Err(anyhow!("on-demand source not ready: {e:?}"));
                     }
                     tokio::spawn(async move {
                         detach_cancel.cancelled().await;
-                        manager.rtsp_pull_detach(&stream_id).await;
+                        manager
+                            .remove_virtual_subscriber(&stream_id, &pull_id)
+                            .await;
                     });
                 }
 
