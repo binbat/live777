@@ -815,6 +815,12 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 /// backoff. A target on an `on_demand` stream acts as standing demand: its
 /// sources are (re)started whenever the stream has neither a publisher nor
 /// an active target session.
+///
+/// Multicast senders keep the kernel's default `IP_MULTICAST_LOOP`, so a
+/// same-host SDP file source joined to the same group:port ingests the
+/// target's own output — a feedback loop. Sending and ingesting the same
+/// group:port on one host is a misconfiguration (use distinct groups or
+/// ports for same-host demos).
 #[cfg(any(
     feature = "target-whip",
     feature = "target-rtp",
