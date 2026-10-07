@@ -1,9 +1,11 @@
 [http]
 # Http Server Listen Address
 # listen = "[::]:7777"
-# Cross-Origin Resource Sharing (CORS)
+# Cross-Origin Resource Sharing (CORS): allowed origins
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-# cors = false
+# [] (default): disabled. ["*"]: allow any origin.
+# Or an allowlist: cors = ["https://example.com"]
+cors = ["*"]
 
 # STUN/TURN servers advertised to WHIP/WHEP clients (Link response headers)
 # and used by outgoing peers such as WHEP pull sources.

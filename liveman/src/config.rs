@@ -201,8 +201,10 @@ fn default_net4mqtt_domain() -> String {
 pub struct Http {
     #[serde(default = "default_http_listen")]
     pub listen: SocketAddr,
+    /// CORS allowed origins: empty (default) disables CORS, `["*"]` allows
+    /// any origin, otherwise only the listed origins are allowed.
     #[serde(default)]
-    pub cors: bool,
+    pub cors: api::cors::Cors,
     #[serde(default)]
     pub public: String,
 }
@@ -318,6 +320,10 @@ impl Default for CheckCascadeTickTime {
 
 impl Config {
     pub fn validate(&mut self) -> anyhow::Result<()> {
+        self.http
+            .cors
+            .validate()
+            .map_err(|e| anyhow::anyhow!("http.cors error: {e}"))?;
         if self.http.public.is_empty() {
             self.http.public = format!("http://{}", self.http.listen);
         }

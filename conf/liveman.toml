@@ -1,9 +1,11 @@
 [http]
 # Http Server Listen Address
 # listen = "[::]:8888"
-# Cross-Origin Resource Sharing (CORS)
+# Cross-Origin Resource Sharing (CORS): allowed origins
 # reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
-# cors = false
+# [] (default): disabled. ["*"]: allow any origin.
+# Or an allowlist: cors = ["https://example.com"]
+cors = ["*"]
 # Cascade need proxy all request, each node can connect this address
 # public = "http://localhost:8888"
 
