@@ -152,6 +152,16 @@ retried with backoff before the source start fails — for always-on
 the interface address is assigned (systemd: `After=network-online.target`),
 since a long DHCP delay outlasts the retries.
 
+::: warning
+Multicast senders keep the kernel's default loopback (`IP_MULTICAST_LOOP`),
+so this source also receives whatever a same-host sender — including
+live777's own `rtp://` output target — sends to the joined group:port.
+Pointing a source and a target at the same group:port on one host
+(directly, or via a liveman cascade looping back) makes live777 ingest its
+own output in a feedback loop; use distinct groups or ports for same-host
+demos.
+:::
+
 ### Structured native (libcamera / V4L2 / RDK)
 
 ```toml

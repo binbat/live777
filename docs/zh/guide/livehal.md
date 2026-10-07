@@ -137,6 +137,14 @@ multicast_interface = "192.168.123.11"
 （systemd：`After=network-online.target`），因为较长的 DHCP 延迟会
 超过重试窗口。
 
+::: warning
+组播发送端保留内核默认的回环行为（`IP_MULTICAST_LOOP`），因此本源
+也会收到同机发送端——包括 live777 自己的 `rtp://` 输出 target——
+发往已加入 group:port 的流量。在同一台主机上把源和 target 指向同一
+个 group:port（直接配置，或经 liveman 级联绕回本机）会让 live777
+摄入自己的输出形成反馈回环；同机演示请使用不同的组播组或端口。
+:::
+
 ### 结构化原生配置（libcamera / V4L2 / RDK）
 
 ```toml
