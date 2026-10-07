@@ -76,6 +76,8 @@ struct RePayloadBase {
     /// is a valid RTP value, so we cannot use `0` as a sentinel for the first
     /// packet.
     has_baseline: bool,
+    /// Cumulative count of input sequence gaps, for rate-limited logging.
+    gap_count: u64,
 }
 
 impl RePayloadBase {
@@ -85,6 +87,7 @@ impl RePayloadBase {
             sequence_number: 0,
             src_sequence_number: 0,
             has_baseline: false,
+            gap_count: 0,
         }
     }
 
@@ -107,11 +110,27 @@ impl RePayloadBase {
             true
         };
         if !continuous {
-            error!(
-                "Expected sequence {}, received {}",
-                self.src_sequence_number.wrapping_add(1),
-                packet.header.sequence_number
-            );
+            // A gap is routine on UDP paths (publisher-side loss, multicast
+            // delivery, a lagging broadcast): the fragments are dropped and
+            // the next packet re-baselines, so this is not an error. Rate-limit
+            // the logging the way the WHEP track handler's drop counter does.
+            self.gap_count += 1;
+            let gaps = self.gap_count;
+            if gaps <= 10 || gaps.is_multiple_of(100) {
+                warn!(
+                    "Input sequence gap: expected {}, received {} (total gaps {})",
+                    self.src_sequence_number.wrapping_add(1),
+                    packet.header.sequence_number,
+                    gaps
+                );
+            } else {
+                debug!(
+                    "Input sequence gap: expected {}, received {} (total gaps {})",
+                    self.src_sequence_number.wrapping_add(1),
+                    packet.header.sequence_number,
+                    gaps
+                );
+            }
             // Reset the baseline so the next packet re-establishes it instead
             // of being misidentified as a second gap against the stale baseline.
             self.has_baseline = false;
@@ -702,6 +721,43 @@ mod tests {
             .iter()
             .flat_map(|p| p.payload.iter().copied())
             .collect()
+    }
+
+    /// A sequence gap drops the incomplete frame's buffered fragments and
+    /// re-baselines: the next packet starts a fresh frame. Repeated gaps
+    /// (past the rate-limited log's warn window) keep re-baselining.
+    #[test]
+    fn sequence_gap_drops_buffer_and_rebaselines() {
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+        const SLICE_A: [u8; 3] = [0x41, 0x9a, 0x22];
+        const SLICE_B: [u8; 3] = [0x41, 0x77, 0x77];
+
+        let mut codec = RePayloadCodec::new(MIME_TYPE_H264.to_owned());
+
+        // Frame fragment (no marker), then a gap (1 → 5): the buffered
+        // pre-gap fragment is dropped; the gap packet re-baselines and starts
+        // the next frame.
+        assert!(codec.payload(&h264_packet(false, 1, &IDR)).is_empty());
+        assert!(codec.payload(&h264_packet(false, 5, &SLICE_A)).is_empty());
+        let out = codec.payload(&h264_packet(true, 6, &SLICE_B));
+        assert!(!out.is_empty(), "the frame after the gap must be emitted");
+        let payload = concatenated_payload(&out);
+        assert!(
+            !payload.windows(IDR.len()).any(|w| w == IDR),
+            "the pre-gap fragment must not leak: {payload:02x?}"
+        );
+        assert!(
+            payload.windows(SLICE_A.len()).any(|w| w == SLICE_A)
+                && payload.windows(SLICE_B.len()).any(|w| w == SLICE_B),
+            "the frame is the post-gap packets: {payload:02x?}"
+        );
+
+        // Past the rate-limited log's warn window (gaps 11+), gaps still
+        // re-baseline.
+        for i in 0..12u16 {
+            codec.payload(&h264_packet(false, 10 + i * 2, &SLICE_A));
+        }
+        assert!(!codec.payload(&h264_packet(true, 100, &IDR)).is_empty());
     }
 
     /// A constructor seeded from the SDP fmtp's `sprop-parameter-sets`
