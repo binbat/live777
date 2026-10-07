@@ -122,8 +122,7 @@ sends to a group and joins the same group:port on one host — directly,
 or via a liveman cascade that loops back to the same host — ingests its
 own output and re-publishes it. Sending and ingesting the same
 group:port on one host is a misconfiguration; if you must run both sides
-on one machine for a demo, use distinct groups or ports, or disable
-loopback at the receiver.
+on one machine for a demo, use distinct groups or ports.
 :::
 
 For a unicast target the generated `c=` line is a `127.0.0.1` placeholder;
