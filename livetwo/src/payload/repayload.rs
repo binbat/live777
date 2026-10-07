@@ -752,9 +752,11 @@ mod tests {
             "the frame is the post-gap packets: {payload:02x?}"
         );
 
-        // Past the rate-limited log's warn window (gaps 11+), gaps still
-        // re-baseline.
-        for i in 0..12u16 {
+        // A gap resets the baseline, so the next packet re-establishes it:
+        // with step-2 sequence numbers only every second loop packet is a
+        // new gap, and 20 iterations push the count past the rate-limited
+        // log's warn window (gaps 11+). Gaps there must still re-baseline.
+        for i in 0..20u16 {
             codec.payload(&h264_packet(false, 10 + i * 2, &SLICE_A));
         }
         assert!(!codec.payload(&h264_packet(true, 100, &IDR)).is_empty());
