@@ -300,6 +300,23 @@ impl RtpTargetContext {
                     {
                         epoch.cancel();
                         desired = self.manager.has_publisher(&self.stream).await;
+                        // Pace the rebuild the way the WHIP target paces a
+                        // dead push session (the SubscribeStopped arm): a
+                        // flapping track set (a publisher renegotiating in a
+                        // loop) must not rebind the socket, rewrite the SDP
+                        // file and PLI the publisher at the churn rate
+                        // (live777#477). An epoch that was up resets the
+                        // backoff, but the first retry still waits the base
+                        // delay. No wait when the media is gone.
+                        failures = 1;
+                        if desired {
+                            if self.wait(reconnect_delay(1)).await {
+                                break;
+                            }
+                            // The wait is event-blind: re-check the media is
+                            // still there before rebuilding.
+                            desired = self.manager.has_publisher(&self.stream).await;
+                        }
                     }
                 }
                 event = events.recv() => match event {
@@ -338,10 +355,21 @@ impl RtpTargetContext {
                             "[target] [{}] dropped {} stream events, reconciling",
                             self.stream, n
                         );
+                        let mut torn_down = false;
                         if let Some((_, epoch)) = senders.take() {
                             epoch.cancel();
+                            torn_down = true;
                         }
                         desired = self.manager.has_publisher(&self.stream).await;
+                        // Same rebuild pacing as the spontaneous-exit path,
+                        // including the post-wait media re-check.
+                        if torn_down && desired {
+                            failures = 1;
+                            if self.wait(reconnect_delay(1)).await {
+                                break;
+                            }
+                            desired = self.manager.has_publisher(&self.stream).await;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                     _ => {}
@@ -1372,6 +1400,103 @@ mod tests {
             start_calls.load(std::sync::atomic::Ordering::Relaxed),
             2,
             "one teardown must yield exactly one rebuild, not a restart storm"
+        );
+
+        pump_stop.cancel();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), supervisor)
+            .await
+            .expect("run() must exit when the manager is cancelled")
+            .unwrap();
+    }
+
+    /// Event-bus lag forces a reconcile, and the reconcile paces the rebuild
+    /// (live777#477): the torn-down epoch comes back after the base retry
+    /// delay (5 s), not immediately — bounding socket rebind / SDP rewrite /
+    /// PLI churn when the track set flaps.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn lagged_reconcile_paces_the_rebuild() {
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        const IDR: [u8; 4] = [0x65, 0x88, 0x84, 0x21];
+
+        let cancel = CancellationToken::new();
+        let manager =
+            Arc::new(Manager::new(crate::config::Config::default(), cancel.clone()).await);
+        manager.stream_create("cam".to_string()).await.unwrap();
+        let forward = manager.get_forward("cam").await.unwrap();
+        forward
+            .add_virtual_track(RtpCodecKind::Video, h264_codec_params())
+            .await
+            .unwrap();
+
+        let listener = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dest = listener.local_addr().unwrap();
+
+        let ctx = RtpTargetContext::new(
+            manager.clone(),
+            "cam".to_string(),
+            rtp_target(&format!("rtp://{dest}")),
+        )
+        .unwrap();
+        let start_calls = ctx.start_calls.clone();
+        let supervisor = tokio::spawn(ctx.run());
+
+        let track = forward
+            .publish_tracks()
+            .await
+            .into_iter()
+            .find(|t| t.kind() == RtpCodecKind::Video)
+            .expect("the virtual video track");
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+        recv_idr_stream(&listener, &IDR, 96).await;
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the initial publish starts one epoch"
+        );
+
+        // Lag the supervisor's event bus deterministically: the channel
+        // holds 64 events and this burst never yields, so the
+        // (single-threaded) runtime cannot poll it in between. Events name
+        // an unrelated stream: the reconcile must find our publisher intact.
+        for _ in 0..200 {
+            manager.emit_source_publish_started("other");
+        }
+
+        // The reconcile tears the epoch down, then paces the rebuild: no new
+        // epoch within the base retry delay...
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a lagged reconcile must pace the rebuild, not hot-loop"
+        );
+
+        // ...and the epoch comes back after it (5 s + slack).
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while start_calls.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the paced rebuild must re-establish the send epoch");
+        recv_idr_stream(&listener, &IDR, 96).await;
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "exactly one paced rebuild"
         );
 
         pump_stop.cancel();
