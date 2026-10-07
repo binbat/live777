@@ -414,8 +414,11 @@ clients via Link headers).
   is paced like the WHIP supervisor's dead-session path: tear down, wait
   `reconnect_delay(1)` while media is still up, re-check, then rebuild — a
   flapping track set cannot rebind the socket, rewrite the SDP file and
-  PLI the publisher at the churn rate (live777#477). Video is
-  re-packetized through livetwo's `RePayloadCodec`
+  PLI the publisher at the churn rate (live777#477). While media flows,
+  each send task also emits a periodic RTCP sender report to its RTP port
+  + 1 (packet/octet counters and the NTP ↔ RTP timestamp mapping are
+  maintained at the marshal point, live777#471); inbound receiver reports
+  are not consumed. Video is re-packetized through livetwo's `RePayloadCodec`
   (SPS/PPS inlined ahead of every IDR, seeded from the codec fmtp via
   `with_sprop_params`), a PLI nudges the publisher on attach, and the video
   payload type can be pinned (`payload_type`, e.g. 96 for Unitree

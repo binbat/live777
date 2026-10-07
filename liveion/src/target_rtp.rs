@@ -23,12 +23,15 @@
 //! - Audio (and anything else) is forwarded untouched.
 //!
 //! Ports follow the RTP/AVP convention: video goes to the URL's port, audio
-//! to port + 2 (port + 1 stays reserved for RTCP). The video payload type
-//! defaults to the publisher's negotiated PT (96 for dynamic codecs) and can
-//! be pinned from the config; audio always keeps the automatic choice. On
-//! request a receiver-side SDP file is written when sending starts
-//! (ffmpeg's `-sdp_file` behavior), directly consumable by live777's own
-//! SDP file source.
+//! to port + 2, and each track's RTCP goes to its RTP port + 1 — while media
+//! flows, every send task emits a periodic RTCP sender report there (packet
+//! and octet counters plus the NTP ↔ RTP timestamp mapping, so receivers can
+//! estimate jitter/loss and lip-sync). Inbound receiver reports are not
+//! consumed. The video payload type defaults to the publisher's negotiated
+//! PT (96 for dynamic codecs) and can be pinned from the config; audio
+//! always keeps the automatic choice. On request a receiver-side SDP file
+//! is written when sending starts (ffmpeg's `-sdp_file` behavior), directly
+//! consumable by live777's own SDP file source.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -46,7 +49,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::TargetConfig;
 use crate::event::{Event, StreamDeleteReason};
 use crate::forward::message::Codec;
-use crate::forward::track::PublishTrackRemote;
+use crate::forward::track::{PublishTrackRemote, system_time_to_ntp};
 use crate::forward::{PeerForward, rtcp::RtcpMessage};
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
@@ -419,12 +422,11 @@ impl RtpTargetContext {
         // track is ignored. Per-track resolved payload type and destination
         // ride along: the video PT may be overridden from the config, audio
         // always keeps the automatic choice (one value cannot fit both
-        // media), and audio rides port + 2 (RTP/AVP: port + 1 stays
-        // reserved for RTCP). The port overflow is checked here, not at
-        // config time, because whether the stream has audio is only known
-        // once the tracks exist.
-        let mut selected: Vec<(PublishTrackRemote, RtpCodecKind, Codec, u8, SocketAddr)> =
-            Vec::new();
+        // media), audio rides port + 2, and each track's RTCP (sender
+        // reports) goes to its RTP port + 1 — the RTP/AVP convention. The
+        // port overflow is checked here, not at config time, because whether
+        // the stream has audio is only known once the tracks exist.
+        let mut selected: Vec<SelectedTrack> = Vec::new();
         let mut video_seen = false;
         let mut audio_seen = false;
         for track in &tracks {
@@ -463,7 +465,30 @@ impl RtpTargetContext {
                 };
                 SocketAddr::new(self.dest.ip(), port)
             };
-            selected.push((track.clone(), kind, codec, payload_type, dest));
+            // Sender reports go to the RTP port + 1. An overflowing port is
+            // not worth failing an otherwise working send for: log once and
+            // skip RTCP for the track.
+            let rtcp_dest = match dest.port().checked_add(1) {
+                Some(port) => Some(SocketAddr::new(dest.ip(), port)),
+                None => {
+                    warn!(
+                        "[target] [{}] rtp dest port {} leaves no room for RTCP (+1); \
+                         not sending sender reports for the {:?} track",
+                        self.stream,
+                        dest.port(),
+                        kind
+                    );
+                    None
+                }
+            };
+            selected.push(SelectedTrack {
+                track: track.clone(),
+                kind,
+                codec,
+                payload_type,
+                dest,
+                rtcp_dest,
+            });
         }
 
         if selected.is_empty() {
@@ -481,7 +506,7 @@ impl RtpTargetContext {
                 self.dest,
                 &selected
                     .iter()
-                    .map(|(_, kind, codec, pt, _)| (*kind, codec.clone(), *pt))
+                    .map(|sel| (sel.kind, sel.codec.clone(), sel.payload_type))
                     .collect::<Vec<_>>(),
             );
             if let Err(e) = tokio::fs::write(path, sdp).await {
@@ -493,13 +518,13 @@ impl RtpTargetContext {
         }
 
         let epoch = CancellationToken::new();
-        for (track, kind, codec, payload_type, dest) in &selected {
+        for sel in &selected {
             // Nudge the publisher towards an IDR so receivers joining now
             // get a decodable frame (and the SPS/PPS injector a frame to
             // attach the parameter sets to) without waiting for the sender's
             // own keyframe cadence.
-            if *kind == RtpCodecKind::Video {
-                let ssrc = track.source_ssrc().await;
+            if sel.kind == RtpCodecKind::Video {
+                let ssrc = sel.track.source_ssrc().await;
                 if ssrc != 0
                     && let Err(e) = forward
                         .send_rtcp_to_publish(RtcpMessage::PictureLossIndication, ssrc)
@@ -511,11 +536,12 @@ impl RtpTargetContext {
 
             tokio::spawn(track_send_task(
                 TrackSend {
-                    track: track.clone(),
+                    track: sel.track.clone(),
                     socket: socket.clone(),
-                    dest: *dest,
-                    payload_type: *payload_type,
-                    is_video: codec.kind == "video",
+                    dest: sel.dest,
+                    rtcp_dest: sel.rtcp_dest,
+                    payload_type: sel.payload_type,
+                    is_video: sel.codec.kind == "video",
                     generation,
                 },
                 epoch.child_token(),
@@ -630,6 +656,18 @@ fn build_receiver_sdp(
     lines.join("\r\n") + "\r\n"
 }
 
+/// A publish track selected for sending, with its resolved payload type,
+/// RTP destination and RTCP (sender report) destination (`None` when the
+/// RTP port + 1 overflows).
+struct SelectedTrack {
+    track: PublishTrackRemote,
+    kind: RtpCodecKind,
+    codec: Codec,
+    payload_type: u8,
+    dest: SocketAddr,
+    rtcp_dest: Option<SocketAddr>,
+}
+
 /// One send task's wiring: the tapped track, the shared socket, its
 /// destination and payload type, and the epoch generation tagged onto the
 /// exit notification.
@@ -637,10 +675,17 @@ struct TrackSend {
     track: PublishTrackRemote,
     socket: Arc<UdpSocket>,
     dest: SocketAddr,
+    /// The track's RTCP destination (RTP port + 1); periodic sender reports
+    /// are sent here while media flows. `None` disables them.
+    rtcp_dest: Option<SocketAddr>,
     payload_type: u8,
     is_video: bool,
     generation: u64,
 }
+
+/// How often each send task emits an RTCP sender report (mirroring the RTSP
+/// server's sender-report loop).
+const SR_INTERVAL: Duration = Duration::from_secs(5);
 
 async fn track_send_task(
     send: TrackSend,
@@ -651,6 +696,7 @@ async fn track_send_task(
         track,
         socket,
         dest,
+        rtcp_dest,
         payload_type,
         is_video,
         generation,
@@ -669,12 +715,51 @@ async fn track_send_task(
     };
 
     let mut rx = track.subscribe();
+    // Sender-report state, fed at the marshal point: receivers estimating
+    // jitter/loss or lip-syncing from SRs need the wire-accurate
+    // (NTP wall clock, RTP timestamp) pair and packet/octet counters of
+    // what this task actually put on the socket. The RTP timestamp is the
+    // outgoing (re-based) one, so receivers can map it directly.
+    let mut sr_tick = tokio::time::interval(SR_INTERVAL);
+    let mut sr_packets: u32 = 0;
+    let mut sr_octets: u32 = 0;
+    let mut sr_ssrc: u32 = 0;
+    let mut sr_rtp_time: u32 = 0;
+    let mut sr_ntp_time_ms: u64 = 0;
     // Reused across packets: high-bitrate video means a thousand marshals a
     // second.
     let mut buf = Vec::with_capacity(1500);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
+            _ = sr_tick.tick() => {
+                let Some(rtcp_dest) = rtcp_dest else {
+                    continue;
+                };
+                // Nothing sent yet (the first tick fires immediately): an SR
+                // with zero counters and no timestamp mapping is useless.
+                if sr_packets == 0 {
+                    continue;
+                }
+                let report = rtc_rtcp::sender_report::SenderReport {
+                    ssrc: sr_ssrc,
+                    ntp_time: system_time_to_ntp(
+                        std::time::UNIX_EPOCH + Duration::from_millis(sr_ntp_time_ms),
+                    ),
+                    rtp_time: sr_rtp_time,
+                    packet_count: sr_packets,
+                    octet_count: sr_octets,
+                    ..Default::default()
+                };
+                match report.marshal() {
+                    Ok(bytes) => {
+                        if let Err(e) = socket.send_to(&bytes, rtcp_dest).await {
+                            debug!("[target] rtcp send to {rtcp_dest} failed: {e}");
+                        }
+                    }
+                    Err(e) => debug!("[target] failed to marshal sender report: {e}"),
+                }
+            }
             packet = rx.recv() => {
                 match packet {
                     Ok(packet) => {
@@ -687,6 +772,18 @@ async fn track_send_task(
                             }
                             if let Err(e) = socket.send_to(&buf, dest).await {
                                 debug!("[target] rtp send to {dest} failed: {e}");
+                            } else {
+                                sr_packets = sr_packets.wrapping_add(1);
+                                // RFC 3550 octet count: payload only.
+                                sr_octets =
+                                    sr_octets.wrapping_add(out.payload.len() as u32);
+                                sr_ssrc = out.header.ssrc;
+                                sr_rtp_time = out.header.timestamp;
+                                sr_ntp_time_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
                             }
                         }
                     }
@@ -1136,6 +1233,7 @@ mod tests {
                 track: track.clone(),
                 socket,
                 dest,
+                rtcp_dest: None,
                 payload_type: 96,
                 is_video: true,
                 generation: 7,
@@ -1179,6 +1277,130 @@ mod tests {
             .await
             .expect("send task must signal its exit");
         assert_eq!(exited, Some(7), "the exit carries the epoch generation");
+    }
+
+    /// Bind a consecutive (rtp, rtp + 1) UDP socket pair on loopback,
+    /// retrying against a taken +1 port.
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    async fn bind_rtp_rtcp_pair() -> (UdpSocket, UdpSocket) {
+        for _ in 0..32 {
+            let rtp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let mut rtcp_addr = rtp.local_addr().unwrap();
+            rtcp_addr.set_port(rtcp_addr.port() + 1);
+            if let Ok(rtcp) = UdpSocket::bind(rtcp_addr).await {
+                return (rtp, rtcp);
+            }
+        }
+        panic!("could not bind a consecutive RTP/RTCP port pair");
+    }
+
+    /// The send task emits a periodic RTCP sender report to the RTP port + 1
+    /// while media flows: it carries the outgoing SSRC, the last sent
+    /// packet's (NTP, RTP) timestamp pair, and the packet/octet counters of
+    /// what was actually put on the socket (live777#471).
+    #[cfg(all(
+        feature = "source",
+        any(
+            feature = "source-rtsp",
+            feature = "source-sdp",
+            feature = "source-whep",
+            feature = "rtsp",
+            feature = "native-source"
+        )
+    ))]
+    #[tokio::test]
+    async fn track_send_task_emits_sender_reports() {
+        use crate::forward::track::VirtualPublishTrack;
+
+        let track = PublishTrackRemote::Virtual(Arc::new(VirtualPublishTrack::new(
+            "test".to_string(),
+            RtpCodecKind::Video,
+            h264_codec_params(),
+        )));
+
+        let socket =
+            Arc::new(multicast::sender_socket("127.0.0.1:0".parse().unwrap(), None, None).unwrap());
+        let socket_port = socket.local_addr().unwrap().port();
+        let (listener, rtcp_listener) = bind_rtp_rtcp_pair().await;
+        let dest = listener.local_addr().unwrap();
+        let rtcp_dest = rtcp_listener.local_addr().unwrap();
+        assert_eq!(rtcp_dest.port(), dest.port() + 1, "test setup: RTCP on +1");
+
+        let cancel = CancellationToken::new();
+        let (exit_tx, _exit_rx) = mpsc::unbounded_channel::<u64>();
+        let task = tokio::spawn(track_send_task(
+            TrackSend {
+                track: track.clone(),
+                socket,
+                dest,
+                rtcp_dest: Some(rtcp_dest),
+                payload_type: 96,
+                is_video: true,
+                generation: 1,
+            },
+            cancel.clone(),
+            exit_tx,
+        ));
+
+        let pump_stop = CancellationToken::new();
+        tokio::spawn(pump_idrs(track, pump_stop.clone()));
+
+        // The first report arrives after one SR_INTERVAL; allow slack for
+        // CI scheduling.
+        let mut buf = [0u8; 1500];
+        let (n, from) = tokio::time::timeout(
+            SR_INTERVAL + Duration::from_secs(10),
+            rtcp_listener.recv_from(&mut buf),
+        )
+        .await
+        .expect("a sender report must arrive")
+        .unwrap();
+        assert_eq!(from.port(), socket_port);
+        // RTCP SR carries packet type 200 in byte 1 (RTP would have the
+        // re-stamped payload type 96 there): no RTP leaks onto the RTCP port.
+        assert_eq!(buf[1], 200, "the datagram must be RTCP, not RTP");
+
+        let mut cursor = std::io::Cursor::new(&buf[..n]);
+        let packets = rtc_rtcp::packet::unmarshal(&mut cursor).unwrap();
+        let sr = packets
+            .iter()
+            .find_map(|p| {
+                p.as_any()
+                    .downcast_ref::<rtc_rtcp::sender_report::SenderReport>()
+            })
+            .expect("the datagram must be a sender report");
+        // The pumped packets all carry SSRC 0x1234 and timestamp 1000; the
+        // SR reports the last sent packet's values.
+        assert_eq!(sr.ssrc, 0x1234);
+        assert_eq!(sr.rtp_time, 1000);
+        assert!(sr.ntp_time != 0, "the NTP wall clock must be mapped");
+        assert!(
+            sr.packet_count >= 2,
+            "packets were sent: {}",
+            sr.packet_count
+        );
+        // One frame on the wire is a 13-byte STAP-A plus the 4-byte IDR.
+        assert!(
+            sr.octet_count >= 17,
+            "octet count covers the sent payload bytes: {}",
+            sr.octet_count
+        );
+
+        pump_stop.cancel();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("send task must exit on cancel")
+            .unwrap();
     }
 
     /// `start_senders` end to end against a real manager and forward: the
