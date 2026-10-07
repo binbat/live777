@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use std::process::ExitStatus;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 pub mod core;
 mod input;
@@ -27,12 +27,18 @@ pub use webrtc::setup_whip_peer;
 /// empty list means host candidates only (loopback setups). For `synth://`
 /// inputs it is the default ICE server list, overridable with the URL's `ice`
 /// query parameter.
+///
+/// `channel_url` (`udp://<listen>?host=<target>&port=<port>`) creates the
+/// "control" DataChannel on the publish session — joining the stream's
+/// channel group on a liveion server — and bridges it to UDP both ways. It is
+/// opt-in because it adds an `m=application` section to the WHIP offer.
 pub async fn into(
     ct: CancellationToken,
     target_url: String,
     whip_url: String,
     token: Option<String>,
     command: Option<String>,
+    channel_url: Option<String>,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     info!("Starting WHIP session: {}", target_url);
@@ -84,15 +90,34 @@ pub async fn into(
     let input_source = input::setup_input_source(ct.clone(), &target_url).await?;
     info!("Input source configured: {:?}", input_source.scheme());
 
-    let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics) =
+    let (peer, video_sender, audio_sender, stats, peer_state_rx, peer_diagnostics, dc_channels) =
         webrtc::setup_whip_peer(
             &mut client,
             input_source.media_info(),
             target_url.clone(),
+            channel_url.is_some(),
             ice_servers,
         )
         .await?;
     info!("WHIP peer setup completed; waiting for WebRTC connection");
+
+    // Start DataChannel <-> UDP forwarding if channel_url is configured. Like
+    // on the WHEP side (`crate::whep::from`), the bridge runs on a
+    // session-scoped token: it stops — releasing its UDP listen port — when
+    // this session ends (any exit path, see `_session_guard`), so an
+    // in-process reconnect can rebind the same port immediately.
+    let session_ct = ct.child_token();
+    let _session_guard = crate::datachannel::CancelOnDrop(session_ct.clone());
+    let channel_handle =
+        if let (Some(url), Some((dc_recv_rx, dc_send_tx))) = (channel_url, dc_channels) {
+            debug!("Starting DataChannel <-> UDP forwarding: {}", url);
+            Some(
+                crate::datachannel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone())
+                    .await?,
+            )
+        } else {
+            None
+        };
 
     core::wait_for_peer_connected(
         peer.clone(),
@@ -136,7 +161,7 @@ pub async fn into(
 
     info!("Input connected to WebRTC");
 
-    if child.as_ref().is_some() {
+    let result = if child.as_ref().is_some() {
         tokio::select! {
             _ = ct.cancelled() => {
                 graceful_shutdown("WHIP", &mut client, peer).await;
@@ -167,7 +192,16 @@ pub async fn into(
                 result
             }
         }
+    };
+
+    // Stop the channel bridge and wait for its listen socket to be released
+    // before returning, so a reconnect can rebind the same port immediately.
+    session_ct.cancel();
+    if let Some(handle) = channel_handle {
+        let _ = handle.await;
     }
+
+    result
 }
 
 async fn wait_for_child_exit(child: Arc<Option<cli::ChildGuard>>) -> Result<ExitStatus> {

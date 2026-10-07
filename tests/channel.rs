@@ -316,6 +316,7 @@ async fn test_udp_channel_survives_stream_reset() {
         format!("http://{addr}{}", api::path::whip(stream_id)),
         None,
         None,
+        None,
         Vec::new(),
     ));
 
@@ -431,5 +432,194 @@ async fn test_udp_channel_survives_stream_reset() {
     // ── 6. Teardown ─────────────────────────────────────────────────────────
     ct2.cancel();
     let _ = handle_whepfrom2.await;
+    let _ = std::fs::remove_file(&sdp_path);
+}
+
+/// Integration test: whipinto DataChannel <-> liveion <-> whepfrom DataChannel
+///
+/// The publisher-side counterpart of test_whepfrom_datachannel_udp_forwarding:
+/// whipinto joins the stream's channel group by creating the "control"
+/// DataChannel on its WHIP publish session (--channel). liveion's publish peer
+/// bridges it into the stream buses, so the publisher's and a subscriber's
+/// channels exchange messages both ways:
+///
+///   UDP sender --> whipinto UDP listen (8730)
+///       |
+///   whipinto DataChannel --> liveion subscribe broadcast
+///       |
+///   whepfrom DataChannel --> whepfrom UDP target (8733)
+///
+/// And the reverse:
+///
+///   UDP sender --> whepfrom UDP listen (8732)
+///       |
+///   whepfrom DataChannel --> liveion publish broadcast
+///       |
+///   whipinto DataChannel --> whipinto UDP target (8731)
+#[cfg(any(feature = "source", feature = "source-all"))]
+#[tokio::test]
+async fn test_whipinto_datachannel_udp_forwarding() {
+    init_tracing();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let stream_id = "test-dc-channel-whip";
+
+    // Distinct from the other tests in this binary (8700-8703, 8720-8724) and
+    // from datachannel_loadtest (8700-8711).
+    let whipinto_ch_listen: u16 = 8730;
+    let whipinto_ch_target: u16 = 8731;
+    let whepfrom_ch_listen: u16 = 8732;
+    let whepfrom_ch_target: u16 = 8733;
+
+    // ── 1. liveion with a provisioned stream (no server-side UDP channel
+    // needed: publisher and subscriber channels talk through the stream buses)
+    let mut cfg = liveion::config::Config::default();
+    cfg.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            sources: vec![],
+            strategy: None,
+            hooks: Default::default(),
+            channel: None,
+            ..Default::default()
+        },
+    );
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // ── 2. Publisher with a data channel (SDP-file input, no RTP is sent) ──
+    let rtp_listen_port: u16 = 8734;
+    let sdp_path = std::env::temp_dir().join(format!(
+        "live777-test-{stream_id}-{}.sdp",
+        std::process::id()
+    ));
+    std::fs::write(
+        &sdp_path,
+        format!(
+            "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=No Name\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=video {rtp_listen_port} RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\n"
+        ),
+    )
+    .unwrap();
+
+    let ct_pub = CancellationToken::new();
+    let whipinto_channel_url =
+        format!("udp://0.0.0.0:{whipinto_ch_listen}?host=127.0.0.1&port={whipinto_ch_target}");
+    let handle_whip = tokio::spawn(livetwo::whip::into(
+        ct_pub.clone(),
+        sdp_path.to_string_lossy().to_string(),
+        format!("http://{addr}{}", api::path::whip(stream_id)),
+        None,
+        None,
+        Some(whipinto_channel_url),
+        Vec::new(),
+    ));
+
+    // Wait for the publish session to reach Connected.
+    let mut publish_connected = false;
+    for _ in 0..200 {
+        let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+            .await
+            .unwrap()
+            .json::<Vec<api::response::Stream>>()
+            .await
+            .unwrap_or_default();
+        if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
+            && let Some(session) = stream.publish.sessions.first()
+            && session.state == api::response::RTCPeerConnectionState::Connected
+        {
+            publish_connected = true;
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        publish_connected,
+        "WHIP publish session did not reach Connected"
+    );
+
+    // ── 3. Subscriber with a data channel ───────────────────────────────────
+    let ct_sub = CancellationToken::new();
+    let whep_channel_url =
+        format!("udp://0.0.0.0:{whepfrom_ch_listen}?host=127.0.0.1&port={whepfrom_ch_target}");
+    let handle_whepfrom = tokio::spawn(livetwo::whep::from(
+        ct_sub.clone(),
+        format!("rtp://{ip}"),
+        format!("http://{addr}{}", api::path::whep(stream_id)),
+        None,
+        None,
+        None,
+        Some(whep_channel_url),
+        Vec::new(),
+    ));
+    assert!(
+        wait_for_session_connected(&addr, stream_id).await,
+        "WHEP subscriber (whepfrom) failed to connect"
+    );
+
+    // Bind receivers before sending so no packets are dropped
+    let whipinto_target = UdpSocket::bind(format!("127.0.0.1:{whipinto_ch_target}"))
+        .await
+        .unwrap();
+    let whepfrom_target = UdpSocket::bind(format!("127.0.0.1:{whepfrom_ch_target}"))
+        .await
+        .unwrap();
+
+    // Give both DataChannels time to open
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+    let udp_sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut buf = vec![0u8; 256];
+
+    // ── 4. Test: UDP → whipinto listen → publisher DC → whepfrom target ──────
+    let msg_whipinto_to_whepfrom = b"whipinto->dc->whepfrom";
+    udp_sender
+        .send_to(
+            msg_whipinto_to_whepfrom,
+            format!("127.0.0.1:{whipinto_ch_listen}"),
+        )
+        .await
+        .unwrap();
+
+    let (n, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        whepfrom_target.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for message at whepfrom target")
+    .unwrap();
+    assert_eq!(
+        &buf[..n],
+        msg_whipinto_to_whepfrom,
+        "unexpected data at whepfrom target"
+    );
+
+    // ── 5. Test: UDP → whepfrom listen → subscriber DC → whipinto target ─────
+    let msg_whepfrom_to_whipinto = b"whepfrom->dc->whipinto";
+    udp_sender
+        .send_to(
+            msg_whepfrom_to_whipinto,
+            format!("127.0.0.1:{whepfrom_ch_listen}"),
+        )
+        .await
+        .unwrap();
+
+    let (n, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        whipinto_target.recv_from(&mut buf),
+    )
+    .await
+    .expect("timeout waiting for message at whipinto target")
+    .unwrap();
+    assert_eq!(
+        &buf[..n],
+        msg_whepfrom_to_whipinto,
+        "unexpected data at whipinto target"
+    );
+
+    // ── 6. Teardown ───────────────────────────────────────────────────────────
+    ct_pub.cancel();
+    ct_sub.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whip).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whepfrom).await;
     let _ = std::fs::remove_file(&sdp_path);
 }

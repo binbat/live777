@@ -291,9 +291,13 @@ clients via Link headers).
   (`forward/channel.rs`) is owned by the forward: `PeerForwardInternal::close`
   cancels it and awaits the socket release, so a provisioned-stream reset
   rebinds the same port deterministically (`bind_with_retry` covers slow
-  external holders). The client side mirrors this: whepfrom's channel
-  bridge runs on a session-scoped token that `whep::from` cancels and
-  awaits before returning.
+  external holders). The client side mirrors this: whepfrom's and whipinto's
+  channel bridges (the shared `livetwo::datachannel` module — UDP bridge,
+  channel poll loop, `CancelOnDrop`) run on a session-scoped token that
+  `whep::from` / `whip::into` cancels and awaits before returning. On the
+  WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
+  it adds an `m=application` section to the offer; the WHEP leg creates it
+  unless `WhepPeerOptions::control_channel` is disabled.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt

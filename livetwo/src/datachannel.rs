@@ -1,14 +1,22 @@
-/// DataChannel <-> UDP bidirectional forwarding for whepfrom
+/// DataChannel <-> UDP bidirectional forwarding for whepfrom and whipinto
 ///
-/// Symmetric to liveion's channel.rs, but on the WHEP subscriber side.
-/// Messages received from liveion via DataChannel are forwarded to UDP,
-/// and messages received from UDP are sent back to liveion via DataChannel.
+/// Symmetric to liveion's channel.rs, but on the client side (WHEP subscriber
+/// or WHIP publisher). Messages received from liveion via DataChannel are
+/// forwarded to UDP, and messages received from UDP are sent back to liveion
+/// via DataChannel.
 ///
 /// URL format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
+use std::sync::Arc;
+
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use webrtc::data_channel::{DataChannel, DataChannelEvent};
+
+/// DataChannel label used to join liveion's per-stream channel group for
+/// bidirectional control messaging, on both the WHEP and the WHIP leg.
+pub const DATA_CHANNEL_LABEL: &str = "control";
 
 /// Buffer size for incoming UDP packets.
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes
@@ -62,7 +70,7 @@ pub fn parse_channel_url(url: &str) -> Option<(String, u16, String, u16)> {
 /// `dc_recv`: messages received from liveion DataChannel
 /// `dc_send`: sender to write messages back to liveion DataChannel
 /// `ct`: session-scoped cancellation — the bridge must stop (releasing the
-/// listen socket) when the WHEP session ends, not only when the process-wide
+/// listen socket) when the session ends, not only when the process-wide
 /// token fires, or an in-process reconnect finds the port still occupied.
 pub async fn spawn_channel(
     url: String,
@@ -78,11 +86,11 @@ pub async fn spawn_channel(
 
     let socket = match UdpSocket::bind(&listen).await {
         Ok(s) => {
-            info!("whepfrom channel: listen={} target={}", listen, target);
+            info!("channel: listen={} target={}", listen, target);
             s
         }
         Err(e) => {
-            warn!("whepfrom channel: bind {} failed: {}", listen, e);
+            warn!("channel: bind {} failed: {}", listen, e);
             return Err(anyhow::anyhow!("bind {} failed: {}", listen, e));
         }
     };
@@ -93,38 +101,38 @@ pub async fn spawn_channel(
             tokio::select! {
                 biased;
                 _ = ct.cancelled() => {
-                    info!("whepfrom channel: session ended, releasing {}", listen);
+                    info!("channel: session ended, releasing {}", listen);
                     break;
                 }
-                // DataChannel -> UDP (messages from liveion WHIP group)
+                // DataChannel -> UDP (messages from liveion)
                 msg = dc_recv.recv() => {
                     match msg {
                         Some(data) => {
                             if let Err(e) = socket.send_to(&data, &target).await {
-                                warn!("whepfrom channel: send to {} failed: {}", target, e);
+                                warn!("channel: send to {} failed: {}", target, e);
                             } else {
-                                debug!("whepfrom channel: DC->UDP {} bytes -> {}", data.len(), target);
+                                debug!("channel: DC->UDP {} bytes -> {}", data.len(), target);
                             }
                         }
                         None => {
-                            info!("whepfrom channel: DC recv closed");
+                            info!("channel: DC recv closed");
                             break;
                         }
                     }
                 },
-                // UDP -> DataChannel (messages to liveion WHIP group)
+                // UDP -> DataChannel (messages to liveion)
                 result = socket.recv_from(&mut buf) => {
                     match result {
                         Ok((n, addr)) => {
                             let data = buf[..n].to_vec();
-                            debug!("whepfrom channel: UDP->DC {} bytes from {}", n, addr);
+                            debug!("channel: UDP->DC {} bytes from {}", n, addr);
                             if dc_send.send(data).is_err() {
-                                info!("whepfrom channel: DC send closed");
+                                info!("channel: DC send closed");
                                 break;
                             }
                         }
                         Err(e) => {
-                            warn!("whepfrom channel: recv_from failed: {}", e);
+                            warn!("channel: recv_from failed: {}", e);
                         }
                     }
                 },
@@ -133,6 +141,81 @@ pub async fn spawn_channel(
     });
 
     Ok(task)
+}
+
+/// Poll a DataChannel both ways: inbound messages go to `dc_recv_tx`,
+/// messages from `dc_send_rx` are sent over the channel. `owner` tags the
+/// log lines (e.g. "whepfrom" / "whipinto").
+pub fn run_data_channel_loop(
+    dc: Arc<dyn DataChannel>,
+    dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
+    mut dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    owner: &'static str,
+) {
+    tokio::spawn(async move {
+        // Wait for OnOpen
+        loop {
+            match dc.poll().await {
+                Some(DataChannelEvent::OnOpen) => {
+                    info!("{}: DataChannel opened", owner);
+                    break;
+                }
+                Some(DataChannelEvent::OnClose) => {
+                    info!("{}: DataChannel closed before open", owner);
+                    return;
+                }
+                None => {
+                    info!("{}: DataChannel poll ended before open", owner);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        loop {
+            tokio::select! {
+                event = dc.poll() => match event {
+                    Some(DataChannelEvent::OnMessage(msg))
+                        if dc_recv_tx.send(msg.data.to_vec()).is_err() =>
+                    {
+                        debug!("{}: DataChannel recv channel closed", owner);
+                        break;
+                    }
+                    Some(DataChannelEvent::OnClose) => {
+                        info!("{}: DataChannel closed", owner);
+                        break;
+                    }
+                    None => {
+                        info!("{}: DataChannel poll ended", owner);
+                        break;
+                    }
+                    _ => {}
+                },
+                msg = dc_send_rx.recv() => match msg {
+                    Some(data) => {
+                        if let Err(e) = dc.send(bytes::BytesMut::from(&data[..])).await {
+                            warn!("{}: DataChannel send failed: {}", owner, e);
+                            break;
+                        }
+                    }
+                    None => {
+                        info!("{}: DataChannel send channel closed", owner);
+                        break;
+                    }
+                },
+            }
+        }
+    });
+}
+
+/// Cancels the wrapped token on drop, so every exit path of the owning
+/// session — early error returns included — tears down session-scoped tasks.
+pub struct CancelOnDrop(pub CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 #[cfg(test)]
