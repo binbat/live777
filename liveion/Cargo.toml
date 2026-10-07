@@ -84,12 +84,17 @@ source-rtsp = ["source", "rtsp/client"]
 source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
+# Static output targets: base feature shared by all target-* kinds (the
+# `targets` stream config, supervisor dispatch, virtual-subscriber ids).
+# Enables no target kind on its own — every configured scheme needs its
+# target-* feature, mirroring how `source` relates to the source-* kinds.
+target = []
 # Static WHIP push targets (declarative cascade-push)
-target-whip = ["cascade"]
+target-whip = ["target", "cascade"]
 # Static RTP/UDP multicast (or unicast) output targets
-target-rtp = ["dep:livetwo", "livetwo/multicast"]
+target-rtp = ["target", "dep:livetwo", "livetwo/multicast"]
 # Static RTSP client-push output targets (ANNOUNCE/SETUP/RECORD)
-target-rtsp = ["dep:livetwo", "rtsp/client", "dep:url"]
+target-rtsp = ["target", "dep:livetwo", "rtsp/client", "dep:url"]
 
 native-source = ["source", "dep:livehal"]
 

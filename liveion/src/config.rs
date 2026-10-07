@@ -479,11 +479,7 @@ impl Config {
             }
         }
 
-        #[cfg(any(
-            feature = "target-whip",
-            feature = "target-rtp",
-            feature = "target-rtsp"
-        ))]
+        #[cfg(feature = "target")]
         for (stream_id, entry) in &self.stream.streams {
             let mut seen_urls = std::collections::HashSet::new();
             for target in &entry.targets {
@@ -762,11 +758,7 @@ pub struct StreamEntry {
     /// (declarative cascade-push), send it out as plain RTP/UDP to a
     /// multicast group or unicast address, and/or push it to an RTSP server
     /// as a client (ANNOUNCE/RECORD).
-    #[cfg(any(
-        feature = "target-whip",
-        feature = "target-rtp",
-        feature = "target-rtsp"
-    ))]
+    #[cfg(feature = "target")]
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -782,11 +774,7 @@ impl Default for StreamEntry {
             on_demand: false,
             on_demand_close_after_ms: default_on_demand_close_after_ms(),
             on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
-            #[cfg(any(
-                feature = "target-whip",
-                feature = "target-rtp",
-                feature = "target-rtsp"
-            ))]
+            #[cfg(feature = "target")]
             targets: Vec::new(),
         }
     }
@@ -821,11 +809,7 @@ fn default_on_demand_start_timeout_ms() -> u64 {
 /// target's own output — a feedback loop. Sending and ingesting the same
 /// group:port on one host is a misconfiguration (use distinct groups or
 /// ports for same-host demos).
-#[cfg(any(
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "target-rtsp"
-))]
+#[cfg(feature = "target")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetConfig {
     /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
@@ -858,11 +842,7 @@ pub struct TargetConfig {
     pub sdp_file: Option<String>,
 }
 
-#[cfg(any(
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "target-rtsp"
-))]
+#[cfg(feature = "target")]
 impl TargetConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         let url = self.url.trim();
@@ -1299,11 +1279,7 @@ fn default_rtsp_realm() -> String {
     "live777".to_string()
 }
 
-#[cfg(any(
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "target-rtsp"
-))]
+#[cfg(feature = "target")]
 #[cfg(test)]
 mod target_tests {
     use super::*;

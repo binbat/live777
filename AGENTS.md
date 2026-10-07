@@ -144,6 +144,10 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
+- `target`         — base feature shared by all `target-*` kinds (the
+  `targets` stream config, supervisor dispatch, virtual-subscriber ids);
+  enables no target kind on its own, mirroring how `source` relates to the
+  `source-*` kinds.
 - `target-whip`    — WHIP push targets (static cascade-push).
 - `target-rtp`     — RTP/UDP output targets: send a stream out as plain RTP
   to a multicast group or unicast address (the sender counterpart of the
@@ -407,8 +411,9 @@ clients via Link headers).
   track broadcast directly (the recorder / RTSP-server pattern, no
   subscribe session): first video track to the URL port, first audio track
   to port + 2 (RTP/AVP convention). Like the RTSP target, the epoch waits
-  for the *negotiated* publish track counts
-  (`PeerForwardInternal::negotiated_publish_track_counts`) instead of the
+  for the *negotiated* publish track counts (`PeerForward::wait_for_publish_tracks`,
+  shared by both media targets, on top of
+  `PeerForwardInternal::negotiated_publish_track_counts`) instead of the
   first non-empty snapshot — tracks arrive one `on_track` each after
   `PublishStarted`, so a snapshot would race an AV publisher into a
   video-only send and SDP. Send tasks report their exit tagged
@@ -446,9 +451,10 @@ clients via Link headers).
   the client session derives the SETUP URLs from). `PublishStarted` fires
   at negotiation time while tracks arrive one `on_track` each, so the
   epoch waits for the *negotiated* track counts
-  (`PeerForwardInternal::negotiated_publish_track_counts`) instead of the
-  first non-empty snapshot — an AV publisher whose audio track lands first
-  would otherwise announce audio-only. UDP is the default transport
+  (`PeerForward::wait_for_publish_tracks`, shared with the RTP target)
+  instead of the first non-empty snapshot — an AV publisher whose audio
+  track lands first would otherwise announce audio-only. UDP is the default
+  transport
   (`?transport=tcp` selects interleaved, mirroring whepfrom); UDP senders
   bind the SETUP-announced local port because strict servers (mediamtx)
   drop RTP from any other source port. Teardown cancels the epoch token

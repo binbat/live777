@@ -53,6 +53,7 @@ Live777 支持以下 Cargo feature 来定制构建：
 | `source-sdp` | liveion   | 通过 SDP 拉取源                          |
 | `source-rtsp`| liveion   | 通过 RTSP 拉取源                         |
 | `source-whep`| liveion   | 通过 WHEP 拉取源（静态 cascade-pull）    |
+| `target`     | liveion   | 所有 `target-*` 共用的基础 feature（自身不启用任何目标类型） |
 | `target-whip`| liveion   | 通过 WHIP 推送目标（静态 cascade-push）  |
 | `target-rtp` | liveion   | 以纯 RTP/UDP 发送目标（组播发送端）      |
 | `target-rtsp`| liveion   | 通过 RTSP 推送目标（ANNOUNCE/RECORD 客户端） |
