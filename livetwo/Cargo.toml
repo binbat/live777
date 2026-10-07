@@ -48,6 +48,7 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 # Multicast-aware UDP socket builders (transport::multicast), used by
-# liveion's SDP file source and rtp:// output target
+# liveion's SDP file source and rtp:// output target, and by whepfrom's
+# rtp://group:port output (always on in the root crate's livetwo dependency)
 multicast = ["dep:socket2", "dep:libc"]
 rsmpeg = ["dep:rsmpeg"]

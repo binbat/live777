@@ -437,7 +437,11 @@ clients via Link headers).
   cascade). Multicast sender/receiver socket builders, interface
   resolution (v4 address vs v6 index/name via `if_nametoindex`) and the
   dual-stack RTCP socket are shared in `livetwo::transport::multicast`
-  (`multicast` feature), used by both `target-rtp` and `source-sdp`.
+  (`multicast` feature), used by `target-rtp`, `source-sdp` and whepfrom's
+  `rtp://group:port` output (the root crate enables the feature for
+  livetwo, so whepfrom always has it: video rides the URL port, audio port
+  + 2, `?ttl=`/`?interface=` tune the group send; the legacy
+  `?video=`/`?audio=` query-port form and `sdp://` are unchanged).
 - `liveion/src/target_rtsp.rs` — static RTSP client-push output targets
   (`rtsp://[user:pass@]host:port/path[?transport=tcp|udp]`; `target-rtsp`
   feature), the counterpart of the RTSP source: live777 ANNOUNCE/SETUP/

@@ -147,7 +147,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 [dependencies]
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
-livetwo = { path = "livetwo" }
+livetwo = { path = "livetwo", features = ["multicast"] }
 net4mqtt = { path = "libs/net4mqtt" }
 signal = { path = "libs/signal" }
 iceserver = { path = "libs/iceserver", features = ["clap"] }

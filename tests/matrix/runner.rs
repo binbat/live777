@@ -39,12 +39,6 @@ impl Drop for CancelOnDrop {
 
 /// Whether this is a GitHub-hosted Windows runner: media-heavy matrix cases
 /// skip there (they run everywhere else, including local Windows hosts).
-#[cfg(any(
-    feature = "source-whep",
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "rtsp"
-))]
 pub fn windows_ci() -> bool {
     cfg!(windows) && std::env::var_os("GITHUB_ACTIONS").is_some()
 }
