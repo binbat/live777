@@ -1,4 +1,3 @@
-mod channel;
 mod output;
 mod rtcp_forward;
 mod webrtc;
@@ -107,10 +106,13 @@ pub async fn from_with_state(
     // that, an in-process reconnect finds the old bridge still holding the
     // port and fails to bind.
     let session_ct = ct.child_token();
-    let _session_guard = CancelOnDrop(session_ct.clone());
+    let _session_guard = crate::datachannel::CancelOnDrop(session_ct.clone());
     let channel_handle = if let Some(url) = channel_url {
         debug!("Starting DataChannel <-> UDP forwarding: {}", url);
-        Some(channel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone()).await?)
+        Some(
+            crate::datachannel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone())
+                .await?,
+        )
     } else {
         None
     };
@@ -279,16 +281,6 @@ pub async fn from_with_state(
 
     graceful_shutdown("WHEP", &mut client, peer).await;
     transport_result
-}
-
-/// Cancels the wrapped token on drop, so every exit path of `from` — early
-/// error returns included — tears down session-scoped tasks.
-struct CancelOnDrop(CancellationToken);
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
 }
 
 /// Derive the negotiated track kinds from the WHEP answer SDP, so the codec

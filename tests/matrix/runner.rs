@@ -367,6 +367,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         format!("http://{api_addr}{}", api::path::whip("cycle-b")),
         None,
         None,
+        None,
         Vec::new(),
     ));
     wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-b", Some(&mut handle_whip)).await;
@@ -1473,7 +1474,7 @@ where
         // Keep the temp SDP file alive for the lifetime of the WHIP task so the
         // runner cannot read a deleted path.
         let _whip_sdp = _whip_sdp;
-        livetwo::whip::into(whip_ct, sdp_path, whip_url, None, None, Vec::new()).await
+        livetwo::whip::into(whip_ct, sdp_path, whip_url, None, None, None, Vec::new()).await
     });
 
     wait_for_publish_connected(&api_addr, stream, Some(&mut handle_whip)).await;

@@ -456,6 +456,7 @@ async fn test_livetwo_whipinto_synth_input() {
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         None,
+        None,
         Vec::new(),
     ));
 
@@ -545,6 +546,7 @@ async fn test_liveion_stream_stats() {
         ct.clone(),
         "synth://vp8?width=320&height=240&fps=15&duration=30".to_string(),
         format!("http://{addr}{}", api::path::whip("-")),
+        None,
         None,
         None,
         Vec::new(),

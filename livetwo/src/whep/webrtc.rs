@@ -9,7 +9,6 @@ use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -18,13 +17,11 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
+use crate::datachannel::{DATA_CHANNEL_LABEL, run_data_channel_loop};
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 
 use super::rtcp_forward;
-
-/// DataChannel label used to join liveion's WHEP group for bidirectional control messaging.
-const DATA_CHANNEL_LABEL: &str = "control";
 
 /// One-way-delay (OWD) tracker for a received track.
 ///
@@ -448,67 +445,6 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
     }
 }
 
-fn setup_data_channel_loop(
-    dc: Arc<dyn DataChannel>,
-    dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
-    mut dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-) {
-    tokio::spawn(async move {
-        // Wait for OnOpen
-        loop {
-            match dc.poll().await {
-                Some(DataChannelEvent::OnOpen) => {
-                    info!("whepfrom: DataChannel opened");
-                    break;
-                }
-                Some(DataChannelEvent::OnClose) => {
-                    info!("whepfrom: DataChannel closed before open");
-                    return;
-                }
-                None => {
-                    info!("whepfrom: DataChannel poll ended before open");
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        loop {
-            tokio::select! {
-                event = dc.poll() => match event {
-                    Some(DataChannelEvent::OnMessage(msg))
-                        if dc_recv_tx.send(msg.data.to_vec()).is_err() =>
-                    {
-                        debug!("whepfrom: DataChannel recv channel closed");
-                        break;
-                    }
-                    Some(DataChannelEvent::OnClose) => {
-                        info!("whepfrom: DataChannel closed");
-                        break;
-                    }
-                    None => {
-                        info!("whepfrom: DataChannel poll ended");
-                        break;
-                    }
-                    _ => {}
-                },
-                msg = dc_send_rx.recv() => match msg {
-                    Some(data) => {
-                        if let Err(e) = dc.send(bytes::BytesMut::from(&data[..])).await {
-                            warn!("whepfrom: DataChannel send failed: {}", e);
-                            break;
-                        }
-                    }
-                    None => {
-                        info!("whepfrom: DataChannel send channel closed");
-                        break;
-                    }
-                },
-            }
-        }
-    });
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn create_peer(
     ct: CancellationToken,
@@ -576,7 +512,7 @@ async fn create_peer(
             .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
 
         // Start the data channel polling loop
-        setup_data_channel_loop(dc, dc_recv_tx, dc_send_rx);
+        run_data_channel_loop(dc, dc_recv_tx, dc_send_rx, "whepfrom");
     }
 
     peer.add_transceiver_from_kind(
