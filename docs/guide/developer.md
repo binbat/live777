@@ -53,6 +53,7 @@ Live777 supports the following Cargo feature flags to customize the build:
 | `source-sdp` | liveion   | Source pulling via SDP                         |
 | `source-rtsp`| liveion   | Source pulling via RTSP                        |
 | `source-whep`| liveion   | Source pulling via WHEP (static cascade-pull)  |
+| `target`     | liveion   | Base shared by all `target-*` kinds (enables no kind on its own) |
 | `target-whip`| liveion   | Target pushing via WHIP (static cascade-push)  |
 | `target-rtp` | liveion   | Target sending as plain RTP/UDP (multicast sender) |
 | `target-rtsp`| liveion   | Target pushing via RTSP (ANNOUNCE/RECORD client)   |

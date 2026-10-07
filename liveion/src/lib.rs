@@ -33,13 +33,7 @@ mod forward;
 mod hook;
 mod r#macro;
 mod metrics;
-#[cfg(any(
-    feature = "source-rtsp",
-    feature = "source-whep",
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "target-rtsp"
-))]
+#[cfg(any(feature = "source-rtsp", feature = "source-whep", feature = "target"))]
 mod reconnect;
 mod result;
 mod route;
@@ -48,11 +42,7 @@ mod rtsp_codec;
 #[cfg(feature = "rtsp")]
 mod rtsp_server;
 mod stream;
-#[cfg(any(
-    feature = "target-whip",
-    feature = "target-rtp",
-    feature = "target-rtsp"
-))]
+#[cfg(feature = "target")]
 mod target;
 #[cfg(feature = "target-rtp")]
 mod target_rtp;
@@ -112,11 +102,7 @@ where
     // Static output targets (declarative cascade-push / RTP multicast
     // sender). Must run after provision_streams: the first attempt needs
     // the stream to exist.
-    #[cfg(any(
-        feature = "target-whip",
-        feature = "target-rtp",
-        feature = "target-rtsp"
-    ))]
+    #[cfg(feature = "target")]
     crate::target::init(app_state.stream_manager.clone());
     let app = Router::new().merge(
         whip::route()

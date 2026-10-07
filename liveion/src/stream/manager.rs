@@ -595,11 +595,7 @@ impl Manager {
     /// Whether `stream` currently has a live publisher session (a real WHIP
     /// publisher or a source bridge's virtual one). Drives the target
     /// supervisors' media-driven start/stop.
-    #[cfg(any(
-        feature = "target-whip",
-        feature = "target-rtp",
-        feature = "target-rtsp"
-    ))]
+    #[cfg(feature = "target")]
     pub async fn has_publisher(&self, stream: &str) -> bool {
         self.info(vec![stream.to_string()])
             .await
@@ -610,17 +606,7 @@ impl Manager {
     /// Whether `stream` is a provisioned stream with `on_demand = true`.
     /// Drives the recorder's publish-triggered recording for such streams,
     /// and the target supervisor's on-demand source kick.
-    #[cfg(any(
-        feature = "recorder",
-        all(
-            feature = "source",
-            any(
-                feature = "target-whip",
-                feature = "target-rtp",
-                feature = "target-rtsp"
-            )
-        )
-    ))]
+    #[cfg(any(feature = "recorder", all(feature = "source", feature = "target")))]
     pub fn is_on_demand_stream(&self, stream: &str) -> bool {
         self.config
             .stream
@@ -1029,15 +1015,7 @@ impl Manager {
     /// check treats the stream as consumed. Emits `SubscribeStarted` like a
     /// real subscriber, so dashboards and the on-demand supervisor observe
     /// the same lifecycle.
-    #[cfg_attr(
-        not(any(
-            feature = "target-whip",
-            feature = "target-rtp",
-            feature = "target-rtsp",
-            feature = "rtsp"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(any(feature = "target", feature = "rtsp")), allow(dead_code))]
     pub async fn add_virtual_subscriber(&self, stream: &str, id: String) {
         self.virtual_subscribers
             .write()
@@ -1063,15 +1041,7 @@ impl Manager {
     /// Remove a virtual subscriber previously added with
     /// [`Manager::add_virtual_subscriber`]. Idempotent: unknown ids are a
     /// no-op, mirroring `remove_subscribe`.
-    #[cfg_attr(
-        not(any(
-            feature = "target-whip",
-            feature = "target-rtp",
-            feature = "target-rtsp",
-            feature = "rtsp"
-        )),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(any(feature = "target", feature = "rtsp")), allow(dead_code))]
     pub async fn remove_virtual_subscriber(&self, stream: &str, id: &str) {
         {
             let mut all = self.virtual_subscribers.write().await;
@@ -1229,11 +1199,7 @@ impl Manager {
     /// Static output targets declared in the config file, as
     /// `(stream, target)` pairs sorted by stream name for a deterministic
     /// startup order.
-    #[cfg(any(
-        feature = "target-whip",
-        feature = "target-rtp",
-        feature = "target-rtsp"
-    ))]
+    #[cfg(feature = "target")]
     pub fn static_targets(&self) -> Vec<(String, crate::config::TargetConfig)> {
         let mut targets: Vec<(String, crate::config::TargetConfig)> = self
             .config
@@ -1252,11 +1218,7 @@ impl Manager {
     }
 
     /// Shutdown token shared by the manager's background tasks.
-    #[cfg(any(
-        feature = "target-whip",
-        feature = "target-rtp",
-        feature = "target-rtsp"
-    ))]
+    #[cfg(feature = "target")]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }

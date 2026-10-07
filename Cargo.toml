@@ -184,6 +184,8 @@ source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-whep = ["liveion/source-whep"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
+# Static output targets: base feature shared by all target-* kinds
+target = ["liveion/target"]
 # Static WHIP push targets (declarative cascade-push)
 target-whip = ["liveion/target-whip"]
 # Static RTP/UDP multicast (or unicast) output targets
