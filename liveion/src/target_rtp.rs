@@ -127,16 +127,41 @@ fn validate_rtp_options(dest: &SocketAddr, target: &TargetConfig) -> anyhow::Res
     }
     Ok(())
 }
-/// notification is subscribed before the first snapshot so a track added in
-/// between is still observed. The bus does not replay: media that became
-/// available before the supervisor started is only visible through the
-/// snapshot.
+/// Wait until the stream's forward has every publish track the current
+/// publisher negotiated. `PublishStarted` fires when the session is
+/// negotiated; the tracks arrive afterwards, one `on_track` each, so
+/// snapshotting the first non-empty set would race an AV publisher into
+/// sending (and describing in the SDP) video-only when its video track
+/// lands first. The expected counts come from the publish session's
+/// negotiated media info. Virtual publishers (source bridges, RTSP pushes)
+/// carry no session media info — their tracks are added before the
+/// supervisor can observe them — so a non-empty snapshot is accepted for
+/// them.
+///
+/// The change notification is subscribed before the first snapshot so a
+/// track added in between is still observed. The bus does not replay: media
+/// that became available before the supervisor started is only visible
+/// through the snapshot.
 async fn wait_for_tracks(forward: &PeerForward) -> anyhow::Result<Vec<PublishTrackRemote>> {
     let mut rx = forward.subscribe_tracks_change();
 
     loop {
+        let (expected_video, expected_audio) = forward
+            .internal
+            .negotiated_publish_track_counts()
+            .await
+            .unwrap_or((0, 0));
+
         let tracks = forward.publish_tracks().await;
-        if !tracks.is_empty() {
+        let video = tracks
+            .iter()
+            .filter(|t| t.kind() == RtpCodecKind::Video)
+            .count();
+        let audio = tracks
+            .iter()
+            .filter(|t| t.kind() == RtpCodecKind::Audio)
+            .count();
+        if !tracks.is_empty() && video >= expected_video && audio >= expected_audio {
             return Ok(tracks);
         }
 
