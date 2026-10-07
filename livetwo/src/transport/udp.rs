@@ -144,7 +144,7 @@ impl UdpHandler {
         listen_host: &str,
         local_port: Option<u16>,
         target_addr: &str,
-        target_port: u16,
+        #[cfg_attr(not(feature = "multicast"), allow(unused))] target_port: u16,
         #[cfg_attr(not(feature = "multicast"), allow(unused))]
         options: &crate::protocol::RtpOutputOptions,
         media_type: &'static str,

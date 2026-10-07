@@ -183,6 +183,10 @@ pub async fn setup_rtp_output(
         audio_codec: audio_codec.map(|c| c.into()),
     };
 
+    // RFC 4566 asks for a /ttl suffix on the c= address of an IPv4 group;
+    // receivers join the group either way, so the suffix is omitted rather
+    // than risk tripping stricter SDP parsers on the receive side
+    // (livetwo's own SDP file input included).
     let connection_info = ConnectionInformation {
         network_type: "IN".to_string(),
         address_type: if target_host.parse::<Ipv6Addr>().is_ok() {

@@ -103,11 +103,7 @@ where
     // an AV stream (RTP/RTCP per track) and flakes with WSAEADDRINUSE there;
     // the video-only case still runs.
     let profile = source.profile();
-    if profile.video.is_some()
-        && profile.audio.is_some()
-        && cfg!(windows)
-        && std::env::var_os("GITHUB_ACTIONS").is_some()
-    {
+    if profile.video.is_some() && profile.audio.is_some() && runner::windows_ci() {
         tracing::warn!("skipping: AV rtp-url probing is flaky on Windows CI runners");
         return;
     }
