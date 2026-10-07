@@ -46,7 +46,7 @@ use webrtc::media_stream::track_remote::TrackRemote;
 
 #[cfg(feature = "source")]
 use std::sync::atomic::AtomicU32;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "target-rtp"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connected};
@@ -951,8 +951,8 @@ impl VirtualPublishTrack {
     }
 }
 
-#[cfg(feature = "source")]
-fn system_time_to_ntp(time: SystemTime) -> u64 {
+#[cfg(any(feature = "source", feature = "target-rtp"))]
+pub(crate) fn system_time_to_ntp(time: SystemTime) -> u64 {
     const UNIX_TO_NTP_EPOCH: u64 = 2_208_988_800;
 
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();

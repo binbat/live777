@@ -49,7 +49,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::TargetConfig;
 use crate::event::{Event, StreamDeleteReason};
 use crate::forward::message::Codec;
-use crate::forward::track::PublishTrackRemote;
+use crate::forward::track::{PublishTrackRemote, system_time_to_ntp};
 use crate::forward::{PeerForward, rtcp::RtcpMessage};
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
@@ -686,19 +686,6 @@ struct TrackSend {
 /// How often each send task emits an RTCP sender report (mirroring the RTSP
 /// server's sender-report loop).
 const SR_INTERVAL: Duration = Duration::from_secs(5);
-
-fn system_time_to_ntp(time: std::time::SystemTime) -> u64 {
-    const UNIX_TO_NTP_EPOCH: u64 = 2_208_988_800;
-
-    let duration = time
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-
-    let seconds = duration.as_secs() + UNIX_TO_NTP_EPOCH;
-    let fraction = ((duration.subsec_nanos() as u64) << 32) / 1_000_000_000;
-
-    (seconds << 32) | fraction
-}
 
 async fn track_send_task(
     send: TrackSend,
