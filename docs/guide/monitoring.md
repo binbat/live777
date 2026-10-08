@@ -97,8 +97,9 @@ scrape_configs:
 ```
 
 The Grafana dashboard shows stream/publisher/subscriber/reforward counts,
-sessions over time, RTP bitrate, per-stream bitrate and session counts, and
-RTCP packet rates, refreshing every 5 seconds. When Prometheus scrapes
+sessions over time, RTP bitrate, per-stream bitrate and session counts,
+RTCP packet rates, and DataChannel message/payload-bitrate rates (including
+bus-lag drops), refreshing every 5 seconds. When Prometheus scrapes
 several live777 nodes or a node serves several streams, the `Instance` and
 `Stream` dropdowns at the top filter the panels.
 
