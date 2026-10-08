@@ -366,7 +366,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "RTP media bitrate from the server-wide wire-size counters. NOTE: `out` counts subscriber sessions only; static RTP/RTSP output target traffic bypasses these counters until issue #474 is fixed.",
+      "description": "RTP media bitrate from the server-wide wire-size counters. `out` counts subscriber sessions and static RTP/RTSP output targets; RTSP pull clients of the built-in RTSP server are not counted yet.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -461,7 +461,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-stream RTP bitrate from the same wire-size counters as the server-wide panel, broken out by stream name. NOTE: `out` counts subscriber sessions only (issue #474). Deleted streams stop updating and age out via Prometheus staleness.",
+      "description": "Per-stream RTP bitrate from the same wire-size counters as the server-wide panel, broken out by stream name. `out` counts subscriber sessions and static RTP/RTSP output targets. Deleted streams stop updating and age out via Prometheus staleness.",
       "fieldConfig": {
         "defaults": {
           "color": {
