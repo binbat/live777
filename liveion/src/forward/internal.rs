@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -953,6 +954,11 @@ pub(crate) struct PeerForwardInternal {
     /// stay monotonic across republishes and subscriber churn.
     stats_publish: MediaStats,
     stats_subscribe: MediaStats,
+    /// Media counters of direct-tap consumers (output targets, RTSP pull
+    /// clients) that bypass subscribe sessions (live777#474), keyed by their
+    /// virtual-subscriber id so detach folds the un-sampled tail exactly
+    /// once. std Mutex: every op is O(1) and never held across an await.
+    tap_stats: std::sync::Mutex<HashMap<String, Arc<MediaStats>>>,
     #[cfg(feature = "source")]
     channel: Option<ChannelConfig>,
     /// Running UDP <-> DataChannel bridge, if the stream configures one.
@@ -1007,6 +1013,7 @@ impl PeerForwardInternal {
             last_publish_profile: RwLock::new(None),
             stats_publish: MediaStats::new(),
             stats_subscribe: MediaStats::new(),
+            tap_stats: std::sync::Mutex::new(HashMap::new()),
             #[cfg(feature = "source")]
             channel,
             #[cfg(feature = "source")]
@@ -1118,6 +1125,16 @@ impl PeerForwardInternal {
             subscribe.bytes += bytes;
             subscribe.packets += packets;
         }
+        for stats in self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .values()
+        {
+            let (bytes, packets) = stats.unsampled();
+            subscribe.bytes += bytes;
+            subscribe.packets += packets;
+        }
         api::response::StreamStats { publish, subscribe }
     }
 
@@ -1196,6 +1213,17 @@ impl PeerForwardInternal {
                 out_bitrate += sample.bitrate;
             }
         }
+        // Direct-tap consumers (targets, RTSP pulls) bypass subscribe
+        // sessions; their counters ride the same outbound totals.
+        {
+            let taps = self.tap_stats.lock().expect("tap stats lock poisoned");
+            for stats in taps.values() {
+                let sample = stats.sample();
+                result.deltas.outbound += sample.bytes;
+                out_packets += sample.packets;
+                out_bitrate += sample.bitrate;
+            }
+        }
         self.stats_subscribe
             .add_delta(result.deltas.outbound, out_packets);
         self.stats_subscribe.set_bitrate(out_bitrate);
@@ -1227,14 +1255,73 @@ impl PeerForwardInternal {
 
     async fn refresh_subscribe_bitrate(&self) {
         let subscribe_group = self.subscribe_group.read().await;
+        let tap_bitrate: u64 = self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .values()
+            .map(|stats| stats.snapshot().bitrate)
+            .sum();
         self.stats_subscribe
-            .set_bitrate(Self::aggregate_subscribe_bitrate(&subscribe_group));
+            .set_bitrate(Self::aggregate_subscribe_bitrate(&subscribe_group) + tap_bitrate);
     }
 
     /// Fold a departing subscriber's un-sampled tail into the stream total
     /// and the server-wide metric; see [`Self::fold_publish_tracks_final`].
     fn fold_subscribe_final(&self, subscribe: &SubscribeRTCPeerConnection) {
         let sample = subscribe.stats.sample();
+        self.stats_subscribe.add_delta(sample.bytes, sample.packets);
+        if sample.bytes > 0 {
+            metrics::RTP_BYTES_TOTAL
+                .with_label_values(&["out"])
+                .inc_by(sample.bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "out"])
+                .inc_by(sample.bytes);
+        }
+    }
+
+    /// Register a direct-tap consumer's counter (keyed by its virtual
+    /// subscriber id). The tick's `sample_stats` folds its deltas into the
+    /// stream's outbound totals like any subscriber's.
+    #[cfg_attr(
+        not(any(feature = "target-rtp", feature = "target-rtsp")),
+        allow(dead_code)
+    )]
+    pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<MediaStats>) {
+        self.tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .insert(id, stats);
+    }
+
+    /// Detach a direct-tap consumer: fold its un-sampled tail (exactly once)
+    /// and refresh the aggregate subscribe bitrate.
+    #[cfg_attr(
+        not(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn remove_tap_stats(&self, id: &str) {
+        let stats = self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .remove(id);
+        if let Some(stats) = stats {
+            self.fold_tap_final(&stats);
+            self.refresh_subscribe_bitrate().await;
+        }
+    }
+
+    /// Fold one tap counter's un-sampled tail into the stream total and the
+    /// server-wide metric; see [`Self::fold_subscribe_final`].
+    fn fold_tap_final(&self, stats: &MediaStats) {
+        let sample = stats.sample();
         self.stats_subscribe.add_delta(sample.bytes, sample.packets);
         if sample.bytes > 0 {
             metrics::RTP_BYTES_TOTAL
@@ -1411,6 +1498,14 @@ impl PeerForwardInternal {
             let _ = subscribe.peer.close().await;
             self.do_remove_subscribe_cleanup(&subscribe, SessionStopReason::PeerClosed)
                 .await;
+        }
+
+        // Fold any direct-tap consumers still attached (their supervisors
+        // react to StreamDeleted asynchronously — the counters must not be
+        // lost, nor folded twice when they finally detach).
+        let taps = std::mem::take(&mut *self.tap_stats.lock().expect("tap stats lock poisoned"));
+        for stats in taps.into_values() {
+            self.fold_tap_final(&stats);
         }
 
         info!("{} close", self.stream);

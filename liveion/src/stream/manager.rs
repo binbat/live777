@@ -89,6 +89,13 @@ struct VirtualSubscriber {
     /// `virtual-target-rtp-230.1.1.2:1720`.
     id: String,
     create_at: i64,
+    /// The consumer's outbound media counters (live777#474): the same Arc is
+    /// registered on the forward's tap list (sampled into the stream's
+    /// outbound totals and the Prometheus `direction="out"` counters) and
+    /// shown as the session's `stats`. Consumers without their own counters
+    /// (WHIP push targets count through their real cascade session) leave it
+    /// at zero.
+    stats: Arc<crate::forward::stats::MediaStats>,
 }
 
 #[derive(Clone)]
@@ -1004,7 +1011,7 @@ impl Manager {
                     state: api::response::RTCPeerConnectionState::Connected,
                     cascade: None,
                     has_data_channel: false,
-                    stats: Default::default(),
+                    stats: v.stats.snapshot(),
                 }));
         }
     }
@@ -1015,8 +1022,20 @@ impl Manager {
     /// check treats the stream as consumed. Emits `SubscribeStarted` like a
     /// real subscriber, so dashboards and the on-demand supervisor observe
     /// the same lifecycle.
+    ///
+    /// Returns the consumer's media counter (live777#474): a target's send
+    /// tasks `inc()` it per packet, and each send epoch registers it on the
+    /// forward (`PeerForward::add_tap_stats`) so the stats tick folds it into
+    /// the stream's outbound totals and the Prometheus `direction="out"`
+    /// counters. The counter outlives individual send epochs, so a target's
+    /// reported bytes accumulate across rebuilds.
     #[cfg_attr(not(any(feature = "target", feature = "rtsp")), allow(dead_code))]
-    pub async fn add_virtual_subscriber(&self, stream: &str, id: String) {
+    pub(crate) async fn add_virtual_subscriber(
+        &self,
+        stream: &str,
+        id: String,
+    ) -> Arc<crate::forward::stats::MediaStats> {
+        let stats = Arc::new(crate::forward::stats::MediaStats::new());
         self.virtual_subscribers
             .write()
             .await
@@ -1025,6 +1044,7 @@ impl Manager {
             .push(VirtualSubscriber {
                 id: id.clone(),
                 create_at: Utc::now().timestamp_millis(),
+                stats: stats.clone(),
             });
         metrics::SUBSCRIBE.inc();
         // A pending on-demand stop is obsolete the moment a consumer
@@ -1036,13 +1056,15 @@ impl Manager {
             stream: stream.to_string(),
             session: id,
         });
+        stats
     }
-
     /// Remove a virtual subscriber previously added with
     /// [`Manager::add_virtual_subscriber`]. Idempotent: unknown ids are a
-    /// no-op, mirroring `remove_subscribe`.
+    /// no-op, mirroring `remove_subscribe`. The consumer's media counter is
+    /// detached from the forward, folding its un-sampled tail into the
+    /// stream's outbound totals.
     #[cfg_attr(not(any(feature = "target", feature = "rtsp")), allow(dead_code))]
-    pub async fn remove_virtual_subscriber(&self, stream: &str, id: &str) {
+    pub(crate) async fn remove_virtual_subscriber(&self, stream: &str, id: &str) {
         {
             let mut all = self.virtual_subscribers.write().await;
             let Some(entries) = all.get_mut(stream) else {
@@ -1055,6 +1077,19 @@ impl Manager {
             if entries.is_empty() {
                 all.remove(stream);
             }
+        }
+        // Detach the consumer's counter from the forward's tap list (the
+        // fold keeps the stream total monotonic). Only the tap-capable
+        // features carry a live forward lookup; without them no tap was
+        // ever registered.
+        #[cfg(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        ))]
+        if let Some(forward) = self.get_forward(stream).await {
+            forward.remove_tap_stats(id).await;
         }
         metrics::SUBSCRIBE.dec();
         let _ = self.event_sender.send(Event::SubscribeStopped {

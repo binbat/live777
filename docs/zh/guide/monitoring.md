@@ -35,13 +35,6 @@ curl http://localhost:7777/metrics
 字段获取（并通过 SSE 实时推送到 WebUI 仪表盘），交互式查看时通常比指标
 更方便。
 
-::: warning
-`live777_rtp_bytes_total{direction="out"}` 只统计订阅会话。静态 RTP/RTSP
-输出 target（`rtp://` / `rtsp://` targets）发出的流量在
-[issue #474](https://github.com/binbat/live777/issues/474) 修复前不计入
-这些计数器，因此一条正以几 Mbit/s 组播的流可能显示出站流量为零。
-:::
-
 ::: info
 `liveman` 没有 Prometheus 端点。监控集群时请直接抓取每个 `live777`
 节点。

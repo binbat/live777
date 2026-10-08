@@ -245,8 +245,14 @@ clients via Link headers).
   flow's `unsampled()` tail to the folded totals so stream-level counters
   line up with the per-session ones between ticks; removal also refreshes
   the aggregate bitrate immediately so closed directions do not keep a stale
-  rate until the next tick. Stats surface as the `stats` field on the
-  stream/session API types and as the
+  rate until the next tick. Direct-tap consumers (output targets, RTSP pull
+  clients) count too (live777#474): `Manager::add_virtual_subscriber` hands
+  the consumer a `MediaStats` its send loop `inc()`s, each send epoch
+  registers it on the forward's tap list (`PeerForward::add_tap_stats`,
+  re-registered per epoch because a stream reset recreates the forward),
+  the tick samples taps into the outbound totals, and detach or stream
+  close folds the tail exactly once. Stats surface as the `stats` field on
+  the stream/session API types and as the
   `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. RTCP is
   counted separately as
   `live777_rtcp_packets_total{direction="to_publisher|from_subscriber", kind="pli|fir|nack|rr|sr|twcc|remb|other"}`:
