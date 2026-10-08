@@ -66,6 +66,59 @@ pub static STREAM_SESSIONS: LazyLock<GaugeVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// DataChannel messages transferred, labeled by `direction`: `in` = received
+/// from a client (publish or subscribe peer), `out` = written to a client.
+/// Counted in the per-channel read/write loops, so `out` reflects the bus
+/// fan-out (one delivery per attached peer).
+pub static DATACHANNEL_MESSAGES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "datachannel_messages_total",
+            "DataChannel messages by direction",
+        ),
+        &["direction"],
+    )
+    .unwrap()
+});
+/// DataChannel payload bytes transferred (message body, no SCTP/DTLS
+/// framing), same accounting points as [`DATACHANNEL_MESSAGES_TOTAL`].
+pub static DATACHANNEL_BYTES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "datachannel_bytes_total",
+            "DataChannel payload bytes by direction",
+        ),
+        &["direction"],
+    )
+    .unwrap()
+});
+/// DataChannel messages dropped because a per-channel write loop lagged
+/// behind its stream's broadcast bus (the ring capacity is bounded). Only
+/// the `out` direction can drop this way.
+pub static DATACHANNEL_DROPPED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "datachannel_dropped_total",
+            "DataChannel messages dropped on broadcast-bus lag",
+        ),
+        &["direction"],
+    )
+    .unwrap()
+});
+/// Per-stream DataChannel payload bytes: the same accounting points as
+/// [`DATACHANNEL_BYTES_TOTAL`] with the stream name as an extra label,
+/// sharing [`STREAM_RTP_BYTES_TOTAL`]'s cardinality caveats and teardown
+/// removal (`emit_stream_deleted`).
+pub static STREAM_DATACHANNEL_BYTES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "stream_datachannel_bytes_total",
+            "Per-stream DataChannel payload bytes",
+        ),
+        &["stream", "direction"],
+    )
+    .unwrap()
+});
 pub static REGISTRY: LazyLock<Registry> =
     LazyLock::new(|| Registry::new_custom(Some("live777".to_string()), None).unwrap());
 pub static ENCODER: LazyLock<TextEncoder> = LazyLock::new(TextEncoder::new);

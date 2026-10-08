@@ -403,6 +403,18 @@ pub fn metrics_register() {
     metrics::REGISTRY
         .register(Box::new(metrics::STREAM_SESSIONS.clone()))
         .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_MESSAGES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_BYTES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_DROPPED_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_DATACHANNEL_BYTES_TOTAL.clone()))
+        .unwrap();
 }
 
 async fn metrics() -> String {

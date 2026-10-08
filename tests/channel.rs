@@ -33,6 +33,12 @@ mod common;
 #[cfg(any(feature = "source", feature = "source-all"))]
 use common::shutdown_signal;
 
+/// Metrics registration is process-global and panics on a second call;
+/// nextest isolates test processes, but plain `cargo test` shares one, so
+/// every test that needs the registry must go through this single `Once`.
+#[cfg(any(feature = "source", feature = "source-all"))]
+static METRICS_REGISTER: std::sync::Once = std::sync::Once::new();
+
 #[cfg(any(feature = "source", feature = "source-all"))]
 fn init_tracing() {
     use std::sync::Once;
@@ -72,6 +78,7 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
 #[cfg(any(feature = "source", feature = "source-all"))]
 #[tokio::test]
 async fn test_whepfrom_datachannel_udp_forwarding() {
+    METRICS_REGISTER.call_once(liveion::metrics_register);
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let stream_id = "test-dc-channel";
 
@@ -182,6 +189,37 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         msg_whepfrom_to_liveion,
         "unexpected data at liveion target"
     );
+
+    // ── 6b. The round trip is visible in the Prometheus metrics ─────────────
+    // Both directions were delivered exactly once: `in` counts the message
+    // received from whepfrom's channel, `out` the one written to it.
+    let metrics = reqwest::get(format!("http://{addr}{}", api::path::METRICS))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for (direction, msg) in [
+        ("in", msg_whepfrom_to_liveion.len() as u64),
+        ("out", msg_liveion_to_whepfrom.len() as u64),
+    ] {
+        // The exposition lists labels alphabetically: direction before stream.
+        let series = format!(
+            r#"live777_stream_datachannel_bytes_total{{direction="{direction}",stream="{stream_id}"}}"#
+        );
+        let value = metrics
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .find_map(|line| match line.split_once(' ') {
+                Some((key, value)) if key == series => value.parse::<u64>().ok(),
+                _ => None,
+            })
+            .unwrap_or(0);
+        assert_eq!(
+            value, msg,
+            "per-stream datachannel bytes mismatch for direction={direction}:\n{metrics}"
+        );
+    }
 
     // ── 7. Teardown ─────────────────────────────────────────────────────────────
     ct.cancel();

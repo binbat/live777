@@ -62,6 +62,8 @@ fn emit_stream_deleted(
     _ = metrics::STREAM_SESSIONS.remove_label_values(&[stream, "subscribe"]);
     _ = metrics::STREAM_RTP_BYTES_TOTAL.remove_label_values(&[stream, "in"]);
     _ = metrics::STREAM_RTP_BYTES_TOTAL.remove_label_values(&[stream, "out"]);
+    _ = metrics::STREAM_DATACHANNEL_BYTES_TOTAL.remove_label_values(&[stream, "in"]);
+    _ = metrics::STREAM_DATACHANNEL_BYTES_TOTAL.remove_label_values(&[stream, "out"]);
     let _ = event_sender.send(Event::StreamDeleted {
         stream: stream.to_string(),
         reason,

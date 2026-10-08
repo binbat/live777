@@ -22,6 +22,10 @@ curl http://localhost:7777/metrics
 | `live777_rtcp_packets_total{direction="to_publisher\|from_subscriber", kind="pli\|fir\|nack\|rr\|sr\|twcc\|remb\|other"}` | counter | RTCP 包按方向和类型计数；`to_publisher` = 发往发布端（含订阅者转发来的 PLI/FIR 关键帧请求），`from_subscriber` = 来自订阅端（需要以 `source` feature 构建） |
 | `live777_stream_rtp_bytes_total{stream, direction="in\|out"}` | counter | 按流细分的 RTP 媒体字节数 —— 与服务器级计数同一记账口径，仅多出流名标签 |
 | `live777_stream_sessions{stream, kind="publish\|subscribe"}` | gauge | 按流细分的会话数量，在服务器 2 秒的统计 tick 上从实时状态刷新 |
+| `live777_datachannel_messages_total{direction="in\|out"}` | counter | DataChannel 消息数；`in` = 从客户端收到，`out` = 写入客户端（每个挂接的对端各计一次，因此 `out` 反映广播扇出） |
+| `live777_datachannel_bytes_total{direction="in\|out"}` | counter | DataChannel 载荷字节数（消息体，不含 SCTP/DTLS 帧头）—— 与消息计数同一记账口径 |
+| `live777_datachannel_dropped_total{direction="out"}` | counter | 因慢通道落后于流内广播总线而丢弃的 DataChannel 消息数 |
+| `live777_stream_datachannel_bytes_total{stream, direction="in\|out"}` | counter | 按流细分的 DataChannel 载荷字节数 —— 与服务器级计数同一记账口径，仅多出流名标签（基数注意事项同 `stream_rtp_bytes_total`） |
 
 ::: warning
 `stream` 标签在动态建流的部署中是无界的（WHIP/WHEP auto-create 默认开启）：

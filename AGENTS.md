@@ -297,7 +297,16 @@ clients via Link headers).
   `whep::from` / `whip::into` cancels and awaits before returning. On the
   WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
   it adds an `m=application` section to the offer; the WHEP leg creates it
-  unless `WhepPeerOptions::control_channel` is disabled.
+  unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
+  DataChannel Prometheus metrics directly (no stats tick — messages are
+  low-volume discrete events, the same pattern as the RTCP probe):
+  `live777_datachannel_messages_total{direction="in|out"}` and
+  `live777_datachannel_bytes_total{direction}` count at receipt
+  (`dc_read_loop`) resp. after a successful channel write (`dc_write_loop`,
+  so bus fan-out is counted per attached peer), bus-lag drops land in
+  `live777_datachannel_dropped_total{direction="out"}`, and the per-stream
+  `live777_stream_datachannel_bytes_total{stream, direction}` series are
+  removed at stream teardown (`emit_stream_deleted`) like the RTP ones.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt

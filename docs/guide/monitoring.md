@@ -23,6 +23,10 @@ curl http://localhost:7777/metrics
 | `live777_rtcp_packets_total{direction="to_publisher\|from_subscriber", kind="pli\|fir\|nack\|rr\|sr\|twcc\|remb\|other"}` | counter | RTCP packets by direction and type; `to_publisher` = written to a publish peer (including PLI/FIR keyframe requests relayed from subscribers), `from_subscriber` = received from a subscribe peer (requires live777 built with the `source` feature) |
 | `live777_stream_rtp_bytes_total{stream, direction="in\|out"}` | counter | Per-stream RTP media bytes — the same accounting as the server-wide counter, with the stream name as a label |
 | `live777_stream_sessions{stream, kind="publish\|subscribe"}` | gauge | Per-stream session counts, refreshed from live state on the server's 2 s stats tick |
+| `live777_datachannel_messages_total{direction="in\|out"}` | counter | DataChannel messages; `in` = received from a client, `out` = written to a client (one per attached peer, so `out` reflects the broadcast fan-out) |
+| `live777_datachannel_bytes_total{direction="in\|out"}` | counter | DataChannel payload bytes (message body, no SCTP/DTLS framing) — the same accounting points as the messages counter |
+| `live777_datachannel_dropped_total{direction="out"}` | counter | DataChannel messages dropped because a slow channel lagged behind its stream's broadcast bus |
+| `live777_stream_datachannel_bytes_total{stream, direction="in\|out"}` | counter | Per-stream DataChannel payload bytes — the same accounting as the server-wide counter, with the stream name as a label (same cardinality caveats as `stream_rtp_bytes_total`) |
 
 ::: warning
 The `stream` label is unbounded in deployments where streams are created
