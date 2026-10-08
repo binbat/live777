@@ -68,8 +68,10 @@ impl Net4mqtt {
 pub struct Http {
     #[serde(default = "default_http_listen")]
     pub listen: SocketAddr,
+    /// CORS allowed origins: empty (default) disables CORS, `["*"]` allows
+    /// any origin, otherwise only the listed origins are allowed.
     #[serde(default)]
-    pub cors: bool,
+    pub cors: api::cors::Cors,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -456,6 +458,11 @@ fn default_log_level() -> String {
 
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.http
+            .cors
+            .validate()
+            .map_err(|e| anyhow::anyhow!("http.cors error: {e}"))?;
+
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()

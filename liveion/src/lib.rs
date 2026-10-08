@@ -7,7 +7,7 @@ use axum::{Router, extract::Request, middleware, response::IntoResponse, routing
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{Level, error, info_span};
 
 use crate::config::Config;
@@ -132,11 +132,7 @@ where
         .route(path::METRICS, get(metrics))
         .merge(info::route())
         .with_state(app_state.clone())
-        .layer(if cfg.http.cors {
-            CorsLayer::permissive()
-        } else {
-            CorsLayer::new()
-        })
+        .layer(cfg.http.cors.layer())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<_>| {

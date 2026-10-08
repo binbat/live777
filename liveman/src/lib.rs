@@ -5,7 +5,7 @@ use axum::{Router, extract::Request, middleware, response::IntoResponse, routing
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{error, info, info_span};
 
 use crate::admin::{authorize, token};
@@ -294,12 +294,11 @@ where
                     validate_middleware,
                 )),
         )
-        .layer(if cfg.http.cors {
-            CorsLayer::permissive()
-        } else {
-            CorsLayer::new()
-        })
+        // Registered before the CORS layer: `Router::layer` only applies to
+        // routes that already exist, so anything added after it would get no
+        // CORS handling at all (preflight OPTIONS would hit a 405).
         .route("/api/login", post(authorize))
+        .layer(cfg.http.cors.layer())
         .with_state(app_state.clone())
         .layer(axum::middleware::from_fn(http_log::print_request_response))
         .layer(

@@ -509,7 +509,7 @@ pub async fn run_rtsp_target_mediamtx(
     // pointing at mediamtx.
     let stream_id = "relay";
     let mut cfg_a = liveion::config::Config::default();
-    cfg_a.http.cors = true;
+    cfg_a.http.cors = vec!["*".to_string()].into();
     cfg_a.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
@@ -611,7 +611,7 @@ pub async fn run_rtsp_target_live777(
     // liveion B (downstream): RTSP server enabled; the push creates the
     // stream, so nothing is provisioned.
     let mut cfg_b = liveion::config::Config::default();
-    cfg_b.http.cors = true;
+    cfg_b.http.cors = vec!["*".to_string()].into();
     let rtsp_port_b = reserve_and_release_tcp_port(bind_ip);
     cfg_b.rtsp.listen = SocketAddr::new(bind_ip, rtsp_port_b).to_string();
     let listener_b = TcpListener::bind(SocketAddr::new(bind_ip, 0))
@@ -641,7 +641,7 @@ pub async fn run_rtsp_target_live777(
     // liveion A (upstream): provisioned stream with a static rtsp:// target
     // pointing at B.
     let mut cfg_a = liveion::config::Config::default();
-    cfg_a.http.cors = true;
+    cfg_a.http.cors = vec!["*".to_string()].into();
     cfg_a.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
@@ -753,7 +753,7 @@ pub async fn run_rtp_target(profile: MediaProfile, bind_ip: IpAddr) {
     // Provisioned stream with the static rtp:// target; the stream exists
     // (and the target supervisor runs) from startup.
     let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = true;
+    cfg.http.cors = vec!["*".to_string()].into();
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
@@ -1072,7 +1072,7 @@ where
     // liveion B (downstream): default config; the pushed stream is created
     // explicitly so it does not depend on auto-create strategy defaults.
     let mut cfg_b = liveion::config::Config::default();
-    cfg_b.http.cors = true;
+    cfg_b.http.cors = vec!["*".to_string()].into();
     let listener_b = TcpListener::bind(SocketAddr::new(bind_ip, 0))
         .await
         .unwrap();
@@ -1098,7 +1098,7 @@ where
         ice_servers: vec![],
         ..Default::default()
     };
-    cfg_a.http.cors = true;
+    cfg_a.http.cors = vec!["*".to_string()].into();
     cfg_a.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
@@ -1357,7 +1357,7 @@ where
     init_liveion_test_environment();
 
     let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = true;
+    cfg.http.cors = vec!["*".to_string()].into();
 
     // RTSP sources need the RTSP listen port configured before liveion starts.
     // Reserve-and-release: the port is freed before liveion binds so the

@@ -164,7 +164,7 @@ async fn start_liveion() -> SocketAddr {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = true;
+    cfg.http.cors = vec!["*".to_string()].into();
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
     addr
 }
