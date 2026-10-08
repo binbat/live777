@@ -1527,6 +1527,7 @@ impl PeerForwardInternal {
     }
 
     fn data_channel_forward(
+        stream: &str,
         dc: Arc<dyn DataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
@@ -1537,6 +1538,7 @@ impl PeerForwardInternal {
         let dc_tx = dc.clone();
 
         tokio::spawn(dc_read_loop(
+            stream.to_string(),
             move || {
                 let dc = dc_rx.clone();
                 async move { dc.poll().await }
@@ -1546,6 +1548,7 @@ impl PeerForwardInternal {
         ));
 
         tokio::spawn(dc_write_loop(
+            stream.to_string(),
             receiver,
             move |data| {
                 let dc = dc_tx.clone();
@@ -1564,8 +1567,10 @@ impl PeerForwardInternal {
 /// stops delivering events (and never drops the event sender) once the peer
 /// is closed server-side, so `OnClose`/`None` alone could never be observed
 /// and the task would leak, keeping the bus — and anything keyed on its
-/// closure, like the UDP channel bridge — alive forever.
+/// closure, like the UDP channel bridge — alive forever. Every received
+/// message counts into the `in` DataChannel metrics on receipt.
 async fn dc_read_loop<P, Fut>(
+    stream: String,
     mut poll: P,
     sender: broadcast::Sender<Vec<u8>>,
     cancel: CancellationToken,
@@ -1582,6 +1587,15 @@ async fn dc_read_loop<P, Fut>(
             }
             event = poll() => match event {
                 Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
+                    metrics::DATACHANNEL_MESSAGES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc();
+                    metrics::DATACHANNEL_BYTES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc_by(data.data.len() as u64);
+                    metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                        .with_label_values(&[stream.as_str(), "in"])
+                        .inc_by(data.data.len() as u64);
                     if let Err(err) = sender.send(data.data.to_vec()) {
                         debug!("send data channel err: {}", err);
                         return;
@@ -1603,8 +1617,11 @@ async fn dc_read_loop<P, Fut>(
 /// Write loop of one data channel: forward bus messages into the channel.
 /// Exits when the bus closes, the channel errors, the Connected gate fails,
 /// or the owning session is cancelled (including while parked on `recv()` or
-/// waiting out the gate).
+/// waiting out the gate). Messages count into the `out` DataChannel metrics
+/// only after a successful channel write; messages dropped on bus lag count
+/// into `datachannel_dropped_total`.
 async fn dc_write_loop<S, Fut, E>(
+    stream: String,
     mut receiver: broadcast::Receiver<Vec<u8>>,
     send: S,
     connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
@@ -1628,7 +1645,13 @@ async fn dc_write_loop<S, Fut, E>(
                 // Data-channel messages must not silently stop
                 // forwarding on a lag burst.
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("data channel receiver lagged, dropped {} messages", n);
+                    metrics::DATACHANNEL_DROPPED_TOTAL
+                        .with_label_values(&["out"])
+                        .inc_by(n);
+                    warn!(
+                        "[{}] data channel receiver lagged, dropped {} messages",
+                        stream, n
+                    );
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
@@ -1660,6 +1683,15 @@ async fn dc_write_loop<S, Fut, E>(
             info!("write data channel err: {}", err);
             return;
         }
+        metrics::DATACHANNEL_MESSAGES_TOTAL
+            .with_label_values(&["out"])
+            .inc();
+        metrics::DATACHANNEL_BYTES_TOTAL
+            .with_label_values(&["out"])
+            .inc_by(msg.len() as u64);
+        metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+            .with_label_values(&[stream.as_str(), "out"])
+            .inc_by(msg.len() as u64);
     }
 }
 
@@ -2279,7 +2311,7 @@ impl PeerForwardInternal {
         };
         let sender = self.data_channel_forward.subscribe.clone();
         let receiver = self.data_channel_forward.publish.subscribe();
-        Self::data_channel_forward(dc, sender, receiver, gate, cancel);
+        Self::data_channel_forward(&self.stream, dc, sender, receiver, gate, cancel);
         Ok(())
     }
 
@@ -2822,7 +2854,7 @@ impl PeerForwardInternal {
         };
         let sender = self.data_channel_forward.publish.clone();
         let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(dc, sender, receiver, gate, cancel);
+        Self::data_channel_forward(&self.stream, dc, sender, receiver, gate, cancel);
         Ok(())
     }
 
@@ -2958,6 +2990,7 @@ mod dc_tests {
         ]);
         let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
         let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
             canned_poll(events),
             tx,
             CancellationToken::new(),
@@ -2983,6 +3016,7 @@ mod dc_tests {
         ]);
         let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
         let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
             canned_poll(events),
             tx,
             CancellationToken::new(),
@@ -2998,6 +3032,7 @@ mod dc_tests {
         let events = VecDeque::from([on_message(b"a"), None]);
         let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
         let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
             canned_poll(events),
             tx,
             CancellationToken::new(),
@@ -3013,6 +3048,7 @@ mod dc_tests {
         drop(rx);
         let events = VecDeque::from([on_message(b"a")]);
         let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
             canned_poll(events),
             tx,
             CancellationToken::new(),
@@ -3031,6 +3067,7 @@ mod dc_tests {
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1);
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
             canned_poll(VecDeque::new()),
             tx,
             cancel.clone(),
@@ -3053,6 +3090,7 @@ mod dc_tests {
         let (mut sent, send) = collect_sends();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             None,
@@ -3079,6 +3117,7 @@ mod dc_tests {
         let (mut sent, send) = collect_sends();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             None,
@@ -3097,6 +3136,7 @@ mod dc_tests {
         let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
         let (_sent, send) = collect_sends();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             None,
@@ -3116,6 +3156,7 @@ mod dc_tests {
         let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
         let send = |_| async { Err::<(), _>("boom".to_string()) };
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             None,
@@ -3137,6 +3178,7 @@ mod dc_tests {
         let (mut sent, send) = collect_sends();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             Some(state_rx),
@@ -3174,6 +3216,7 @@ mod dc_tests {
         let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
         let (mut sent, send) = collect_sends();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             Some(state_rx),
@@ -3201,6 +3244,7 @@ mod dc_tests {
             let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
             let (mut sent, send) = collect_sends();
             let task = tokio::spawn(dc_write_loop(
+                "test".to_string(),
                 bus_rx,
                 send,
                 Some(state_rx),
@@ -3224,6 +3268,7 @@ mod dc_tests {
         let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
         let (_sent, send) = collect_sends();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             Some(state_rx),
@@ -3245,6 +3290,7 @@ mod dc_tests {
         let (_sent, send) = collect_sends();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             Some(state_rx),
@@ -3267,6 +3313,7 @@ mod dc_tests {
         let (_sent, send) = collect_sends();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
             bus_rx,
             send,
             None,
@@ -3281,6 +3328,91 @@ mod dc_tests {
             .await
             .expect("write loop leaked on a parked recv")
             .unwrap();
+    }
+
+    // ── DataChannel metrics ───────────────────────────────────────────────
+
+    /// The read loop counts every received message into the `in` series
+    /// (server-wide and per-stream), the write loop counts a message only
+    /// after it is actually written (`out`), and a lagged bus receiver lands
+    /// in the dropped counter. Per-stream assertions use dedicated stream
+    /// names so parallel tests cannot interfere; the server-wide dropped
+    /// counter is asserted as a delta.
+    #[tokio::test]
+    async fn dc_loops_count_prometheus_metrics() {
+        // Read side: two received messages, 2 + 3 payload bytes.
+        let events = VecDeque::from([
+            on_message(b"ab"),
+            on_message(b"cde"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, _rx) = broadcast::channel::<Vec<u8>>(4);
+        tokio::spawn(dc_read_loop(
+            "dc-metrics-read".to_string(),
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(
+            metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                .with_label_values(&["dc-metrics-read", "in"])
+                .get(),
+            5
+        );
+        assert!(
+            metrics::DATACHANNEL_MESSAGES_TOTAL
+                .with_label_values(&["in"])
+                .get()
+                >= 2
+        );
+
+        // Write side: the ring holds one message, so the first recv lags by
+        // one and only the newer message is written and counted.
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        bus_tx.send(b"old".to_vec()).unwrap();
+        bus_tx.send(b"new3".to_vec()).unwrap();
+        let dropped_before = metrics::DATACHANNEL_DROPPED_TOTAL
+            .with_label_values(&["out"])
+            .get();
+
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "dc-metrics-write".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        assert_eq!(sent.recv().await.unwrap(), b"new3");
+        cancel.cancel();
+        task.await.unwrap();
+
+        assert_eq!(
+            metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                .with_label_values(&["dc-metrics-write", "out"])
+                .get(),
+            4,
+            "only the written message counts"
+        );
+        assert!(
+            metrics::DATACHANNEL_MESSAGES_TOTAL
+                .with_label_values(&["out"])
+                .get()
+                >= 1
+        );
+        assert!(
+            metrics::DATACHANNEL_DROPPED_TOTAL
+                .with_label_values(&["out"])
+                .get()
+                > dropped_before,
+            "the lagged message lands in the dropped counter"
+        );
     }
 
     // ── publish override decisions ────────────────────────────────────────
