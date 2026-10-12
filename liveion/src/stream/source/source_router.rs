@@ -11,7 +11,8 @@ use super::SourceNetConfig;
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "source-whep"
+    feature = "source-whep",
+    feature = "source-wayland"
 ))]
 use crate::config::SourceConfig;
 
@@ -23,11 +24,13 @@ use super::source_config::SourceSpec;
 
 /// Creates a `StreamSource` from a connection URL.
 ///
-/// Delegates rtsp://, whep://, file://, .sdp to the URL-based source factory.
+/// Delegates rtsp://, whep://, wayland://, file://, .sdp to the URL-based
+/// source factory.
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "source-whep"
+    feature = "source-whep",
+    feature = "source-wayland"
 ))]
 pub async fn create_source_extended(
     stream_id: &str,
@@ -41,7 +44,8 @@ pub async fn create_source_extended(
 #[cfg(not(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "source-whep"
+    feature = "source-whep",
+    feature = "source-wayland"
 )))]
 pub async fn create_source_extended(
     _stream_id: &str,
@@ -49,7 +53,9 @@ pub async fn create_source_extended(
     _config: &crate::config::SourceConfig,
     _net: SourceNetConfig,
 ) -> Result<Box<dyn StreamSource>> {
-    anyhow::bail!("URL-based sources require source-rtsp, source-sdp or source-whep feature")
+    anyhow::bail!(
+        "URL-based sources require the source-rtsp, source-sdp, source-whep or source-wayland feature"
+    )
 }
 
 /// Create a `StreamSource` from a structured [`SourceSpec`].

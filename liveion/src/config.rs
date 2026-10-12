@@ -1179,7 +1179,7 @@ impl TargetConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceConfig {
     /// URL source for RTSP / WHEP / SDP inputs. Mutually exclusive with structured native fields.
-    /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp
+    /// Supported: rtsp://, rtsps://, whep://, wheps://, wayland://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
 
@@ -1381,6 +1381,7 @@ impl SourceConfig {
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("whep://")
             && !url_lower.starts_with("wheps://")
+            && !url_lower.starts_with("wayland://")
             && !url_lower.starts_with("file://")
             && !url_lower.ends_with(".sdp")
         {
@@ -1388,7 +1389,7 @@ impl SourceConfig {
             // credentials (e.g. whep://token@…) into startup error logs.
             let scheme = url.split_once("://").map(|(s, _)| s).unwrap_or("<none>");
             anyhow::bail!(
-                "Unsupported source URL scheme '{scheme}'. Valid: rtsp://, rtsps://, whep://, wheps://, file://, .sdp"
+                "Unsupported source URL scheme '{scheme}'. Valid: rtsp://, rtsps://, whep://, wheps://, wayland://, file://, .sdp"
             );
         }
         Ok(())
