@@ -72,6 +72,8 @@ smithay = { version = "0.7", default-features = false, features = ["wayland_fron
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
+# GBM allocator for the dmabuf client test (compositor client_tests).
+gbm = "0.18"
 
 [features]
 webui = ["dep:rust-embed", "dep:mime_guess"]

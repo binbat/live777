@@ -94,7 +94,8 @@ impl GlPipeline {
         let context = EGLContext::new(&display).context("EGL context init failed")?;
         // Safety: the renderer is only ever used on the compositor's
         // event-loop thread (the GL context is never made current elsewhere).
-        let mut renderer = unsafe { GlesRenderer::new(context) }.context("GLES renderer init failed")?;
+        let mut renderer =
+            unsafe { GlesRenderer::new(context) }.context("GLES renderer init failed")?;
         let size = Size::from((width as i32, height as i32));
         let target: GlesTexture = Offscreen::create_buffer(
             &mut renderer,
@@ -181,13 +182,12 @@ impl GlPipeline {
             // finish() hands back a fence for the rendered frame; wait on it
             // before the readback so the pixels are complete.
             let sync = frame.finish().context("frame finish failed")?;
-            self.renderer.wait(&sync).context("frame fence wait failed")?;
+            self.renderer
+                .wait(&sync)
+                .context("frame fence wait failed")?;
         }
 
-        let region = Rectangle::new(
-            Point::from((0, 0)),
-            Size::from((self.size.w, self.size.h)),
-        );
+        let region = Rectangle::new(Point::from((0, 0)), Size::from((self.size.w, self.size.h)));
         let mapping = self
             .renderer
             .copy_framebuffer(&framebuffer, region, Fourcc::Argb8888)
