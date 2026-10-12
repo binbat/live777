@@ -391,13 +391,27 @@ clients via Link headers).
   controller re-seeds even for applies shorter than its 1 s tick.
   The Wayland compositor source (`wayland://<socket>?width=&height=&fps=&bitrate=`;
   `source-wayland` feature, Linux-only) lives in
-  `liveion/src/stream/source/wayland/{mod,compositor,encoder,convert,pattern}.rs`.
+  `liveion/src/stream/source/wayland/{mod,compositor,encoder,convert,pattern,gl}.rs`.
   A smithay headless compositor runs on a dedicated calloop thread
-  (SHM-only, no GPU; wl_compositor/wl_shm/xdg-shell/wl_output/wl_seat/
-  data-device globals), CPU-blits visible xdg toplevels' current SHM buffers
-  onto a fixed-size canvas (alpha-over for ARGB8888, plain copy for
-  XRGB8888, centered on the single output) and emits frames only when a
-  commit made the canvas dirty. Frames cross into the encode pipeline as
+  (no GPU output; wl_compositor/wl_shm/xdg-shell/wl_output/wl_seat/
+  data-device globals, plus `zwp_linux_dmabuf_v1` when GL is up) and
+  composites visible xdg toplevels onto a fixed-size canvas, emitting
+  frames only when a commit made the canvas dirty (plus PLI-repaint and a
+  2 s keepalive so late-joining subscribers always get an IDR).
+  Compositing has two paths (`gl.rs` vs the CPU blit): when a GPU/EGL
+  renderer initializes (GBM device on `/dev/dri/renderD128` → `card0`,
+  `LIVE777_WAYLAND_DRM_DEVICE` overrides; EGL + `GlesRenderer`; a probe
+  render+readback must succeed), every toplevel buffer — dmabuf via
+  `ImportDma`, SHM via `ImportMemWl` — is imported as a texture and drawn
+  into one persistent offscreen target, then read back through
+  `ExportMem::copy_framebuffer` (rendered `Flipped180` so the bottom-up
+  readback lands top-down, BGRA so the byte order matches the canvas);
+  without a renderer the CPU alpha-over SHM blit handles everything and no
+  dmabuf global is advertised. GL state is `!Send` and lives on the
+  event-loop thread inside the frame timer; `dmabuf_imported` can only
+  sanity-check against the advertised format set (protocol dispatch never
+  touches the renderer), and the real import happens per frame.
+  Frames cross into the encode pipeline as
   `ArgbFrame` over an mpsc channel — the seam between frame producer and
   encoder: a synthetic pattern generator feeds it until the compositor's
   first contentful frame, then a `frame_mux` task permanently switches over
@@ -406,11 +420,12 @@ clients via Link headers).
   (`yuvutils-rs`, BT.601 limited) and encodes with `openh264`
   (`UsageType::ScreenContentRealTime`, in-band SPS/PPS ahead of every IDR
   via `SpsPpsStrategy::IncreasingId`, periodic IDR ≈ every 2 s). PLI/FIR
-  from subscribers forces an IDR (`force_intra_frame`); the crate has no
-  runtime bitrate API, so `set_bitrate` recreates the encoder (sub-ms, the
-  fresh encoder starts with an IDR). The source deliberately does not opt
-  into the AIMD adaptive controller. The compositor socket is created
-  under `$XDG_RUNTIME_DIR` — the source fails to start without it.
+  from subscribers forces an IDR (`force_intra_frame`) and nudges a
+  repaint; the crate has no runtime bitrate API, so `set_bitrate` recreates
+  the encoder (sub-ms, the fresh encoder starts with an IDR). The source
+  deliberately does not opt into the AIMD adaptive controller. The
+  compositor socket is created under `$XDG_RUNTIME_DIR` — the source fails
+  to start without it.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
