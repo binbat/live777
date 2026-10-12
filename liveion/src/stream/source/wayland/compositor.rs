@@ -72,12 +72,24 @@ pub struct CompositorHandle {
     socket_name: String,
     thread: Option<std::thread::JoinHandle<()>>,
     cancel: CancellationToken,
+    /// Set by the event-loop thread once GL compositing is up (dmabuf
+    /// advertised); false when running the CPU blit fallback.
+    /// Read by the compositor integration tests.
+    #[allow(dead_code)]
+    gl_active: Arc<AtomicBool>,
 }
 
 impl CompositorHandle {
     /// Wayland display name clients should use (`WAYLAND_DISPLAY`).
     pub fn socket_name(&self) -> &str {
         &self.socket_name
+    }
+
+    /// Whether the compositor initialized GL compositing (dmabuf support).
+    /// Read by the compositor integration tests.
+    #[allow(dead_code)]
+    pub fn gl_active(&self) -> bool {
+        self.gl_active.load(Ordering::Relaxed)
     }
 
     /// Await the compositor thread's exit.
@@ -133,9 +145,20 @@ pub fn spawn(
     let period = Duration::from_secs_f64(1.0 / f64::from(config.fps));
     let socket_name = config.socket_name.clone();
     let thread_cancel = cancel.clone();
+    let gl_active = Arc::new(AtomicBool::new(false));
+    let thread_gl_active = gl_active.clone();
     let thread = std::thread::Builder::new()
         .name(format!("wayland-comp-{}", config.socket_name))
-        .spawn(move || run(display, state, listener, period, thread_cancel))
+        .spawn(move || {
+            run(
+                display,
+                state,
+                listener,
+                period,
+                thread_cancel,
+                thread_gl_active,
+            )
+        })
         .map_err(|e| anyhow::anyhow!("failed to spawn compositor thread: {e}"))?;
 
     tracing::info!(
@@ -147,6 +170,7 @@ pub fn spawn(
         socket_name,
         thread: Some(thread),
         cancel,
+        gl_active,
     })
 }
 
@@ -159,6 +183,7 @@ fn run(
     listener: ListeningSocketSource,
     period: Duration,
     cancel: CancellationToken,
+    gl_active: Arc<AtomicBool>,
 ) {
     let socket_name = state.socket_name.clone();
     let mut event_loop: EventLoop<WaylandState> = match EventLoop::try_new() {
@@ -231,6 +256,7 @@ fn run(
             }
         }
     }
+    gl_active.store(gl.is_some(), Ordering::Relaxed);
 
     if let Err(e) = loop_handle.insert_source(Timer::immediate(), move |_, _, state| {
         if cancel.is_cancelled() {
@@ -479,7 +505,11 @@ impl WaylandState {
     /// Import one toplevel's current buffer as a GL texture and compute its
     /// canvas position. `None` when the surface has no buffer or the import
     /// failed (logged once).
-    fn gl_draw_item(&mut self, gl: &mut GlPipeline, toplevel: &ToplevelSurface) -> Option<DrawItem> {
+    fn gl_draw_item(
+        &mut self,
+        gl: &mut GlPipeline,
+        toplevel: &ToplevelSurface,
+    ) -> Option<DrawItem> {
         let surface = toplevel.wl_surface();
         with_states(surface, |states| {
             let (buffer, scale, transform, damage) = {
@@ -532,14 +562,15 @@ impl WaylandState {
                     let size = dmabuf.size();
                     (size.w, size.h)
                 }
-                Err(_) => match with_buffer_contents(&buffer, |_, _, data| (data.width, data.height))
-                {
-                    Ok(size) => size,
-                    Err(e) => {
-                        tracing::debug!("composite skip: buffer access failed: {e}");
-                        return None;
+                Err(_) => {
+                    match with_buffer_contents(&buffer, |_, _, data| (data.width, data.height)) {
+                        Ok(size) => size,
+                        Err(e) => {
+                            tracing::debug!("composite skip: buffer access failed: {e}");
+                            return None;
+                        }
                     }
-                },
+                }
             };
             let pos = window_buffer_pos(
                 (self.width as i32, self.height as i32),
@@ -824,7 +855,12 @@ impl DmabufHandler for WaylandState {
         &mut self.dmabuf_state
     }
 
-    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
         // The renderer lives in the frame timer and is unreachable from
         // protocol dispatch, so sanity-check against the advertised formats
         // here; the real import happens per frame at composite time.
@@ -1417,6 +1453,343 @@ mod client_tests {
                 break;
             }
         }
+
+        cancel.cancel();
+        handle.join().await;
+    }
+
+    // ---------------------------------------------------------------------
+    // dmabuf clients (GL compositing path)
+    // ---------------------------------------------------------------------
+
+    use super::super::gl;
+    use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+        zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
+    };
+
+    /// First accessible DRM device from the compositor's candidate list.
+    fn open_drm_device() -> Option<std::fs::File> {
+        gl::device_candidates().into_iter().find_map(|path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .ok()
+        })
+    }
+
+    #[derive(Default)]
+    struct DmabufClientState {
+        configured: bool,
+        surface: Option<wl_surface::WlSurface>,
+        buffer: Option<wl_buffer::WlBuffer>,
+        released: u32,
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for DmabufClientState {
+        fn event(
+            _state: &mut Self,
+            _registry: &wl_registry::WlRegistry,
+            _event: wl_registry::Event,
+            _data: &GlobalListContents,
+            _conn: &Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<xdg_surface::XdgSurface, ()> for DmabufClientState {
+        fn event(
+            state: &mut Self,
+            xdg: &xdg_surface::XdgSurface,
+            event: xdg_surface::Event,
+            _data: &(),
+            _conn: &Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+            if let xdg_surface::Event::Configure { serial } = event {
+                xdg.ack_configure(serial);
+                if let (Some(surface), Some(buffer)) = (&state.surface, &state.buffer) {
+                    surface.attach(Some(buffer), 0, 0);
+                    surface.commit();
+                }
+                state.configured = true;
+            }
+        }
+    }
+
+    impl Dispatch<wl_buffer::WlBuffer, ()> for DmabufClientState {
+        fn event(
+            state: &mut Self,
+            _buffer: &wl_buffer::WlBuffer,
+            event: wl_buffer::Event,
+            _data: &(),
+            _conn: &Connection,
+            _qh: &QueueHandle<Self>,
+        ) {
+            if matches!(event, wl_buffer::Event::Release) {
+                state.released += 1;
+            }
+        }
+    }
+
+    delegate_noop!(DmabufClientState: wl_compositor::WlCompositor);
+    // These interfaces deliver events (configure, release, formats, ...):
+    // consume and ignore them.
+    delegate_noop!(DmabufClientState: ignore wl_surface::WlSurface);
+    delegate_noop!(DmabufClientState: ignore xdg_wm_base::XdgWmBase);
+    delegate_noop!(DmabufClientState: ignore xdg_toplevel::XdgToplevel);
+    delegate_noop!(DmabufClientState: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
+    delegate_noop!(DmabufClientState: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
+
+    /// Fill a mappable GBM buffer with a solid color (B,G,R,X).
+    fn fill_bo(bo: &mut gbm::BufferObject<()>, w: u32, h: u32, color: [u8; 4]) {
+        bo.map_mut(0, 0, w, h, |mapped| {
+            let stride = mapped.stride() as usize;
+            for row in mapped.buffer_mut().chunks_exact_mut(stride) {
+                for px in row[..w as usize * 4].chunks_exact_mut(4) {
+                    px.copy_from_slice(&color);
+                }
+            }
+        })
+        .expect("map the GBM buffer");
+    }
+
+    /// A connected dmabuf client holding a mapped xdg toplevel, with two
+    /// GBM buffers (double buffering). Dropping it disconnects the client.
+    struct DmabufToplevelClient {
+        conn: Connection,
+        queue: wayland_client::EventQueue<DmabufClientState>,
+        state: DmabufClientState,
+        bos: [gbm::BufferObject<()>; 2],
+        buffers: [wl_buffer::WlBuffer; 2],
+        buf_size: (u32, u32),
+    }
+
+    impl DmabufToplevelClient {
+        /// None when the compositor has no dmabuf global (GL off) or the
+        /// host has no usable DRM device for the client-side allocator.
+        fn new(size: (u32, u32), color: [u8; 4]) -> Option<Self> {
+            let conn = Connection::connect_to_env().expect("connect to the compositor");
+            let (globals, mut queue) =
+                registry_queue_init::<DmabufClientState>(&conn).expect("registry init");
+            let qh = queue.handle();
+
+            let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=5, ()).unwrap();
+            let wm_base: xdg_wm_base::XdgWmBase = globals.bind(&qh, 1..=6, ()).unwrap();
+            let dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1 =
+                globals.bind(&qh, 1..=4, ()).ok()?;
+
+            let device_file = open_drm_device()?;
+            let gbm = gbm::Device::new(device_file).expect("GBM device");
+
+            let (w, h) = size;
+            let flags = gbm::BufferObjectFlags::RENDERING | gbm::BufferObjectFlags::LINEAR;
+            let mut bos = [
+                gbm.create_buffer_object::<()>(w, h, gbm::Format::Xrgb8888, flags)
+                    .expect("GBM buffer A"),
+                gbm.create_buffer_object::<()>(w, h, gbm::Format::Xrgb8888, flags)
+                    .expect("GBM buffer B"),
+            ];
+            fill_bo(&mut bos[0], w, h, color);
+            fill_bo(&mut bos[1], w, h, color);
+
+            let buffers: Vec<_> = bos
+                .iter()
+                .map(|bo| {
+                    let fd = bo.fd().expect("export the GBM buffer as dmabuf");
+                    let modifier: u64 = bo.modifier().into();
+                    let params = dmabuf.create_params(&qh, ());
+                    params.add(
+                        fd.as_fd(),
+                        0,
+                        bo.offset(0),
+                        bo.stride(),
+                        (modifier >> 32) as u32,
+                        modifier as u32,
+                    );
+                    let buffer = params.create_immed(
+                        w as i32,
+                        h as i32,
+                        gbm::Format::Xrgb8888 as u32,
+                        zwp_linux_buffer_params_v1::Flags::empty(),
+                        &qh,
+                        (),
+                    );
+                    params.destroy();
+                    buffer
+                })
+                .collect();
+
+            let surface = compositor.create_surface(&qh, ());
+            let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+            let toplevel = xdg.get_toplevel(&qh, ());
+            toplevel.set_title("live777-dmabuf-test".into());
+
+            let mut state = DmabufClientState {
+                configured: false,
+                surface: Some(surface),
+                buffer: Some(buffers[0].clone()),
+                released: 0,
+            };
+            // Initial commit (no buffer), then wait for the configure: the
+            // handler acks, attaches the buffer and commits again.
+            state.surface.as_ref().unwrap().commit();
+            while !state.configured {
+                queue.blocking_dispatch(&mut state).unwrap();
+            }
+            // blocking_dispatch returns without flushing when it dispatched
+            // events; the handler's attach+commit would otherwise sit in the
+            // write buffer forever.
+            conn.flush().unwrap();
+
+            let buffers: [wl_buffer::WlBuffer; 2] = buffers.try_into().unwrap();
+            Some(Self {
+                conn,
+                queue,
+                state,
+                bos,
+                buffers,
+                buf_size: (w, h),
+            })
+        }
+
+        /// Repaint buffer `i` with `color` and make it the current buffer
+        /// (the previously displayed one is released by the compositor),
+        /// then roundtrip so release events land in `state.released`.
+        fn commit_filled(&mut self, i: usize, color: [u8; 4]) {
+            let (w, h) = self.buf_size;
+            fill_bo(&mut self.bos[i], w, h, color);
+            let surface = self.state.surface.as_ref().unwrap();
+            surface.attach(Some(&self.buffers[i]), 0, 0);
+            surface.commit();
+            self.conn.flush().unwrap();
+            self.queue.roundtrip(&mut self.state).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn dmabuf_global_is_advertised_exactly_when_gl_is_up() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-dmabuf-global");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-dmabuf-global?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, _frame_rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+
+        // A connected client's first registry roundtrip only completes once
+        // the event loop runs, which is after GL init: the global set and
+        // the gl_active flag are both final by then.
+        let conn = Connection::connect_to_env().unwrap();
+        let (globals, _queue) =
+            registry_queue_init::<DmabufClientState>(&conn).expect("registry init");
+        let advertised = globals
+            .contents()
+            .clone_list()
+            .iter()
+            .any(|g| g.interface == "zwp_linux_dmabuf_v1");
+        assert_eq!(
+            advertised,
+            handle.gl_active(),
+            "zwp_linux_dmabuf_v1 must be advertised exactly when GL compositing initialized"
+        );
+        if open_drm_device().is_some() {
+            assert!(
+                handle.gl_active(),
+                "GL must initialize on a host with an accessible DRM device"
+            );
+        } else {
+            assert!(
+                !handle.gl_active(),
+                "no accessible DRM device: the compositor must fall back to CPU compositing"
+            );
+        }
+
+        drop(conn);
+        cancel.cancel();
+        handle.join().await;
+    }
+
+    /// Full dmabuf path: a client submitting GBM-allocated dmabuf buffers
+    /// through zwp_linux_dmabuf_v1 must land on the canvas (positioned like
+    /// the CPU path), and buffer release must keep flowing so a
+    /// double-buffered client can repaint and re-commit without starving.
+    #[tokio::test]
+    async fn dmabuf_client_reaches_the_canvas_and_buffers_cycle() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-dmabuf");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-dmabuf?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, mut frame_rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+
+        // 96x64 centered on the 320x240 canvas → top-left (112, 88).
+        let Some(mut client) = DmabufToplevelClient::new((96, 64), RED) else {
+            eprintln!("skipping the dmabuf client test: no dmabuf global or no DRM device");
+            cancel.cancel();
+            handle.join().await;
+            return;
+        };
+
+        // The dmabuf buffer is composited, positioned like the CPU path.
+        let frame = wait_pixel(&mut frame_rx, 160, 120, RED, Duration::from_secs(10)).await;
+        assert_eq!(frame_px(&frame, 0, 0), BACKGROUND, "outside the window");
+        assert_eq!(frame_px(&frame, 112, 88), RED, "window top-left corner");
+        assert_eq!(
+            frame_px(&frame, 207, 151),
+            RED,
+            "window bottom-right corner"
+        );
+        assert_eq!(frame_px(&frame, 208, 152), BACKGROUND, "past the window");
+
+        // Repaint the other buffer: a content switch through the dmabuf path.
+        client.commit_filled(1, GREEN);
+        wait_pixel(&mut frame_rx, 160, 120, GREEN, Duration::from_secs(10)).await;
+
+        // Reuse the first buffer (released by the compositor when the second
+        // commit replaced it): proves the release flow doesn't starve a
+        // double-buffered client.
+        client.commit_filled(0, BLUE);
+        wait_pixel(&mut frame_rx, 160, 120, BLUE, Duration::from_secs(10)).await;
+
+        assert!(
+            client.state.released >= 2,
+            "the compositor must release replaced buffers (got {})",
+            client.state.released
+        );
+
+        drop(client);
+        wait_pixel(&mut frame_rx, 160, 120, BACKGROUND, Duration::from_secs(10)).await;
 
         cancel.cancel();
         handle.join().await;
