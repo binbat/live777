@@ -1258,6 +1258,16 @@ mod client_tests {
         }
     }
 
+    fn fill_top_red_bottom_blue(pixels: &mut [u8], w: i32, h: i32) {
+        for y in 0..h {
+            let color = if y < h / 2 { RED } else { BLUE };
+            for x in 0..w {
+                let i = (y * w * 4 + x * 4) as usize;
+                pixels[i..i + 4].copy_from_slice(&color);
+            }
+        }
+    }
+
     fn frame_px(frame: &ArgbFrame, x: u32, y: u32) -> [u8; 4] {
         let i = (y * frame.width * 4 + x * 4) as usize;
         [
@@ -1393,6 +1403,51 @@ mod client_tests {
             !socket_path.exists(),
             "socket file must be removed when the compositor stops"
         );
+    }
+
+    /// SHM buffers are top-down on both compositing paths (CPU blit and the
+    /// GL import): a red-top/blue-bottom buffer must land unflipped.
+    #[tokio::test]
+    async fn shm_buffer_vertical_orientation() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "liveion=debug".to_string()),
+            )
+            .with_test_writer()
+            .try_init();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-shm-orient");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-shm-orient?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, mut frame_rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+
+        // 96x64 centered on the canvas → top-left (112, 88).
+        let _client = add_toplevel(96, 64, &fill_top_red_bottom_blue, None);
+        let frame = wait_pixel(&mut frame_rx, 160, 100, RED, Duration::from_secs(10)).await;
+        assert_eq!(
+            frame_px(&frame, 160, 140),
+            BLUE,
+            "SHM content must be top-down (bottom band stays bottom)"
+        );
+
+        cancel.cancel();
+        handle.join().await;
     }
 
     /// A static desktop (one commit, then silence) must still serve new
@@ -1555,12 +1610,35 @@ mod client_tests {
         .expect("map the GBM buffer");
     }
 
+    /// Fill a mappable GBM buffer with two horizontal bands (top/bottom) —
+    /// a vertically asymmetric pattern so a flip is detectable.
+    fn fill_bo_halves(
+        bo: &mut gbm::BufferObject<()>,
+        w: u32,
+        h: u32,
+        top: [u8; 4],
+        bottom: [u8; 4],
+    ) {
+        bo.map_mut(0, 0, w, h, |mapped| {
+            let stride = mapped.stride() as usize;
+            for (y, row) in mapped.buffer_mut().chunks_exact_mut(stride).enumerate() {
+                let color = if y < h as usize / 2 { top } else { bottom };
+                for px in row[..w as usize * 4].chunks_exact_mut(4) {
+                    px.copy_from_slice(&color);
+                }
+            }
+        })
+        .expect("map the GBM buffer");
+    }
+
     /// A connected dmabuf client holding a mapped xdg toplevel, with two
     /// GBM buffers (double buffering). Dropping it disconnects the client.
     struct DmabufToplevelClient {
         conn: Connection,
         queue: wayland_client::EventQueue<DmabufClientState>,
         state: DmabufClientState,
+        dmabuf: zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+        qh: QueueHandle<DmabufClientState>,
         bos: [gbm::BufferObject<()>; 2],
         buffers: [wl_buffer::WlBuffer; 2],
         buf_size: (u32, u32),
@@ -1591,34 +1669,12 @@ mod client_tests {
                 gbm.create_buffer_object::<()>(w, h, gbm::Format::Xrgb8888, flags)
                     .expect("GBM buffer B"),
             ];
-            fill_bo(&mut bos[0], w, h, color);
+            fill_bo_halves(&mut bos[0], w, h, RED, BLUE);
             fill_bo(&mut bos[1], w, h, color);
 
             let buffers: Vec<_> = bos
                 .iter()
-                .map(|bo| {
-                    let fd = bo.fd().expect("export the GBM buffer as dmabuf");
-                    let modifier: u64 = bo.modifier().into();
-                    let params = dmabuf.create_params(&qh, ());
-                    params.add(
-                        fd.as_fd(),
-                        0,
-                        bo.offset(0),
-                        bo.stride(),
-                        (modifier >> 32) as u32,
-                        modifier as u32,
-                    );
-                    let buffer = params.create_immed(
-                        w as i32,
-                        h as i32,
-                        gbm::Format::Xrgb8888 as u32,
-                        zwp_linux_buffer_params_v1::Flags::empty(),
-                        &qh,
-                        (),
-                    );
-                    params.destroy();
-                    buffer
-                })
+                .map(|bo| create_wl_buffer(&dmabuf, &qh, bo, size, false))
                 .collect();
 
             let surface = compositor.create_surface(&qh, ());
@@ -1648,6 +1704,8 @@ mod client_tests {
                 conn,
                 queue,
                 state,
+                dmabuf,
+                qh,
                 bos,
                 buffers,
                 buf_size: (w, h),
@@ -1660,12 +1718,74 @@ mod client_tests {
         fn commit_filled(&mut self, i: usize, color: [u8; 4]) {
             let (w, h) = self.buf_size;
             fill_bo(&mut self.bos[i], w, h, color);
+            self.commit_buffer(i);
+        }
+
+        /// Same, with a vertically asymmetric top/bottom band pattern.
+        fn commit_halves(&mut self, i: usize, top: [u8; 4], bottom: [u8; 4]) {
+            let (w, h) = self.buf_size;
+            fill_bo_halves(&mut self.bos[i], w, h, top, bottom);
+            self.commit_buffer(i);
+        }
+
+        /// Repaint buffer `i` and attach it via a *fresh* wl_buffer created
+        /// with the given y_invert flag (the flag is per-buffer, so probing
+        /// it needs new wl_buffers).
+        fn commit_halves_flags(&mut self, i: usize, top: [u8; 4], bottom: [u8; 4], y_invert: bool) {
+            let (w, h) = self.buf_size;
+            fill_bo_halves(&mut self.bos[i], w, h, top, bottom);
+            let buffer = create_wl_buffer(&self.dmabuf, &self.qh, &self.bos[i], (w, h), y_invert);
+            let surface = self.state.surface.as_ref().unwrap();
+            surface.attach(Some(&buffer), 0, 0);
+            surface.commit();
+            self.conn.flush().unwrap();
+            self.queue.roundtrip(&mut self.state).unwrap();
+        }
+
+        fn commit_buffer(&mut self, i: usize) {
             let surface = self.state.surface.as_ref().unwrap();
             surface.attach(Some(&self.buffers[i]), 0, 0);
             surface.commit();
             self.conn.flush().unwrap();
             self.queue.roundtrip(&mut self.state).unwrap();
         }
+    }
+
+    /// Create a wl_buffer from a GBM buffer via the dmabuf params object.
+    fn create_wl_buffer(
+        dmabuf: &zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+        qh: &QueueHandle<DmabufClientState>,
+        bo: &gbm::BufferObject<()>,
+        size: (u32, u32),
+        y_invert: bool,
+    ) -> wl_buffer::WlBuffer {
+        let (w, h) = size;
+        let fd = bo.fd().expect("export the GBM buffer as dmabuf");
+        let modifier: u64 = bo.modifier().into();
+        let params = dmabuf.create_params(qh, ());
+        params.add(
+            fd.as_fd(),
+            0,
+            bo.offset(0),
+            bo.stride(),
+            (modifier >> 32) as u32,
+            modifier as u32,
+        );
+        let flags = if y_invert {
+            zwp_linux_buffer_params_v1::Flags::YInvert
+        } else {
+            zwp_linux_buffer_params_v1::Flags::empty()
+        };
+        let buffer = params.create_immed(
+            w as i32,
+            h as i32,
+            gbm::Format::Xrgb8888 as u32,
+            flags,
+            qh,
+            (),
+        );
+        params.destroy();
+        buffer
     }
 
     #[tokio::test]
@@ -1753,8 +1873,10 @@ mod client_tests {
         )
         .unwrap();
 
-        // 96x64 centered on the 320x240 canvas → top-left (112, 88).
-        let Some(mut client) = DmabufToplevelClient::new((96, 64), RED) else {
+        // 96x64 centered on the 320x240 canvas → top-left (112, 88); the
+        // first buffer carries a red top band over a blue bottom band, so a
+        // vertical flip in the dmabuf import path is detectable.
+        let Some(mut client) = DmabufToplevelClient::new((96, 64), GREEN) else {
             eprintln!("skipping the dmabuf client test: no dmabuf global or no DRM device");
             cancel.cancel();
             handle.join().await;
@@ -1762,12 +1884,17 @@ mod client_tests {
         };
 
         // The dmabuf buffer is composited, positioned like the CPU path.
-        let frame = wait_pixel(&mut frame_rx, 160, 120, RED, Duration::from_secs(10)).await;
+        let frame = wait_pixel(&mut frame_rx, 160, 100, RED, Duration::from_secs(10)).await;
         assert_eq!(frame_px(&frame, 0, 0), BACKGROUND, "outside the window");
         assert_eq!(frame_px(&frame, 112, 88), RED, "window top-left corner");
         assert_eq!(
+            frame_px(&frame, 160, 140),
+            BLUE,
+            "the bottom band must stay the bottom band (vertical flip check)"
+        );
+        assert_eq!(
             frame_px(&frame, 207, 151),
-            RED,
+            BLUE,
             "window bottom-right corner"
         );
         assert_eq!(frame_px(&frame, 208, 152), BACKGROUND, "past the window");
@@ -1778,9 +1905,14 @@ mod client_tests {
 
         // Reuse the first buffer (released by the compositor when the second
         // commit replaced it): proves the release flow doesn't starve a
-        // double-buffered client.
-        client.commit_filled(0, BLUE);
-        wait_pixel(&mut frame_rx, 160, 120, BLUE, Duration::from_secs(10)).await;
+        // double-buffered client. Swapped bands re-check orientation.
+        client.commit_halves(0, BLUE, RED);
+        let frame = wait_pixel(&mut frame_rx, 160, 100, BLUE, Duration::from_secs(10)).await;
+        assert_eq!(
+            frame_px(&frame, 160, 140),
+            RED,
+            "repaint must keep its orientation too"
+        );
 
         assert!(
             client.state.released >= 2,
@@ -1791,6 +1923,64 @@ mod client_tests {
         drop(client);
         wait_pixel(&mut frame_rx, 160, 120, BACKGROUND, Duration::from_secs(10)).await;
 
+        cancel.cancel();
+        handle.join().await;
+    }
+
+    /// Orientation regression for dmabuf clients: the canvas must show the
+    /// buffer as-is when y_invert is unset, and flipped when set (the
+    /// protocol semantics), for both content orders. dmabuf imports are
+    /// bottom-origin EGL images, so the compositor applies one corrective
+    /// vertical flip on top of the flag handling.
+    #[tokio::test]
+    async fn dmabuf_orientation_matches_y_invert_flag() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-dmabuf-orient");
+        }
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-dmabuf-orient?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, mut frame_rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let Some(mut client) = DmabufToplevelClient::new((96, 64), GREEN) else {
+            eprintln!("skipping the dmabuf orientation test: no dmabuf global or no DRM device");
+            cancel.cancel();
+            handle.join().await;
+            return;
+        };
+
+        // (memory top band, flag) → expected canvas top band: the flag flips.
+        for (swapped, flag, want_top) in [
+            (false, false, RED),
+            (false, true, BLUE),
+            (true, false, BLUE),
+            (true, true, RED),
+        ] {
+            let (top, bottom) = if swapped { (BLUE, RED) } else { (RED, BLUE) };
+            client.commit_halves_flags(0, top, bottom, flag);
+            // Drop frames that predate this commit (the channel buffers
+            // them across phases).
+            while frame_rx.try_recv().is_ok() {}
+            let frame =
+                wait_pixel(&mut frame_rx, 160, 100, want_top, Duration::from_secs(10)).await;
+            assert_eq!(
+                frame_px(&frame, 160, 140),
+                if want_top == RED { BLUE } else { RED },
+                "bottom band must follow (swapped={swapped}, flag={flag})"
+            );
+        }
         cancel.cancel();
         handle.join().await;
     }

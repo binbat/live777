@@ -155,11 +155,14 @@ impl GlPipeline {
             .bind(&mut self.target)
             .context("failed to bind the render target")?;
         {
-            // Flipped180 (vertical flip): GL readback yields bottom-up rows,
-            // so rendering flipped stores the canvas top-down in memory.
+            // The projection into the offscreen target and the PBO readback
+            // are orientation-consistent: readback rows come out top-down,
+            // matching the canvas. (Do NOT "fix" this with a flipped
+            // dst_transform — that flips the output; orientation regression
+            // coverage lives in the compositor client tests.)
             let mut frame = self
                 .renderer
-                .render(&mut framebuffer, self.size, Transform::Flipped180)
+                .render(&mut framebuffer, self.size, Transform::Normal)
                 .context("failed to begin a frame")?;
             let full = Rectangle::from_size(self.size);
             frame
