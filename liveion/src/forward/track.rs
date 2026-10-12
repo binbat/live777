@@ -18,7 +18,8 @@ use tracing::{debug, info, trace, warn};
     feature = "source-sdp",
     feature = "source-whep",
     feature = "rtsp",
-    feature = "native-source"
+    feature = "native-source",
+    feature = "source-wayland"
 ))]
 use livetwo::payload::{Forward, RePayload, RePayloadCodec};
 #[cfg(any(
@@ -26,7 +27,8 @@ use livetwo::payload::{Forward, RePayload, RePayloadCodec};
     feature = "source-sdp",
     feature = "source-whep",
     feature = "rtsp",
-    feature = "native-source"
+    feature = "native-source",
+    feature = "source-wayland"
 ))]
 use rtc::peer_connection::configuration::media_engine::{
     MIME_TYPE_AV1, MIME_TYPE_H264, MIME_TYPE_HEVC, MIME_TYPE_VP8, MIME_TYPE_VP9,
@@ -39,7 +41,8 @@ use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
     feature = "source-sdp",
     feature = "source-whep",
     feature = "rtsp",
-    feature = "native-source"
+    feature = "native-source",
+    feature = "source-wayland"
 ))]
 use tracing::error;
 use webrtc::media_stream::track_remote::TrackRemote;
@@ -623,7 +626,8 @@ impl PublishTrackRemote {
         feature = "source-sdp",
         feature = "source-whep",
         feature = "rtsp",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     pub(crate) fn inject_rtp(&self, packet: Arc<Packet>) -> Result<(), String> {
         match self {
@@ -646,7 +650,7 @@ impl PublishTrackRemote {
     /// SSRC of the published media as seen by passthrough consumers (the
     /// RTSP server forwards packets with their original SSRC). 0 for real
     /// remote tracks, whose SR is not synthesized.
-    #[cfg(feature = "source")]
+    #[cfg(feature = "rtsp")]
     pub(crate) fn publish_ssrc(&self) -> u32 {
         match self {
             Self::Virtual(v) => v.ssrc(),
@@ -684,7 +688,8 @@ pub struct VirtualPublishTrack {
         feature = "source-sdp",
         feature = "source-whep",
         feature = "rtsp",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     stream_id: String,
     actual_ssrc: Arc<AtomicU32>,
@@ -704,7 +709,8 @@ pub struct VirtualPublishTrack {
         feature = "source-sdp",
         feature = "source-whep",
         feature = "rtsp",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     sequence_number: Arc<AtomicU32>,
     clock_rate: u32,
@@ -720,7 +726,8 @@ pub struct VirtualPublishTrack {
         feature = "source-sdp",
         feature = "source-whep",
         feature = "rtsp",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     repayloader: std::sync::Mutex<Option<Box<dyn RePayload + Send>>>,
 }
@@ -747,7 +754,8 @@ impl VirtualPublishTrack {
                 feature = "source-sdp",
                 feature = "source-whep",
                 feature = "rtsp",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             stream_id,
             actual_ssrc: Arc::new(AtomicU32::new(0)),
@@ -761,7 +769,8 @@ impl VirtualPublishTrack {
                 feature = "source-sdp",
                 feature = "source-whep",
                 feature = "rtsp",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             sequence_number: Arc::new(AtomicU32::new(rand::random::<u16>() as u32)),
             clock_rate: codec_params.rtp_codec.clock_rate,
@@ -771,7 +780,8 @@ impl VirtualPublishTrack {
                 feature = "source-sdp",
                 feature = "source-whep",
                 feature = "rtsp",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             repayloader: std::sync::Mutex::new(None),
         }
@@ -807,7 +817,8 @@ impl VirtualPublishTrack {
         feature = "source-sdp",
         feature = "source-whep",
         feature = "rtsp",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     pub fn inject_rtp(&self, packet: Arc<Packet>) -> Result<(), String> {
         if self.actual_ssrc.load(Ordering::Relaxed) == 0 {

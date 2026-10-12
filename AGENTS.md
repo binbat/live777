@@ -103,6 +103,11 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
 - Node.js (CI uses `latest`).
 - For WebUI builds: `pnpm install`.
 - For native source features on Linux: `libcamera-dev`, `libv4l-dev`.
+- For the Wayland compositor source (`source-wayland`, Linux-only): the
+  `libxkbcommon` shared library to link against (`libxkbcommon.so`, e.g. the
+  `libxkbcommon-dev` package on Debian/Ubuntu; pulled in by smithay's seat
+  keyboard handling — no headers needed, the crate carries its own FFI
+  bindings).
 - For GStreamer-based tests: `gstreamer`, `gstreamer-rtsp-server`.
 - For cross-compilation: `cross` from <https://github.com/cross-rs/cross>.
 
@@ -143,7 +148,11 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-sdp`     — SDP-file sources.
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
-- `source-all`     — enables all source types.
+- `source-all`     — enables all source types (except the Linux-only
+  `source-wayland`).
+- `source-wayland` — Wayland compositor source: live777 acts as a headless
+  Wayland display server and streams the composited desktop as H.264
+  (smithay + openh264). Linux-only; deliberately not part of `source-all`.
 - `target`         — base feature shared by all `target-*` kinds (the
   `targets` stream config, supervisor dispatch, virtual-subscriber ids);
   enables no target kind on its own, mirroring how `source` relates to the
@@ -380,6 +389,28 @@ clients via Link headers).
   becomes the AIMD's rung ceiling and resume seed without suspending
   it, and an external-change generation counter guarantees the
   controller re-seeds even for applies shorter than its 1 s tick.
+  The Wayland compositor source (`wayland://<socket>?width=&height=&fps=&bitrate=`;
+  `source-wayland` feature, Linux-only) lives in
+  `liveion/src/stream/source/wayland/{mod,compositor,encoder,convert,pattern}.rs`.
+  A smithay headless compositor runs on a dedicated calloop thread
+  (SHM-only, no GPU; wl_compositor/wl_shm/xdg-shell/wl_output/wl_seat/
+  data-device globals), CPU-blits visible xdg toplevels' current SHM buffers
+  onto a fixed-size canvas (alpha-over for ARGB8888, plain copy for
+  XRGB8888, centered on the single output) and emits frames only when a
+  commit made the canvas dirty. Frames cross into the encode pipeline as
+  `ArgbFrame` over an mpsc channel — the seam between frame producer and
+  encoder: a synthetic pattern generator feeds it until the compositor's
+  first contentful frame, then a `frame_mux` task permanently switches over
+  (an all-clients-disconnected desktop keeps streaming the background
+  canvas; the pattern never resumes). The pipeline converts XRGB8888→I420
+  (`yuvutils-rs`, BT.601 limited) and encodes with `openh264`
+  (`UsageType::ScreenContentRealTime`, in-band SPS/PPS ahead of every IDR
+  via `SpsPpsStrategy::IncreasingId`, periodic IDR ≈ every 2 s). PLI/FIR
+  from subscribers forces an IDR (`force_intra_frame`); the crate has no
+  runtime bitrate API, so `set_bitrate` recreates the encoder (sub-ms, the
+  fresh encoder starts with an IDR). The source deliberately does not opt
+  into the AIMD adaptive controller. The compositor socket is created
+  under `$XDG_RUNTIME_DIR` — the source fails to start without it.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
@@ -556,6 +587,18 @@ Integration test binaries live in `tests/`:
 - `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
   subprocesses against in-process liveion, including the rotating decode
   verification (needs the `rsmpeg` feature)
+- `tests/wayland_source.rs` — Wayland compositor source end-to-end (Linux
+  only, needs `source-wayland`; the pattern-flow WHEP test needs nothing
+  else). The client-content test additionally needs `rsmpeg`: a real
+  Wayland client paints a solid-color toplevel, and the WHEP subscriber
+  depacketizes + decodes (FFmpeg) the pattern→client switch and the
+  background after the client disconnects. rsmpeg 0.18 only compiles
+  against FFmpeg ≤ 8 headers (FFmpeg 9 privatized the AVCodec/
+  AVFormatContext fields it touches), so on newer distros build a minimal
+  n8.0 locally — all 7 av libs, `--disable-everything
+  --enable-decoder=h264 --enable-parser=h264` — into `target/ffmpeg8/install`
+  and export `FFMPEG_PKG_CONFIG_PATH`/`PKG_CONFIG_PATH` to its
+  `lib/pkgconfig` and `LD_LIBRARY_PATH` to its `lib`.
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
