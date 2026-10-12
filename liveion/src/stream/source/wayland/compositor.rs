@@ -1,12 +1,14 @@
-//! Headless Wayland compositor (smithay, SHM-only, no GPU) producing
+//! Headless Wayland compositor (smithay, no GPU output) producing
 //! [`ArgbFrame`]s.
 //!
 //! Runs on a dedicated thread with a calloop event loop; [`spawn`] binds the
 //! Wayland socket synchronously so [`WaylandSource`](super::WaylandSource)'s
 //! `start()` fails cleanly on setup errors. Visible xdg toplevels' current
-//! SHM buffers are blitted onto a fixed-size canvas (alpha-over for
-//! ARGB8888, plain copy for XRGB8888) in stacking order; frames are produced
-//! on a timer only when a commit happened since the last emitted frame.
+//! buffers are composited onto a fixed-size canvas in stacking order; frames
+//! are produced on a timer only when a commit happened since the last emitted
+//! frame. Compositing uses the GL path ([`gl`]) when a GPU/EGL renderer is
+//! available (advertising `zwp_linux_dmabuf_v1` so GL clients can submit
+//! dmabuf buffers), and falls back to a CPU blit of SHM buffers otherwise.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use smithay::backend::allocator::Buffer as _;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::format::FormatSet;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
@@ -25,11 +30,14 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_output, wl_shm};
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-    with_states,
+    BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, Damage,
+    SurfaceAttributes, with_states,
+};
+use smithay::wayland::dmabuf::{
+    DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::selection::SelectionHandler;
@@ -43,12 +51,13 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{BufferData, ShmHandler, ShmState, with_buffer_contents};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm,
-    delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat,
+    delegate_shm, delegate_xdg_shell,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::gl::{DrawItem, GlPipeline};
 use super::{ArgbFrame, WaylandUrlConfig};
 
 /// How long the compositor may stay silent once it has taken over from the
@@ -193,6 +202,36 @@ fn run(
         return;
     }
 
+    // GL compositing (GBM + EGL + GLES): enables dmabuf clients. Must happen
+    // on this thread (the renderer is !Send and the GL context stays current
+    // here); any failure keeps the CPU path. The dmabuf global is created
+    // before the loop starts, so every client sees it in its first registry
+    // roundtrip.
+    let mut gl = GlPipeline::init(&socket_name, state.width, state.height);
+    if let Some(pipeline) = &gl {
+        let formats = pipeline.import_formats();
+        match DmabufFeedbackBuilder::new(pipeline.drm_node().dev_id(), formats.clone()).build() {
+            Ok(feedback) => {
+                let global = state
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<WaylandState>(
+                        &state.display_handle,
+                        &feedback,
+                    );
+                state.dmabuf_formats = Some(formats);
+                state.dmabuf_global = Some(global);
+                tracing::info!(
+                    "wayland compositor '{socket_name}': advertising zwp_linux_dmabuf_v1"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "wayland compositor '{socket_name}': dmabuf feedback build failed ({e}); not advertising dmabuf"
+                );
+            }
+        }
+    }
+
     if let Err(e) = loop_handle.insert_source(Timer::immediate(), move |_, _, state| {
         if cancel.is_cancelled() {
             loop_signal.stop();
@@ -206,7 +245,7 @@ fn run(
             state.dirty = true;
             state.force_keyframe_next = true;
         }
-        state.produce_frame();
+        state.produce_frame(gl.as_mut());
         if let Err(e) = state.display_handle.flush_clients() {
             tracing::debug!("wayland compositor: client flush error: {e}");
         }
@@ -255,12 +294,24 @@ struct WaylandState {
     logged_unsupported_scale: bool,
     logged_unsupported_transform: bool,
     logged_unsupported_format: bool,
+    logged_gl_import_failure: bool,
+    /// A toplevel or wl_buffer died: drop the renderer's dmabuf texture
+    /// cache at the next frame so the underlying buffers are freed.
+    gl_cache_cleanup: bool,
 
     compositor_state: CompositorState,
     xdg_shell_state: XdgShellState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
+    dmabuf_state: DmabufState,
+    /// Alive only while GL compositing is up; created on the event-loop
+    /// thread once the renderer initializes.
+    dmabuf_global: Option<DmabufGlobal>,
+    /// Advertised dmabuf formats, for the `dmabuf_imported` sanity filter
+    /// (the renderer itself lives in the frame timer and is unreachable
+    /// from protocol dispatch).
+    dmabuf_formats: Option<FormatSet>,
     // Kept alive for their globals/objects; not otherwise read.
     _output_manager_state: OutputManagerState,
     _seat: Seat<Self>,
@@ -323,11 +374,16 @@ impl WaylandState {
             logged_unsupported_scale: false,
             logged_unsupported_transform: false,
             logged_unsupported_format: false,
+            logged_gl_import_failure: false,
+            gl_cache_cleanup: false,
             compositor_state,
             xdg_shell_state,
             shm_state,
             seat_state,
             data_device_state,
+            dmabuf_state: DmabufState::new(),
+            dmabuf_global: None,
+            dmabuf_formats: None,
             _output_manager_state: output_manager_state,
             _seat: seat,
             _output: output,
@@ -338,18 +394,33 @@ impl WaylandState {
     /// emitted frame. Before the first contentful frame nothing is emitted
     /// (the test pattern stays live); afterwards the canvas is emitted even
     /// when empty (all clients disconnected → plain background).
-    fn produce_frame(&mut self) {
+    fn produce_frame(&mut self, gl: Option<&mut GlPipeline>) {
         if !self.dirty {
             return;
         }
 
         let mut canvas = vec![0u8; (self.width * self.height * 4) as usize];
-        let mut drew_content = false;
         // Bottom-to-top: later toplevels paint over earlier ones. Clone the
-        // list: compositing needs `&mut self` (log-once flags).
+        // list: compositing needs `&mut self` (log-once flags, caches).
         let toplevels = self.toplevels.clone();
-        for toplevel in &toplevels {
-            drew_content |= self.composite_toplevel(&mut canvas, toplevel);
+        let mut drew_content = false;
+        if let Some(gl) = gl {
+            match self.composite_all_gl(gl, &mut canvas, &toplevels) {
+                Ok(drew) => drew_content = drew,
+                // Keep the last good frame on the wire rather than
+                // broadcasting a partial image; retry on the next tick.
+                Err(e) => {
+                    tracing::warn!(
+                        "wayland compositor '{}': GL compositing failed: {e:#}",
+                        self.socket_name
+                    );
+                    return;
+                }
+            }
+        } else {
+            for toplevel in &toplevels {
+                drew_content |= self.composite_toplevel(&mut canvas, toplevel);
+            }
         }
         if self.dirty && !drew_content {
             tracing::debug!(
@@ -379,6 +450,124 @@ impl WaylandState {
         }
         // Channel full (encoder busy): keep the dirty flag so the next tick
         // retries instead of showing stale content after the next commit.
+    }
+
+    /// GL path: import every toplevel's buffer (dmabuf or SHM) as a texture
+    /// and render them onto the canvas. Buffer position math matches the
+    /// CPU blit exactly (`window_buffer_pos`).
+    fn composite_all_gl(
+        &mut self,
+        gl: &mut GlPipeline,
+        canvas: &mut [u8],
+        toplevels: &[ToplevelSurface],
+    ) -> Result<bool> {
+        if self.gl_cache_cleanup {
+            gl.cleanup_caches();
+            self.gl_cache_cleanup = false;
+        }
+        let mut items = Vec::with_capacity(toplevels.len());
+        for toplevel in toplevels {
+            if let Some(item) = self.gl_draw_item(gl, toplevel) {
+                items.push(item);
+            }
+        }
+        let drew = !items.is_empty();
+        gl.composite(canvas, &items)?;
+        Ok(drew)
+    }
+
+    /// Import one toplevel's current buffer as a GL texture and compute its
+    /// canvas position. `None` when the surface has no buffer or the import
+    /// failed (logged once).
+    fn gl_draw_item(&mut self, gl: &mut GlPipeline, toplevel: &ToplevelSurface) -> Option<DrawItem> {
+        let surface = toplevel.wl_surface();
+        with_states(surface, |states| {
+            let (buffer, scale, transform, damage) = {
+                let mut guard = states.cached_state.get::<SurfaceAttributes>();
+                let attrs = guard.current();
+                let buffer = match attrs.buffer.as_ref() {
+                    // Unmapped (buffer removed) or never attached.
+                    Some(BufferAssignment::NewBuffer(buffer)) => buffer.clone(),
+                    _ => return None,
+                };
+                let damage = attrs
+                    .damage
+                    .iter()
+                    .map(|d| match d {
+                        Damage::Buffer(rect) => *rect,
+                        // Scale is 1 and the transform Normal on this path
+                        // (others are only logged and drawn as-is), so
+                        // surface coords are buffer coords.
+                        Damage::Surface(rect) => Rectangle::new(
+                            Point::from((rect.loc.x, rect.loc.y)),
+                            Size::from((rect.size.w, rect.size.h)),
+                        ),
+                    })
+                    .collect::<Vec<_>>();
+                (buffer, attrs.buffer_scale, attrs.buffer_transform, damage)
+            };
+            let geometry = states
+                .cached_state
+                .get::<SurfaceCachedState>()
+                .current()
+                .geometry;
+
+            if scale != 1 && !self.logged_unsupported_scale {
+                tracing::warn!(
+                    "wayland compositor '{}': buffer scale {scale} is unsupported, drawing 1:1",
+                    self.socket_name
+                );
+                self.logged_unsupported_scale = true;
+            }
+            if transform != wl_output::Transform::Normal && !self.logged_unsupported_transform {
+                tracing::warn!(
+                    "wayland compositor '{}': buffer transform {transform:?} is unsupported, drawing untransformed",
+                    self.socket_name
+                );
+                self.logged_unsupported_transform = true;
+            }
+
+            let buffer_size = match get_dmabuf(&buffer) {
+                Ok(dmabuf) => {
+                    let size = dmabuf.size();
+                    (size.w, size.h)
+                }
+                Err(_) => match with_buffer_contents(&buffer, |_, _, data| (data.width, data.height))
+                {
+                    Ok(size) => size,
+                    Err(e) => {
+                        tracing::debug!("composite skip: buffer access failed: {e}");
+                        return None;
+                    }
+                },
+            };
+            let pos = window_buffer_pos(
+                (self.width as i32, self.height as i32),
+                buffer_size,
+                geometry,
+            );
+
+            let texture = match get_dmabuf(&buffer) {
+                Ok(dmabuf) => gl.import_dmabuf(dmabuf),
+                Err(_) => gl.import_shm(&buffer, states, &damage),
+            };
+            match texture {
+                Ok(texture) => Some(DrawItem {
+                    texture,
+                    pos: Point::from((pos.x, pos.y)),
+                }),
+                Err(e) => {
+                    if !self.logged_gl_import_failure {
+                        tracing::warn!(
+                            "wayland compositor '{}': buffer import failed ({e:#}); skipping the toplevel",
+                            self.socket_name
+                        );
+                        self.logged_gl_import_failure = true;
+                    }
+                    None
+                }
+            }
+        })
     }
 
     /// Drain pending wl_callback frame callbacks of all toplevel surfaces —
@@ -457,17 +646,7 @@ impl WaylandState {
         geometry: Option<Rectangle<i32, Logical>>,
     ) -> bool {
         let (canvas_w, canvas_h) = (self.width as i32, self.height as i32);
-        let (win_w, win_h, geo_off) = match geometry {
-            Some(rect) if rect.size.w > 0 && rect.size.h > 0 => {
-                (rect.size.w, rect.size.h, rect.loc)
-            }
-            _ => (data.width, data.height, Point::from((0, 0))),
-        };
-        // Windows are centered on the single output.
-        let dst = Point::from((
-            (canvas_w - win_w) / 2 - geo_off.x,
-            (canvas_h - win_h) / 2 - geo_off.y,
-        ));
+        let dst = window_buffer_pos((canvas_w, canvas_h), (data.width, data.height), geometry);
 
         // The pool may be mutated by the client concurrently; this is the
         // access pattern smithay's own CPU paths use inside the guard.
@@ -496,6 +675,26 @@ impl WaylandState {
 enum PixelAlpha {
     Opaque,
     Premultiplied,
+}
+
+/// The canvas position of a toplevel's buffer top-left, shared by the CPU
+/// and the GL path: windows are centered on the single output; when an xdg
+/// window geometry is set, the *window* is centered and the buffer lands at
+/// `window position - geometry.loc` (CSD shadow margins sit outside the
+/// window rect). Without a geometry the buffer itself is the window.
+fn window_buffer_pos(
+    canvas: (i32, i32),
+    buffer: (i32, i32),
+    geometry: Option<Rectangle<i32, Logical>>,
+) -> Point<i32, Logical> {
+    let (win_w, win_h, geo_off) = match geometry {
+        Some(rect) if rect.size.w > 0 && rect.size.h > 0 => (rect.size.w, rect.size.h, rect.loc),
+        _ => (buffer.0, buffer.1, Point::from((0, 0))),
+    };
+    Point::from((
+        (canvas.0 - win_w) / 2 - geo_off.x,
+        (canvas.1 - win_h) / 2 - geo_off.y,
+    ))
 }
 
 /// Copy/blend an ARGB8888/XRGB8888 (LE: B,G,R,X) buffer onto the canvas at
@@ -605,7 +804,11 @@ impl CompositorHandler for WaylandState {
 delegate_compositor!(WaylandState);
 
 impl BufferHandler for WaylandState {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
+        // The renderer may still cache a texture for the destroyed buffer's
+        // dmabuf; drop it at the next frame so the buffer is really freed.
+        self.gl_cache_cleanup = true;
+    }
 }
 
 impl ShmHandler for WaylandState {
@@ -615,6 +818,36 @@ impl ShmHandler for WaylandState {
 }
 
 delegate_shm!(WaylandState);
+
+impl DmabufHandler for WaylandState {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        // The renderer lives in the frame timer and is unreachable from
+        // protocol dispatch, so sanity-check against the advertised formats
+        // here; the real import happens per frame at composite time.
+        let supported = self
+            .dmabuf_formats
+            .as_ref()
+            .is_some_and(|formats| formats.contains(&dmabuf.format()));
+        if supported {
+            if let Err(e) = notifier.successful::<Self>() {
+                tracing::warn!("wayland compositor: dmabuf import notification failed: {e}");
+            }
+        } else {
+            tracing::warn!(
+                "wayland compositor '{}': client submitted a dmabuf outside the advertised formats ({:?})",
+                self.socket_name,
+                dmabuf.format()
+            );
+            notifier.failed();
+        }
+    }
+}
+
+delegate_dmabuf!(WaylandState);
 
 impl SeatHandler for WaylandState {
     type KeyboardFocus = WlSurface;
@@ -662,6 +895,7 @@ impl XdgShellHandler for WaylandState {
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.toplevels.retain(|t| t != &surface);
+        self.gl_cache_cleanup = true;
         self.dirty = true;
     }
 
