@@ -60,8 +60,12 @@ WAYLAND_DISPLAY=desktop-0`.
 
 ## Current limitations
 
-- **SHM clients only** — CPU shared-memory buffers (wl_shm). GPU buffer
-  passing (dmabuf/EGL) is not implemented.
+- **GPU clients need a working GPU/EGL driver on the host** — with one,
+  `zwp_linux_dmabuf_v1` is advertised and GL clients (Qt Quick, browsers,
+  mpv, Gazebo) render straight into the stream; without one the compositor
+  falls back to CPU compositing and only SHM (wl_shm) clients work. The DRM
+  device defaults to `/dev/dri/renderD128` then `/dev/dri/card0`, overridable
+  with `LIVE777_WAYLAND_DRM_DEVICE`.
 - **No input injection** — a seat with keyboard/pointer exists so clients can
   bind it, but no input events are generated.
 - **No audio** — the stream is video-only.

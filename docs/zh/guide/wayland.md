@@ -60,8 +60,11 @@ Environment=XDG_RUNTIME_DIR=/run/live777
 
 ## 当前限制
 
-- **仅支持 SHM 客户端** —— CPU 共享内存 buffer（wl_shm）。GPU buffer
-  传递（dmabuf/EGL）尚未实现。
+- **GPU 客户端需要宿主机上有可用的 GPU/EGL 驱动** —— 满足条件时会广播
+  `zwp_linux_dmabuf_v1`，GL 客户端（Qt Quick、浏览器、mpv、Gazebo 等）
+  可以直接渲染进流；不满足时合成器回退到 CPU 合成，仅支持 SHM
+  （wl_shm）客户端。DRM 设备默认依次尝试 `/dev/dri/renderD128` 和
+  `/dev/dri/card0`，可用 `LIVE777_WAYLAND_DRM_DEVICE` 覆盖。
 - **不支持输入注入** —— 提供了带键盘/指针的 seat 以便客户端绑定，
   但不会产生任何输入事件。
 - **没有音频** —— 该流只有视频。
