@@ -13,6 +13,7 @@
 mod compositor;
 mod convert;
 mod encoder;
+mod gl;
 mod pattern;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
