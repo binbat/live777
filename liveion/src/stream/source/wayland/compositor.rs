@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -50,6 +51,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ArgbFrame, WaylandUrlConfig};
 
+/// How long the compositor may stay silent once it has taken over from the
+/// test pattern before it repaints the (possibly unchanged) canvas anyway,
+/// giving the encoder a GOP boundary for late-joining subscribers.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+
 /// A running headless compositor. The thread exits when `cancel` is
 /// cancelled; dropping the [`CompositorHandle`] also cancels (so the thread
 /// can never outlive its owner), and [`join`](Self::join) awaits it.
@@ -86,6 +92,7 @@ pub fn spawn(
     config: &WaylandUrlConfig,
     frame_tx: mpsc::Sender<ArgbFrame>,
     cancel: CancellationToken,
+    repaint_request: Arc<AtomicBool>,
 ) -> Result<CompositorHandle> {
     // Pre-check for an actionable error; smithay's bind would surface the
     // same condition as a bare RuntimeDirNotSet.
@@ -104,7 +111,7 @@ pub fn spawn(
     let display: Display<WaylandState> =
         Display::new().map_err(|e| anyhow::anyhow!("failed to create Wayland display: {e}"))?;
     let dh = display.handle();
-    let state = WaylandState::new(&dh, config, frame_tx);
+    let state = WaylandState::new(&dh, config, frame_tx, repaint_request);
 
     let listener = ListeningSocketSource::with_name(&config.socket_name).map_err(|e| {
         anyhow::anyhow!(
@@ -191,6 +198,14 @@ fn run(
             loop_signal.stop();
             return TimeoutAction::Drop;
         }
+        if state.repaint_request.swap(false, Ordering::Relaxed) {
+            state.dirty = true;
+            state.force_keyframe_next = true;
+        }
+        if state.started && state.last_emit.elapsed() >= KEEPALIVE_INTERVAL {
+            state.dirty = true;
+            state.force_keyframe_next = true;
+        }
         state.produce_frame();
         if let Err(e) = state.display_handle.flush_clients() {
             tracing::debug!("wayland compositor: client flush error: {e}");
@@ -221,6 +236,17 @@ struct WaylandState {
     origin: Instant,
     /// A commit/toplevel change happened since the last emitted frame.
     dirty: bool,
+    /// A subscriber asked for a keyframe (via the source's RTCP task): the
+    /// next timer tick must repaint and re-emit even without any commit,
+    /// or a static desktop would never deliver the requested IDR.
+    repaint_request: Arc<AtomicBool>,
+    /// Last successful emit; drives the idle keepalive (one repaint every
+    /// few seconds) so late-joining subscribers always get a keyframe to
+    /// sync on even when the desktop is static.
+    last_emit: Instant,
+    /// The next emitted frame must be an IDR (set by the timer on repaint
+    /// requests and keepalives, moved onto the frame at emit).
+    force_keyframe_next: bool,
     /// The first frame with actual client content was emitted; before that,
     /// the test pattern stays on (handled by the source's frame mux).
     started: bool,
@@ -246,6 +272,7 @@ impl WaylandState {
         dh: &DisplayHandle,
         config: &WaylandUrlConfig,
         frame_tx: mpsc::Sender<ArgbFrame>,
+        repaint_request: Arc<AtomicBool>,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(dh);
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
@@ -288,6 +315,9 @@ impl WaylandState {
             frame_tx,
             origin: Instant::now(),
             dirty: false,
+            repaint_request,
+            last_emit: Instant::now(),
+            force_keyframe_next: false,
             started: false,
             toplevels: Vec::new(),
             logged_unsupported_scale: false,
@@ -321,6 +351,12 @@ impl WaylandState {
         for toplevel in &toplevels {
             drew_content |= self.composite_toplevel(&mut canvas, toplevel);
         }
+        if self.dirty && !drew_content {
+            tracing::debug!(
+                "produce_frame: dirty tick drew no content ({} toplevels)",
+                toplevels.len()
+            );
+        }
 
         if !self.started && !drew_content {
             self.dirty = false;
@@ -333,10 +369,12 @@ impl WaylandState {
             stride: self.width * 4,
             data: canvas,
             pts_us: self.origin.elapsed().as_micros() as u64,
+            force_keyframe: std::mem::take(&mut self.force_keyframe_next),
         };
         if self.frame_tx.try_send(frame).is_ok() {
             self.started = true;
             self.dirty = false;
+            self.last_emit = Instant::now();
             self.send_frame_callbacks();
         }
         // Channel full (encoder busy): keep the dirty flag so the next tick
@@ -368,7 +406,10 @@ impl WaylandState {
                 let buffer = match attrs.buffer.as_ref() {
                     // Unmapped (buffer removed) or never attached.
                     Some(BufferAssignment::NewBuffer(buffer)) => buffer.clone(),
-                    _ => return false,
+                    other => {
+                        tracing::debug!("composite skip: buffer assignment is {other:?}");
+                        return false;
+                    }
                 };
                 (buffer, attrs.buffer_scale, attrs.buffer_transform)
             };
@@ -396,7 +437,10 @@ impl WaylandState {
             with_buffer_contents(&buffer, |pool, pool_len, data| {
                 self.blit(canvas, pool, pool_len, data, geometry)
             })
-            .unwrap_or(false)
+            .unwrap_or_else(|e| {
+                tracing::debug!("composite skip: buffer access failed: {e}");
+                false
+            })
         })
     }
 
@@ -1008,7 +1052,13 @@ mod client_tests {
         .unwrap();
         let (frame_tx, mut frame_rx) = mpsc::channel(4);
         let cancel = CancellationToken::new();
-        let handle = spawn(&config, frame_tx, cancel.clone()).unwrap();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
         assert!(socket_path.exists(), "socket file must exist after spawn");
 
         // No clients: the compositor must stay silent (the pattern generator
@@ -1073,5 +1123,68 @@ mod client_tests {
             !socket_path.exists(),
             "socket file must be removed when the compositor stops"
         );
+    }
+
+    /// A static desktop (one commit, then silence) must still serve new
+    /// subscribers: an explicit repaint request re-emits the canvas as an
+    /// IDR, and the idle keepalive keeps producing IDRs on its own.
+    #[tokio::test]
+    async fn compositor_repaints_on_request_and_keepalive() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-repaint");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-repaint?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, mut frame_rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let repaint = Arc::new(AtomicBool::new(false));
+        let handle = spawn(&config, frame_tx, cancel.clone(), repaint.clone()).unwrap();
+
+        // Client draws once and goes idle.
+        let _client = add_toplevel(320, 240, &fill_solid(RED), None);
+        let frame = wait_pixel(&mut frame_rx, 160, 120, RED, Duration::from_secs(10)).await;
+        assert!(
+            !frame.force_keyframe,
+            "an ordinary commit must not force an IDR"
+        );
+
+        // Quiesced: nothing new until requested (within the keepalive window).
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), frame_rx.recv())
+                .await
+                .is_err(),
+            "a static desktop must not emit unprompted frames"
+        );
+
+        // PLI-style repaint request: one IDR with the unchanged content.
+        repaint.store(true, Ordering::Relaxed);
+        let frame = next_frame(&mut frame_rx, Duration::from_secs(2)).await;
+        assert!(
+            frame.force_keyframe,
+            "a repaint-requested frame must be an IDR"
+        );
+        assert_eq!(frame_px(&frame, 160, 120), RED, "repaint keeps the canvas");
+
+        // Idle keepalive: another IDR arrives within about two intervals.
+        let deadline = Instant::now() + KEEPALIVE_INTERVAL * 2 + Duration::from_millis(500);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "no keepalive IDR arrived");
+            let frame = next_frame(&mut frame_rx, remaining).await;
+            if frame.force_keyframe {
+                assert_eq!(frame_px(&frame, 160, 120), RED);
+                break;
+            }
+        }
+
+        cancel.cancel();
+        handle.join().await;
     }
 }

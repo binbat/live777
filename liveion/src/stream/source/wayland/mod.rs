@@ -43,6 +43,10 @@ pub struct ArgbFrame {
     pub data: Vec<u8>,
     /// Presentation time, CLOCK_MONOTONIC-relative microseconds.
     pub pts_us: u64,
+    /// The pipeline must encode this frame as an IDR (set by the compositor
+    /// for PLI-triggered repaints and idle keepalives, so a static desktop
+    /// still hands every new subscriber a keyframe to sync on).
+    pub force_keyframe: bool,
 }
 
 /// Parsed `wayland://<socket-name>?width=&height=&fps=&bitrate=` URL.
@@ -160,6 +164,11 @@ pub struct WaylandSource {
     /// Set by the RTCP task on PLI/FIR; consumed by the pipeline, which
     /// forces the encoder's next frame to an IDR.
     keyframe_request: Arc<AtomicBool>,
+    /// Set by the RTCP task on PLI/FIR; consumed by the compositor's frame
+    /// timer, which repaints and re-emits the current canvas even when no
+    /// client commit happened — otherwise a static desktop would never
+    /// deliver the requested keyframe to a newly joined subscriber.
+    repaint_request: Arc<AtomicBool>,
     /// Live target bitrate; the pipeline recreates the encoder when it
     /// diverges (OpenH264's safe API has no runtime retune, and recreation
     /// is sub-millisecond, starting with a fresh IDR).
@@ -189,6 +198,7 @@ impl WaylandSource {
             rtcp_handle: None,
             rtcp_sender: None,
             keyframe_request: Arc::new(AtomicBool::new(false)),
+            repaint_request: Arc::new(AtomicBool::new(false)),
             dynamic_profile: Arc::new(tokio::sync::RwLock::new(None)),
             running: false,
         })
@@ -313,7 +323,7 @@ async fn pipeline_loop(
         if let Err(e) = encoder.set_bitrate(want_bitrate) {
             tracing::warn!("[{}] encoder bitrate change failed: {}", stream_id, e);
         }
-        if keyframe_request.swap(false, Ordering::Relaxed) {
+        if keyframe_request.swap(false, Ordering::Relaxed) || frame.force_keyframe {
             encoder.request_keyframe();
         }
 
@@ -451,6 +461,7 @@ impl StreamSource for WaylandSource {
 
         let (rtcp_tx, mut rtcp_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let keyframe_request = self.keyframe_request.clone();
+        let repaint_request = self.repaint_request.clone();
         let rtcp_task = tokio::spawn(async move {
             while let Some(data) = rtcp_rx.recv().await {
                 if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
@@ -464,6 +475,7 @@ impl StreamSource for WaylandSource {
                                 .is_some()
                         {
                             keyframe_request.store(true, Ordering::Relaxed);
+                            repaint_request.store(true, Ordering::Relaxed);
                         }
                     }
                 }
@@ -485,8 +497,13 @@ impl StreamSource for WaylandSource {
         ));
 
         // Binds the Wayland socket synchronously; a failure fails start().
-        let compositor = compositor::spawn(&self.config, comp_tx, cancel.clone())
-            .map_err(|e| anyhow::anyhow!("[{}] {e}", self.stream_id))?;
+        let compositor = compositor::spawn(
+            &self.config,
+            comp_tx,
+            cancel.clone(),
+            self.repaint_request.clone(),
+        )
+        .map_err(|e| anyhow::anyhow!("[{}] {e}", self.stream_id))?;
         tracing::info!(
             "[{}] wayland source: WAYLAND_DISPLAY={} {}x{}@{} {} bps",
             self.stream_id,
@@ -682,6 +699,7 @@ mod tests {
             stride: 256,
             data: vec![mark; 64 * 64 * 4],
             pts_us: 0,
+            force_keyframe: false,
         };
 
         // Pattern frames flow until the compositor produces.

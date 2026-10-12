@@ -148,6 +148,7 @@ impl Pattern {
             stride: stride as u32,
             data,
             pts_us,
+            force_keyframe: false,
         }
     }
 }
