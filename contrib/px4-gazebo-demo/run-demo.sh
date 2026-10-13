@@ -33,7 +33,12 @@ exec docker run --rm -t \
     echo '=== forest world up, starting px4 ==='
 
     cd build/px4_sitl_default
-    PX4_SIM_MODEL=gz_x500_mono_cam GZ_IP=127.0.0.1 ./bin/px4 &
+    # pxh shell spins at full speed when stdin is a dead TTY (gigabytes of
+    # prompt redraws). Feed it a held-open fifo instead: no spam, and later
+    # commands can be injected with: echo 'commander takeoff' > /tmp/px4-stdin
+    mkfifo /tmp/px4-stdin
+    tail -f /dev/null > /tmp/px4-stdin &
+    PX4_SIM_MODEL=gz_x500_mono_cam GZ_IP=127.0.0.1 ./bin/px4 < /tmp/px4-stdin > /tmp/px4-console.log 2>&1 &
     PX4_PID=\$!
 
     echo '=== waiting for the camera image topic ==='

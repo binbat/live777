@@ -189,9 +189,16 @@ the Gazebo GUI window chrome.
    `gz sim -s --server-config <file>` is gone; Jetty reads
    `GZ_SIM_SERVER_CONFIG_PATH` (gz_env.sh exports it too). Without the config,
    the `Sensors` system never loads and camera topics never appear.
-7. **PX4's pxh console spam is one giant never-newlined line** — it breaks
-   `grep` pipelines (block buffering / giant line buffering). The demo scripts
-   allocate a TTY (`docker run -t`) instead of filtering.
+7. **PX4's pxh console spins at full CPU on a dead/closed stdin**, redrawing
+   the prompt as one never-newlined line at ~11 MB/s (26 GiB in 40 min, and
+   /tmp is tmpfs — that's RAM). run-demo.sh feeds px4 a held-open fifo
+   instead (`tail -f /dev/null > /tmp/px4-stdin`, px4 reads it), which both
+   stops the spam AND keeps a command channel open:
+   `echo 'commander takeoff' > /tmp/px4-stdin` flies the drone. Do NOT "fix"
+   this by piping px4 through grep — a never-newlined line breaks grep's
+   buffering. Also: `docker run -i` fails without a TTY; use `-t` only, and
+   launch in-container background processes with `docker exec -d` (a
+   backgrounded process in a foreground `docker exec` dies with the exec).
 8. **`docker run -i` fails in non-tty contexts** ("cannot attach stdin to a
    TTY-enabled container"); use `-t` only. For background GUI launches inside a
    running container, use `docker exec -d` — a backgrounded process inside a
@@ -230,10 +237,9 @@ the Gazebo GUI window chrome.
 
 ## 8. If you want to extend this
 
-- Make the drone fly: PX4's nsh console runs on the container's TTY; inject
-  `commander takeoff` via `docker exec px4-jetty ...` into the px4 stdin (the
-  demo's `docker run -t` keeps it), or use mavsdk/QGC against
-  `udp://127.0.0.1:14550` (host network).
+- Make the drone fly: `docker exec px4-jetty bash -c "echo 'commander takeoff' > /tmp/px4-stdin"`
+  (the demo feeds px4's console from a held-open fifo, see pitfall #7), or use
+  mavsdk/QGC against `udp://127.0.0.1:14550` (host network).
 - Follow-ups on the live777 side live in the feature branch: input injection
   (keyboard/mouse over DataChannel → smithay seat), VAAPI hardware encode,
   subsurface/popup compositing.
