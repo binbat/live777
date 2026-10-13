@@ -23,7 +23,9 @@ exec docker run --rm -t \
     git config --global --add safe.directory '*'
     cd /src/PX4-Autopilot
     echo '=== reconfigure + build (ninja, incremental) ==='
-    cmake -S . -B build/px4_sitl_default >/dev/null
+    # -GNinja matters on a cold checkout: cmake's default is Unix Makefiles,
+    # while a warm build dir pins whatever generator created it
+    cmake -S . -B build/px4_sitl_default -GNinja >/dev/null
     ninja -C build/px4_sitl_default
 
     . build/px4_sitl_default/rootfs/gz_env.sh
