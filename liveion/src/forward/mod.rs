@@ -11,6 +11,7 @@ use tracing::debug;
     feature = "source-sdp",
     feature = "source-whep",
     feature = "native-source",
+    feature = "source-wayland",
     feature = "rtsp"
 ))]
 use tracing::error;
@@ -26,6 +27,7 @@ use tracing::trace;
     feature = "source-sdp",
     feature = "source-whep",
     feature = "native-source",
+    feature = "source-wayland",
     feature = "rtsp"
 ))]
 use tracing::warn;
@@ -50,6 +52,7 @@ pub use bridge::SourceBridge;
     feature = "source-sdp",
     feature = "source-whep",
     feature = "native-source",
+    feature = "source-wayland",
     feature = "rtsp"
 ))]
 use rtc::rtp::packet::Packet;
@@ -1144,7 +1147,8 @@ impl PeerForward {
         feature = "source-rtsp",
         feature = "source-sdp",
         feature = "source-whep",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     pub async fn inject_video_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
         let tracks = self.internal.publish_tracks.read().await;

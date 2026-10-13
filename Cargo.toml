@@ -144,6 +144,11 @@ test-case = "3"
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 
+# Wayland client for the wayland-source end-to-end test (tests/wayland_source.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+
 [dependencies]
 liveion = { path = "liveion" }
 liveman = { path = "liveman" }
@@ -184,6 +189,8 @@ source-sdp = ["liveion/source-sdp"]
 source-rtsp = ["liveion/source-rtsp"]
 source-whep = ["liveion/source-whep"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
+# Wayland compositor source (Linux-only; not part of source-all)
+source-wayland = ["liveion/source-wayland"]
 # Static output targets: base feature shared by all target-* kinds
 target = ["liveion/target"]
 # Static WHIP push targets (declarative cascade-push)

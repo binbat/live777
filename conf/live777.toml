@@ -80,6 +80,19 @@ ice_udp_addrs = ["auto"]
 # - WHEP pull (static cascade-pull): whep://[token@]host:port/whep/<stream>
 # [[stream.test-source.sources]]
 # url = "whep://token@edge-0:7777/whep/cam1"
+# Need enabled `--features=source-wayland`
+# - Wayland compositor (Linux only): wayland://<socket-name>?width=1280&height=720&fps=30&bitrate=2000000
+#   live777 acts as a headless Wayland display server: GUI apps connect to
+#   the socket and render into it, and the composited image is published as
+#   an H.264 stream. All query params are optional (defaults: 1280x720@30,
+#   2 Mbps). The socket name defaults to live777-<stream>.
+#   The compositor socket is created under $XDG_RUNTIME_DIR, so that variable
+#   must be set when live777 starts (system services: use a RuntimeDirectory
+#   plus Environment=XDG_RUNTIME_DIR=/run/<dir>). Point apps at the display
+#   with: WAYLAND_DISPLAY=<socket-name> my-application
+#   Until the first app connects, the stream carries a moving test pattern.
+# [[stream.test-source.sources]]
+# url = "wayland://display-0?width=1920&height=1080&fps=30&bitrate=4000000"
 
 # Static output targets: push this stream to downstream WHIP endpoints
 # (declarative cascade-push). The push is media-driven: it is established

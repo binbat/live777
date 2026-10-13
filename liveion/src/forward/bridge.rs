@@ -36,7 +36,8 @@ use tracing::{debug, error, info, trace, warn};
     feature = "source-rtsp",
     feature = "source-sdp",
     feature = "source-whep",
-    feature = "native-source"
+    feature = "native-source",
+    feature = "source-wayland"
 ))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
@@ -118,7 +119,8 @@ impl SourceBridge {
             feature = "source-rtsp",
             feature = "source-sdp",
             feature = "source-whep",
-            feature = "native-source"
+            feature = "native-source",
+            feature = "source-wayland"
         ))]
         let forward_clone = self.forward.clone();
         let source_id_clone = self.source_id.clone();
@@ -141,14 +143,16 @@ impl SourceBridge {
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             let mut video_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             )))]
             let video_count = 0u64;
             #[cfg(any(
@@ -191,7 +195,10 @@ impl SourceBridge {
                                 packet_count += 1;
 
                                 let inject_result: anyhow::Result<()> = match packet {
-                                    #[cfg(feature = "native-source")]
+                                    #[cfg(any(
+                                        feature = "native-source",
+                                        feature = "source-wayland"
+                                    ))]
                                     MediaPacket::RtpPacket(packet) => {
                                         video_count += 1;
                                         if video_count % LOG_PACKET_INTERVAL == 1 {
@@ -294,7 +301,8 @@ impl SourceBridge {
                                         feature = "source-rtsp",
                                         feature = "source-sdp",
                                         feature = "source-whep",
-                                        feature = "native-source"
+                                        feature = "native-source",
+                                        feature = "source-wayland"
                                     )))]
                                     _ => Ok(()),
                                 };
