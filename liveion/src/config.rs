@@ -171,11 +171,6 @@ impl Default for Log {
 pub const DEFAULT_CABLE_CAPACITY: usize = 1024;
 
 #[cfg(feature = "cable")]
-fn default_cable_ordered() -> bool {
-    true
-}
-
-#[cfg(feature = "cable")]
 fn default_cable_create() -> bool {
     true
 }
@@ -193,10 +188,13 @@ fn default_cable_capacity() -> usize {
 pub struct CableConfig {
     /// Cable identity: peer channels created with this label join this cable.
     pub label: String,
-    /// `ordered` of the server-created channel (and the declared intent for
-    /// endpoint-created ones). Default true.
-    #[serde(default = "default_cable_ordered")]
-    pub ordered: bool,
+    /// `ordered` of the server-created channel; unset means the WebRTC
+    /// default (ordered and reliable). Irrelevant for `create = false`
+    /// cables: there each endpoint's own channel parameters apply per leg —
+    /// a cable is SFU-bridged, not end-to-end, so the two legs may
+    /// legitimately differ.
+    #[serde(default)]
+    pub ordered: Option<bool>,
     /// Partial reliability by retransmission count; mutually exclusive with
     /// `max_packet_life_time`. Unset (with it unset) means fully reliable.
     #[serde(default)]
@@ -228,7 +226,7 @@ impl CableConfig {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
-            ordered: default_cable_ordered(),
+            ordered: None,
             max_retransmits: None,
             max_packet_life_time: None,
             protocol: String::new(),
@@ -248,10 +246,10 @@ pub enum CableRole {
     /// subscribers' messages are sent to the UDP target. (The pre-cable
     /// `[stream.x.channel]` behavior.)
     #[default]
-    Source,
+    Publisher,
     /// A subscriber's seat: UDP input is delivered to the publisher; the
     /// publisher's messages are sent to the UDP target.
-    Target,
+    Subscriber,
 }
 
 /// One cable <-> UDP bridge. `listen` and `target` are independent: setting
@@ -296,7 +294,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(s.role, CableRole::Source);
+        assert_eq!(s.role, CableRole::Publisher);
         assert_eq!(s.listen.unwrap().to_string(), "0.0.0.0:7774");
         assert_eq!(s.target.unwrap().to_string(), "127.0.0.1:1234");
     }
@@ -306,12 +304,12 @@ mod tests {
     fn test_cable_udp_config_ipv6() {
         let s: CableUdpConfig = toml::from_str(
             r#"
-            role = "target"
+            role = "subscriber"
             listen = "[::]:7774"
             "#,
         )
         .unwrap();
-        assert_eq!(s.role, CableRole::Target);
+        assert_eq!(s.role, CableRole::Subscriber);
         assert_eq!(s.listen.unwrap().to_string(), "[::]:7774");
         assert!(s.target.is_none());
     }
@@ -321,7 +319,7 @@ mod tests {
     fn test_cable_config_defaults() {
         let c: CableConfig = toml::from_str(r#"label = "control""#).unwrap();
         assert_eq!(c.label, "control");
-        assert!(c.ordered);
+        assert_eq!(c.ordered, None);
         assert!(c.create);
         assert_eq!(c.capacity, DEFAULT_CABLE_CAPACITY);
         assert!(c.max_retransmits.is_none());

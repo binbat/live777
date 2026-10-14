@@ -65,8 +65,10 @@ impl From<&crate::config::CableConfig> for api::response::Cable {
                 .iter()
                 .map(|u| api::response::CableUdp {
                     role: match u.role {
-                        crate::config::CableRole::Source => api::response::CableRole::Source,
-                        crate::config::CableRole::Target => api::response::CableRole::Target,
+                        crate::config::CableRole::Publisher => api::response::CableRole::Publisher,
+                        crate::config::CableRole::Subscriber => {
+                            api::response::CableRole::Subscriber
+                        }
                     },
                     listen: u.listen.map(|a| a.to_string()),
                     target: u.target.map(|a| a.to_string()),

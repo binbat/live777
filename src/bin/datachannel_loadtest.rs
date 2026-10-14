@@ -167,7 +167,7 @@ async fn setup_topology(
         liveion::config::StreamEntry {
             cables: vec![liveion::config::CableConfig {
                 udp: vec![liveion::config::CableUdpConfig {
-                    role: liveion::config::CableRole::Source,
+                    role: liveion::config::CableRole::Publisher,
                     listen: Some(format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap()),
                     target: Some(
                         format!("{}:{liveion_ch_target}", args.target_host)

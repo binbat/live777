@@ -2,8 +2,8 @@
 ///
 /// Each cable maps to independent UDP bridges configured per
 /// `[[stream.<name>.cables.udp]]` entry. The bridge takes a seat on the
-/// cable: `role = "source"` (the publisher's seat, the pre-cable
-/// `[stream.x.channel]` behavior) or `role = "target"` (a subscriber's
+/// cable: `role = "publisher"` (the publisher's seat, the pre-cable
+/// `[stream.x.channel]` behavior) or `role = "subscriber"` (a subscriber's
 /// seat). `listen` and `target` are independent — one without the other
 /// makes a one-way bridge.
 ///
@@ -12,7 +12,7 @@
 ///   [[stream.camera.cables]]
 ///   label = "control"
 ///   [[stream.camera.cables.udp]]
-///   role = "source"
+///   role = "publisher"
 ///   listen = "0.0.0.0:7774"
 ///   target = "127.0.0.1:1234"
 use std::net::SocketAddr;
@@ -217,7 +217,7 @@ mod tests {
 
     fn udp_config(listen: Option<SocketAddr>, target: Option<SocketAddr>) -> CableUdpConfig {
         CableUdpConfig {
-            role: CableRole::Source,
+            role: CableRole::Publisher,
             listen,
             target,
         }

@@ -2260,7 +2260,8 @@ impl PeerForwardInternal {
     async fn create_server_cables(&self, peer: &Arc<dyn PeerConnection>, publisher: bool) {
         for cfg in self.cables.server_created().cloned().collect::<Vec<_>>() {
             let init = webrtc::data_channel::RTCDataChannelInit {
-                ordered: cfg.ordered,
+                // Unset means the WebRTC default: ordered and reliable.
+                ordered: cfg.ordered.unwrap_or(true),
                 max_packet_life_time: cfg.max_packet_life_time,
                 max_retransmits: cfg.max_retransmits,
                 protocol: cfg.protocol.clone(),
@@ -3583,7 +3584,7 @@ mod dc_tests {
 
         let cable = crate::config::CableConfig {
             udp: vec![crate::config::CableUdpConfig {
-                role: crate::config::CableRole::Source,
+                role: crate::config::CableRole::Publisher,
                 listen: Some(listen),
                 target: Some("127.0.0.1:9".parse().unwrap()),
             }],

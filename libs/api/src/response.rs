@@ -58,7 +58,9 @@ pub struct Stream {
 pub struct Cable {
     /// Cable identity: peer channels created with this label join this cable.
     pub label: String,
-    pub ordered: bool,
+    /// Unset means the WebRTC default (ordered and reliable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordered: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_retransmits: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,13 +88,13 @@ pub struct CableUdp {
     pub target: Option<String>,
 }
 
-/// Which seat a cable <-> UDP bridge takes on the cable: `source` = the
-/// publisher's seat, `target` = a subscriber's seat.
+/// Which seat a cable <-> UDP bridge takes on the cable: `publisher` = the
+/// publisher's seat, `subscriber` = a subscriber's seat.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CableRole {
-    Source,
-    Target,
+    Publisher,
+    Subscriber,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

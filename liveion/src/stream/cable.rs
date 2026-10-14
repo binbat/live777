@@ -132,11 +132,11 @@ impl CableHub {
         for cable in self.cables.values() {
             for udp in &cable.config.udp {
                 let (dc_rx, dc_tx) = match udp.role {
-                    crate::config::CableRole::Source => (
+                    crate::config::CableRole::Publisher => (
                         udp.target.map(|_| cable.bus.to_publisher.subscribe()),
                         udp.listen.map(|_| cable.bus.to_subscribers.clone()),
                     ),
-                    crate::config::CableRole::Target => (
+                    crate::config::CableRole::Subscriber => (
                         udp.target.map(|_| cable.bus.to_subscribers.subscribe()),
                         udp.listen.map(|_| cable.bus.to_publisher.clone()),
                     ),

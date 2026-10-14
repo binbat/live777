@@ -1374,7 +1374,7 @@ a=end-of-candidates";
         offer_peer.set_local_description(offer.clone()).await?;
 
         let cable = crate::config::CableConfig {
-            ordered: false,
+            ordered: Some(false),
             max_retransmits: Some(0),
             ..crate::config::CableConfig::new("control")
         };
