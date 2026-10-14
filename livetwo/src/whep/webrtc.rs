@@ -9,6 +9,7 @@ use rtc::shared::marshal::{Marshal, MarshalSize};
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -17,7 +18,9 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
-use crate::datachannel::{DATA_CHANNEL_LABEL, run_data_channel_loop};
+use crate::datachannel::{
+    CableRouter, DATA_CHANNEL_LABEL, run_cable_send_dispatch, run_data_channel_loop,
+};
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 
@@ -155,6 +158,13 @@ pub async fn setup_whep_peer(
     let gather_complete = Arc::new(Notify::new());
     let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (dc_send_tx, dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let cable = if options.control_channel {
+        let router = CableRouter::new();
+        run_cable_send_dispatch(dc_send_rx, router.clone(), "whepfrom");
+        Some((dc_recv_tx, router))
+    } else {
+        None
+    };
 
     let peer = create_peer(
         ct,
@@ -163,8 +173,7 @@ pub async fn setup_whep_peer(
         codec_info.clone(),
         options,
         gather_complete.clone(),
-        dc_recv_tx,
-        dc_send_rx,
+        cable,
         state_tx,
         video_mime_tx,
     )
@@ -253,6 +262,9 @@ struct WhepTrackHandler {
     video_drop_count: Arc<AtomicU64>,
     /// Cumulative count of dropped audio RTP packets due to a full channel.
     audio_drop_count: Arc<AtomicU64>,
+    /// Cable plumbing (present when `control_channel` is on): accepted
+    /// server-created cable channels are bridged like the self-created one.
+    cable: Option<(mpsc::UnboundedSender<Vec<u8>>, CableRouter)>,
 }
 
 #[async_trait::async_trait]
@@ -443,6 +455,19 @@ impl PeerConnectionEventHandler for WhepTrackHandler {
             self.gather_complete.notify_one();
         }
     }
+
+    /// Server-created cable channels arrive here; bridge them like the
+    /// self-created control channel (which the server closes when it owns
+    /// the cable).
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        let Some((tx, router)) = &self.cable else {
+            debug!("WHEP: ignoring unexpected inbound data channel");
+            return;
+        };
+        let label = dc.label().await.unwrap_or_default();
+        info!("WHEP: accepted data channel '{}'", label);
+        run_data_channel_loop(dc, tx.clone(), router.clone(), "whepfrom");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,8 +478,7 @@ async fn create_peer(
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
     options: WhepPeerOptions,
     gather_complete: Arc<Notify>,
-    dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
-    dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    cable: Option<(mpsc::UnboundedSender<Vec<u8>>, CableRouter)>,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     video_mime_tx: Option<watch::Sender<Option<String>>>,
 ) -> Result<Arc<dyn PeerConnection>> {
@@ -471,6 +495,7 @@ async fn create_peer(
         video_mime_tx,
         video_drop_count: Arc::new(AtomicU64::new(0)),
         audio_drop_count: Arc::new(AtomicU64::new(0)),
+        cable: cable.clone(),
     });
 
     let config = RTCConfigurationBuilder::new()
@@ -504,7 +529,7 @@ async fn create_peer(
             .map_err(|error| anyhow!(format!("{:?}: {}", error, error)))?,
     );
 
-    if options.control_channel {
+    if let Some((dc_recv_tx, router)) = &cable {
         // Create DataChannel to participate in liveion's WHEP group
         let dc = peer
             .create_data_channel(DATA_CHANNEL_LABEL, None)
@@ -512,7 +537,7 @@ async fn create_peer(
             .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
 
         // Start the data channel polling loop
-        run_data_channel_loop(dc, dc_recv_tx, dc_send_rx, "whepfrom");
+        run_data_channel_loop(dc, dc_recv_tx.clone(), router.clone(), "whepfrom");
     }
 
     peer.add_transceiver_from_kind(

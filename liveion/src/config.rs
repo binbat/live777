@@ -167,26 +167,111 @@ impl Default for Log {
     }
 }
 
-#[cfg(feature = "source")]
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChannelConfig {
-    /// Local UDP socket address to bind for the DataChannel bridge.
-    /// Example: `"0.0.0.0:7774"` or `"[::]:7774"`.
-    pub listen: std::net::SocketAddr,
-    /// Target UDP address where DataChannel messages are forwarded.
-    /// Example: `"127.0.0.1:8890"`.
-    pub target: std::net::SocketAddr,
+#[cfg(feature = "cable")]
+pub const DEFAULT_CABLE_CAPACITY: usize = 1024;
+
+#[cfg(feature = "cable")]
+fn default_cable_ordered() -> bool {
+    true
 }
 
-#[cfg(feature = "source")]
-impl ChannelConfig {
-    /// Return the listen and target socket addresses.
-    pub fn endpoints(&self) -> (std::net::SocketAddr, std::net::SocketAddr) {
-        (self.listen, self.target)
+#[cfg(feature = "cable")]
+fn default_cable_create() -> bool {
+    true
+}
+
+#[cfg(feature = "cable")]
+fn default_cable_capacity() -> usize {
+    DEFAULT_CABLE_CAPACITY
+}
+
+/// A declared datachannel cable of a stream: a named, bidirectional message
+/// pipe joining every peer channel created with the same label — the
+/// publisher's and any subscriber's alike.
+#[cfg(feature = "cable")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CableConfig {
+    /// Cable identity: peer channels created with this label join this cable.
+    pub label: String,
+    /// `ordered` of the server-created channel (and the declared intent for
+    /// endpoint-created ones). Default true.
+    #[serde(default = "default_cable_ordered")]
+    pub ordered: bool,
+    /// Partial reliability by retransmission count; mutually exclusive with
+    /// `max_packet_life_time`. Unset (with it unset) means fully reliable.
+    #[serde(default)]
+    pub max_retransmits: Option<u16>,
+    /// Partial reliability by retransmission lifetime (ms); mutually
+    /// exclusive with `max_retransmits`.
+    #[serde(default)]
+    pub max_packet_life_time: Option<u16>,
+    /// Sub-protocol of the server-created channel. Empty by default.
+    #[serde(default)]
+    pub protocol: String,
+    /// Whether live777 creates this cable's channel on every session (the
+    /// parameters above take effect on the server-created channel; browsers
+    /// mirror them to both directions). When false, live777 only routes by
+    /// label and each endpoint creates its own channel with its own
+    /// parameters.
+    #[serde(default = "default_cable_create")]
+    pub create: bool,
+    /// Broadcast capacity of the cable's two direction buses, in messages.
+    #[serde(default = "default_cable_capacity")]
+    pub capacity: usize,
+    /// Cable <-> UDP bridges attached to this cable.
+    #[serde(default)]
+    pub udp: Vec<CableUdpConfig>,
+}
+
+#[cfg(feature = "cable")]
+impl CableConfig {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            ordered: default_cable_ordered(),
+            max_retransmits: None,
+            max_packet_life_time: None,
+            protocol: String::new(),
+            create: default_cable_create(),
+            capacity: default_cable_capacity(),
+            udp: Vec::new(),
+        }
     }
 }
 
-#[cfg(feature = "source")]
+/// Which seat a cable <-> UDP bridge takes on the cable.
+#[cfg(feature = "cable")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CableRole {
+    /// The publisher's seat: UDP input is delivered to all subscribers;
+    /// subscribers' messages are sent to the UDP target. (The pre-cable
+    /// `[stream.x.channel]` behavior.)
+    #[default]
+    Source,
+    /// A subscriber's seat: UDP input is delivered to the publisher; the
+    /// publisher's messages are sent to the UDP target.
+    Target,
+}
+
+/// One cable <-> UDP bridge. `listen` and `target` are independent: setting
+/// only `listen` makes an inject-only bridge (UDP -> cable), only `target`
+/// an export-only one (cable -> UDP). At least one must be set.
+#[cfg(feature = "cable")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CableUdpConfig {
+    #[serde(default)]
+    pub role: CableRole,
+    /// Local UDP socket address to bind for inbound packets (UDP -> cable).
+    /// Example: `"0.0.0.0:8891"` or `"[::]:8891"`.
+    #[serde(default)]
+    pub listen: Option<std::net::SocketAddr>,
+    /// UDP destination for cable messages (cable -> UDP).
+    /// Example: `"127.0.0.1:8890"`.
+    #[serde(default)]
+    pub target: Option<std::net::SocketAddr>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,25 +287,47 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_config_ipv4() {
-        let s = ChannelConfig {
-            listen: "0.0.0.0:7774".parse().unwrap(),
-            target: "127.0.0.1:1234".parse().unwrap(),
-        };
-        let (listen, target) = s.endpoints();
-        assert_eq!(listen.to_string(), "0.0.0.0:7774");
-        assert_eq!(target.to_string(), "127.0.0.1:1234");
+    #[cfg(feature = "cable")]
+    fn test_cable_udp_config_ipv4() {
+        let s: CableUdpConfig = toml::from_str(
+            r#"
+            listen = "0.0.0.0:7774"
+            target = "127.0.0.1:1234"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(s.role, CableRole::Source);
+        assert_eq!(s.listen.unwrap().to_string(), "0.0.0.0:7774");
+        assert_eq!(s.target.unwrap().to_string(), "127.0.0.1:1234");
     }
 
     #[test]
-    fn test_channel_config_ipv6() {
-        let s = ChannelConfig {
-            listen: "[::]:7774".parse().unwrap(),
-            target: "[::1]:1234".parse().unwrap(),
-        };
-        let (listen, target) = s.endpoints();
-        assert_eq!(listen.to_string(), "[::]:7774");
-        assert_eq!(target.to_string(), "[::1]:1234");
+    #[cfg(feature = "cable")]
+    fn test_cable_udp_config_ipv6() {
+        let s: CableUdpConfig = toml::from_str(
+            r#"
+            role = "target"
+            listen = "[::]:7774"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(s.role, CableRole::Target);
+        assert_eq!(s.listen.unwrap().to_string(), "[::]:7774");
+        assert!(s.target.is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "cable")]
+    fn test_cable_config_defaults() {
+        let c: CableConfig = toml::from_str(r#"label = "control""#).unwrap();
+        assert_eq!(c.label, "control");
+        assert!(c.ordered);
+        assert!(c.create);
+        assert_eq!(c.capacity, DEFAULT_CABLE_CAPACITY);
+        assert!(c.max_retransmits.is_none());
+        assert!(c.max_packet_life_time.is_none());
+        assert!(c.protocol.is_empty());
+        assert!(c.udp.is_empty());
     }
 
     #[test]
@@ -244,10 +351,6 @@ mod tests {
             level = "3.1"
             gop = 60
 
-            [channel]
-            listen = "0.0.0.0:8891"
-            target = "127.0.0.1:8890"
-
             [strategy]
             auto_create_whip = false
             "#,
@@ -265,10 +368,6 @@ mod tests {
             source.encoder.as_ref().unwrap().level.as_deref(),
             Some("3.1")
         );
-
-        let channel = entry.channel.as_ref().unwrap();
-        assert_eq!(channel.listen.to_string(), "0.0.0.0:8891");
-        assert_eq!(channel.target.to_string(), "127.0.0.1:8890");
 
         let strategy = entry.strategy.as_ref().unwrap();
         assert!(!strategy.auto_create_whip);
@@ -476,13 +575,54 @@ impl Config {
                     anyhow::anyhow!("stream[{}] source config error: {}", stream_id, e)
                 })?;
             }
-            if let Some(channel) = &entry.channel
-                && (channel.listen.port() == 0 || channel.target.port() == 0)
-            {
-                anyhow::bail!(
-                    "stream[{}] channel listen/target ports must be non-zero",
-                    stream_id
-                );
+        }
+
+        #[cfg(feature = "cable")]
+        for (stream_id, entry) in &self.stream.streams {
+            let mut seen_labels = std::collections::HashSet::new();
+            for cable in &entry.cables {
+                if cable.label.trim().is_empty() {
+                    anyhow::bail!("stream[{}] cable label cannot be empty", stream_id);
+                }
+                if !seen_labels.insert(cable.label.as_str()) {
+                    anyhow::bail!(
+                        "stream[{}] duplicate cable label '{}'",
+                        stream_id,
+                        cable.label
+                    );
+                }
+                if cable.max_retransmits.is_some() && cable.max_packet_life_time.is_some() {
+                    anyhow::bail!(
+                        "stream[{}] cable '{}': max_retransmits and max_packet_life_time are mutually exclusive",
+                        stream_id,
+                        cable.label
+                    );
+                }
+                if cable.capacity == 0 {
+                    anyhow::bail!(
+                        "stream[{}] cable '{}': capacity must be non-zero",
+                        stream_id,
+                        cable.label
+                    );
+                }
+                for udp in &cable.udp {
+                    if udp.listen.is_none() && udp.target.is_none() {
+                        anyhow::bail!(
+                            "stream[{}] cable '{}': a udp bridge needs at least one of listen/target",
+                            stream_id,
+                            cable.label
+                        );
+                    }
+                    if udp.listen.is_some_and(|a| a.port() == 0)
+                        || udp.target.is_some_and(|a| a.port() == 0)
+                    {
+                        anyhow::bail!(
+                            "stream[{}] cable '{}': udp listen/target ports must be non-zero",
+                            stream_id,
+                            cable.label
+                        );
+                    }
+                }
             }
         }
 
@@ -722,7 +862,9 @@ pub struct StreamConfig {
     ///
     /// Example:
     ///   [stream.dc-udp]
-    ///   [stream.dc-udp.channel]
+    ///   [[stream.dc-udp.cables]]
+    ///   label = "control"
+    ///   [[stream.dc-udp.cables.udp]]
     ///   listen = "0.0.0.0:8891"
     ///   target = "127.0.0.1:8890"
     ///
@@ -734,14 +876,18 @@ pub struct StreamConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamEntry {
     /// Media input sources for this stream.
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
-    /// Optional DataChannel <-> UDP bridge for this stream.
-    #[cfg(feature = "source")]
+    /// Declared datachannel cables of this stream: named, per-label message
+    /// pipes with optional channel parameters and cable <-> UDP bridges.
+    /// Channels whose label matches no declared cable mix onto the anonymous
+    /// default bus pair.
+    #[cfg(feature = "cable")]
     #[serde(default)]
-    pub channel: Option<ChannelConfig>,
+    pub cables: Vec<CableConfig>,
     /// Optional per-stream strategy override.
     #[serde(default)]
     pub strategy: Option<api::strategy::Strategy>,
@@ -774,8 +920,8 @@ impl Default for StreamEntry {
     fn default() -> Self {
         Self {
             sources: Vec::new(),
-            #[cfg(feature = "source")]
-            channel: None,
+            #[cfg(feature = "cable")]
+            cables: Vec::new(),
             strategy: None,
             hooks: HookConfig::default(),
             on_demand: false,

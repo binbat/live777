@@ -44,6 +44,55 @@ pub struct Stream {
     /// same stream across nodes, including cascade hops.
     #[serde(default)]
     pub stats_scope: StatsScope,
+    /// Declared datachannel cables of this stream (`[[stream.<id>.cables]]`).
+    /// Empty when the server was built without the `cable` feature or the
+    /// stream declares none.
+    #[serde(default)]
+    pub cables: Vec<Cable>,
+}
+
+/// A declared datachannel cable of a stream; see live777's `[[stream.<name>.
+/// cables]]` config.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Cable {
+    /// Cable identity: peer channels created with this label join this cable.
+    pub label: String,
+    pub ordered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retransmits: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_packet_life_time: Option<u16>,
+    #[serde(default)]
+    pub protocol: String,
+    /// Whether the server creates this cable's channel on every session
+    /// (false: endpoints create their own, the server only routes by label).
+    pub create: bool,
+    /// Broadcast capacity of the cable's two direction buses, in messages.
+    pub capacity: usize,
+    /// Cable <-> UDP bridges attached to this cable.
+    #[serde(default)]
+    pub udp: Vec<CableUdp>,
+}
+
+/// One cable <-> UDP bridge of a cable.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CableUdp {
+    pub role: CableRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listen: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+/// Which seat a cable <-> UDP bridge takes on the cable: `source` = the
+/// publisher's seat, `target` = a subscriber's seat.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CableRole {
+    Source,
+    Target,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -192,6 +241,7 @@ mod tests {
             on_demand: false,
             stats: StreamStats::default(),
             stats_scope: StatsScope::Node,
+            cables: vec![],
         }
     }
 

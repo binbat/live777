@@ -737,6 +737,7 @@ impl RawPublisher {
             livetwo::whip::core::PublishPeerOptions {
                 ice_servers: Vec::new(),
                 extra_video_codecs: Vec::new(),
+                cable: None,
             },
         )
         .await

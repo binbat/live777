@@ -175,11 +175,63 @@ requests coming back from the server (e.g. a puller's PLI relayed by
 mediamtx) reach the publisher. `whip://`, `rtp://` and `rtsp://` targets
 mix freely on one stream.
 
-## DataChannel Forward
+## DataChannel Forward (cables)
 
-> NOTE: About `createDataChannel()`
-> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
-> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+Every stream carries datachannel message pipes, bridged by the SFU: a
+channel's messages are broadcast to the other side(s) of the stream —
+publisher ↔ subscribers. This is not an end-to-end WebRTC DataChannel: the
+SFU terminates each peer's SCTP association and re-broadcasts messages, so
+there are no end-to-end ordering/reliability guarantees (a slow receiver's
+share is dropped past the bus capacity, with a warn log).
+
+A stream can declare named pipes — **cables** — keyed by channel label
+(build with the `cable` feature):
+
+```toml
+[stream.fpv]
+[[stream.fpv.cables]]
+label = "control"
+ordered = false          # default true
+max_retransmits = 0      # mutually exclusive with max_packet_life_time
+capacity = 1024          # per-cable bus buffer, in messages
+# create = true          # default: the server creates the channel on every
+                         # session (parameters below take effect). false:
+                         # route by label only — endpoints create their own.
+
+# Cable <-> UDP bridges (several per cable allowed):
+[[stream.fpv.cables.udp]]
+role = "source"          # publisher's seat: UDP <-> subscribers (default)
+listen = "0.0.0.0:8891"  # UDP -> cable injection; omit for export-only
+target = "127.0.0.1:8890" # cable -> UDP export; omit for inject-only
+
+[[stream.fpv.cables.udp]]
+role = "target"          # a subscriber's seat: UDP <-> the publisher
+listen = "0.0.0.0:8893"
+target = "127.0.0.1:8892"
+```
+
+- **Label routing**: a peer channel whose `label` matches a declared cable
+  joins that cable's buses; any other label mixes onto the anonymous default
+  bus pair (the pre-cable behavior), so existing clients keep working.
+- **Server-created channels** (`create = true`): live777 creates the
+  cable's channel on every session whose offer has an `m=application`
+  section, with the configured `ordered`/`max_retransmits`/
+  `max_packet_life_time`/`protocol` parameters (the DCEP creator declares
+  them; browsers mirror them to both directions). A client's own channel
+  with the same label is closed — it must fall back to the server-created
+  one it receives via `ondatachannel`. Creation triggers on the session's
+  first inbound channel OPEN (by then the SCTP association is established).
+- **Cable <-> UDP bridges** own their listen ports for the stream's whole
+  lifetime — a provisioned-stream reset does not rebind them.
+- `whipinto`/`whepfrom` accept server-created channels automatically; their
+  self-created `control` channel still carries the `m=application` section
+  into the offer.
+
+Limitations: `negotiated: true` (out-of-band) channels are not supported;
+the offer must carry `m=application` (the answer cannot add m-lines); on
+Rust (rtc-stack) peers, an *accepted* channel's reverse direction stays
+reliable/ordered until the upstream accept-mirror fix lands — server-created
+cables avoid this for browser peers.
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 

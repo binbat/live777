@@ -156,6 +156,11 @@ Key feature groups defined in the root `Cargo.toml`:
 - `target-rtsp`    — RTSP client-push output targets: push a stream to an
   RTSP server with ANNOUNCE/SETUP/RECORD (the counterpart of `source-rtsp`;
   built on the `libs/rtsp` client shared with whepfrom).
+- `cable`          — declared datachannel cables (`[[stream.<name>.cables]]`):
+  per-label message pipes with channel parameters (`ordered`,
+  `max_retransmits`/`max_packet_life_time`), per-cable bus `capacity`, and
+  cable <-> UDP bridges. Without it, datachannels forward through one
+  anonymous bus pair per stream.
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -164,7 +169,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp`
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,cable`
 instead of `--all-features`.
 
 ### Cross-Compilation
@@ -281,26 +286,41 @@ clients via Link headers).
   covers stats) — live rates push every tick while media flows, a silent
   stream's zero rate flushes exactly once, and an idle server sends
   nothing.
-  DataChannel lifecycle: every channel gets a read and a write task
+  DataChannel lifecycle: every stream owns a stream-level **cable hub**
+  (`stream/cable.rs`, held by `Manager::cable_hubs`) — an anonymous default
+  bus pair plus one bus pair per declared cable — so a provisioned-stream
+  reset (which recreates the forward) never churns the buses or the cable
+  UDP bridges' listen ports; bridges die with the hub (stream delete), via
+  `Drop` cancelling a hub token. A peer channel joins the cable matching its
+  label (`CableHub::route`), else the default pair. Every channel gets a
+  read and a write task
   (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
-  the per-stream publish/subscribe broadcast buses. The webrtc driver never
-  delivers `OnClose` for a server-side `PeerConnection::close` (it aborts
-  first), so each session carries a `CancellationToken` (`dc_cancel` on
-  `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
-  `Drop`) that both loops `select!` on — without it the read loop parks on
-  `poll()` forever, and its bus sender clone keeps the bus open, which used
-  to pin the `[stream.x.channel]` UDP bridge (and its listen port) of a
-  dead stream forever. `on_data_channel` only wires a channel whose peer
-  still owns a live session (a late announce from a replaced/torn-down
-  session is dropped), and both sides gate sends on `Connected`
-  (`wait_for_peer_connected`, 15 s). The UDP bridge itself
-  (`forward/channel.rs`) is owned by the forward: `PeerForwardInternal::close`
-  cancels it and awaits the socket release, so a provisioned-stream reset
-  rebinds the same port deterministically (`bind_with_retry` covers slow
-  external holders). The client side mirrors this: whepfrom's and whipinto's
-  channel bridges (the shared `livetwo::datachannel` module — UDP bridge,
-  channel poll loop, `CancelOnDrop`) run on a session-scoped token that
-  `whep::from` / `whip::into` cancels and awaits before returning. On the
+  its cable's buses; a bus send failure (no active receivers) drops the
+  message with a warn log instead of killing the loop. The webrtc driver
+  never delivers `OnClose` for a server-side `PeerConnection::close` (it
+  aborts first), so each session carries a `CancellationToken` (`dc_cancel`
+  on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
+  `Drop`) that both loops `select!` on. `on_data_channel` only wires a
+  channel whose peer still owns a live session (a late announce from a
+  replaced/torn-down session is dropped), and both sides gate sends on
+  `Connected` (`wait_for_peer_connected`, 15 s). With the `cable` feature,
+  cables with `create = true` get a server-created channel per session —
+  created on the session's first inbound channel OPEN (an inbound OPEN
+  proves the SCTP association is Established and the DTLS role resolved;
+  creating at `Connected` drops the OPEN write as non-Established and can
+  collide stream-id parity with the client's channels) — and a client-created
+  channel matching such a cable's label is closed (the server-created
+  channel wins). The cable UDP bridges (`forward/channel.rs`, `cable`
+  feature) take a `role`: `source` = the publisher's seat (UDP <-> all
+  subscribers; the pre-cable `[stream.x.channel]` behavior), `target` = a
+  subscriber's seat (UDP <-> the publisher); `listen`/`target` are
+  independently optional (one-way bridges). The client side mirrors this:
+  whepfrom's and whipinto's channel bridges (the shared
+  `livetwo::datachannel` module — UDP bridge, channel poll loop,
+  `CancelOnDrop`) run on a session-scoped token that `whep::from` /
+  `whip::into` cancels and awaits before returning; both accept
+  server-created cable channels (a `CableRouter` retargets the outbound
+  queue to the currently open channel). On the
   WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
   it adds an `m=application` section to the offer; the WHEP leg creates it
   unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
@@ -532,7 +552,7 @@ Run tests:
 ```bash
 # full workspace with coverage, matching the CI feature set
 cargo llvm-cov nextest --profile ci --workspace \
-  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp,cable \
   --lcov --output-path lcov.info
 
 # without coverage

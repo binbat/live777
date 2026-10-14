@@ -12,7 +12,9 @@ use tokio::sync::{Notify, mpsc, mpsc::UnboundedSender, watch};
 use tracing::debug;
 use webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 
-use crate::datachannel::{DATA_CHANNEL_LABEL, run_data_channel_loop};
+use crate::datachannel::{
+    CableRouter, DATA_CHANNEL_LABEL, run_cable_send_dispatch, run_data_channel_loop,
+};
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 use crate::whip::core::{self, PublishDiagnostics, PublishPeerOptions};
@@ -42,26 +44,40 @@ pub async fn setup_whip_peer(
 )> {
     let gather_complete = Arc::new(Notify::new());
 
+    // The DataChannel must exist before the offer is created in
+    // `setup_connection` below, or the offer carries no m=application
+    // section. The cable plumbing (router + outbound dispatcher) is set up
+    // first so the peer's handler can also accept server-created cable
+    // channels.
+    let cable = if control_channel {
+        let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (dc_send_tx, dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let router = CableRouter::new();
+        run_cable_send_dispatch(dc_send_rx, router.clone(), "whipinto");
+        Some((dc_recv_tx, dc_recv_rx, dc_send_tx, router))
+    } else {
+        None
+    };
+
     let publish = core::create_publish_peer(
         gather_complete.clone(),
         PublishPeerOptions {
             ice_servers,
             extra_video_codecs: Vec::new(),
+            cable: cable
+                .as_ref()
+                .map(|(recv_tx, _, _, router)| (recv_tx.clone(), router.clone())),
         },
     )
     .await?;
     let peer = publish.peer;
 
-    // The DataChannel must exist before the offer is created in
-    // `setup_connection` below, or the offer carries no m=application section.
-    let dc_channels = if control_channel {
-        let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let (dc_send_tx, dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let dc_channels = if let Some((dc_recv_tx, dc_recv_rx, dc_send_tx, router)) = cable {
         let dc = peer
             .create_data_channel(DATA_CHANNEL_LABEL, None)
             .await
             .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
-        run_data_channel_loop(dc, dc_recv_tx, dc_send_rx, "whipinto");
+        run_data_channel_loop(dc, dc_recv_tx, router, "whipinto");
         Some((dc_recv_rx, dc_send_tx))
     } else {
         None

@@ -1,32 +1,32 @@
 //! Load test: DataChannel <-> UDP forwarding throughput, latency and bidirectional traffic.
 //!
 //! Usage:
-//!   cargo run --release --features source --bin datachannel_loadtest -- all
-//!   cargo run --release --features source --bin datachannel_loadtest -- throughput
-//!   cargo run --release --features source --bin datachannel_loadtest -- latency
-//!   cargo run --release --features source --bin datachannel_loadtest -- bidirectional
+//!   cargo run --release --features cable --bin datachannel_loadtest -- all
+//!   cargo run --release --features cable --bin datachannel_loadtest -- throughput
+//!   cargo run --release --features cable --bin datachannel_loadtest -- latency
+//!   cargo run --release --features cable --bin datachannel_loadtest -- bidirectional
 //!
 //! Custom params (env vars):
 //!   LOADTEST_PACKET_SIZE=1400  LOADTEST_PACKET_COUNT=10000  cargo run ...
 //!   LOADTEST_LATENCY_ROUNDS=200                              cargo run ...
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use std::sync::Arc;
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use tokio::net::{TcpListener, UdpSocket};
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use tokio::sync::Semaphore;
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 use tokio_util::sync::CancellationToken;
 
 // ── CLI / env helpers ───────────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 #[derive(Debug, Clone)]
 struct LoadtestArgs {
     mode: String,
@@ -39,12 +39,12 @@ struct LoadtestArgs {
     target_host: String,
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse().ok()
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 impl LoadtestArgs {
     fn from_env() -> Self {
         let mode = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
@@ -63,7 +63,7 @@ impl LoadtestArgs {
     }
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 fn print_environment_hint(args: &LoadtestArgs) {
     println!("══════════════════════════════════════════════");
     println!("  DataChannel UDP Load Test");
@@ -81,12 +81,12 @@ fn print_environment_hint(args: &LoadtestArgs) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool {
     for _ in 0..200 {
         let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
@@ -107,7 +107,7 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
     false
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 #[derive(Debug, Clone, Copy)]
 struct ThroughputResult {
     mbps: f64,
@@ -116,7 +116,7 @@ struct ThroughputResult {
     received: usize,
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 impl ThroughputResult {
     fn lost(&self) -> usize {
         self.sent.saturating_sub(self.received)
@@ -131,7 +131,7 @@ impl ThroughputResult {
     }
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn recv_udp_with_timeout(
     socket: &UdpSocket,
     buf: &mut [u8],
@@ -144,7 +144,7 @@ async fn recv_udp_with_timeout(
     }
 }
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn setup_topology(
     args: &LoadtestArgs,
     stream_id: &str,
@@ -165,15 +165,18 @@ async fn setup_topology(
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            sources: vec![],
-            strategy: None,
-            hooks: Default::default(),
-            channel: Some(liveion::config::ChannelConfig {
-                listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
-                target: format!("{}:{liveion_ch_target}", args.target_host)
-                    .parse()
-                    .unwrap(),
-            }),
+            cables: vec![liveion::config::CableConfig {
+                udp: vec![liveion::config::CableUdpConfig {
+                    role: liveion::config::CableRole::Source,
+                    listen: Some(format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap()),
+                    target: Some(
+                        format!("{}:{liveion_ch_target}", args.target_host)
+                            .parse()
+                            .unwrap(),
+                    ),
+                }],
+                ..liveion::config::CableConfig::new("control")
+            }],
             ..Default::default()
         },
     );
@@ -224,7 +227,7 @@ async fn setup_topology(
 
 /// Run a pipelined throughput test with sliding-window flow control.
 /// `window` is the max number of in-flight packets — prevents UDP buffer overflow.
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn measure_throughput(
     sender: Arc<UdpSocket>,
     target: UdpSocket,
@@ -300,7 +303,7 @@ async fn measure_throughput(
 
 // ── Throughput Load Test ─────────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn run_throughput(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
     let stream_id = "loadtest-dc-tp";
     let pkt_size = args.packet_size;
@@ -386,7 +389,7 @@ async fn run_throughput(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::E
 
 // ── Latency Load Test ────────────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn run_latency(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
     let stream_id = "loadtest-dc-lat";
     let pkt_size = args.packet_size;
@@ -484,7 +487,7 @@ async fn run_latency(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Erro
 
 // ── Bidirectional Load Test ──────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 async fn run_bidirectional(args: &LoadtestArgs) -> Result<(), Box<dyn std::error::Error>> {
     let stream_id = "loadtest-dc-bidi";
     let pkt_size = args.packet_size;
@@ -568,7 +571,7 @@ async fn run_bidirectional(args: &LoadtestArgs) -> Result<(), Box<dyn std::error
 
 // ── Main ─────────────────────────────────────────────────────────────────────────
 
-#[cfg(feature = "source")]
+#[cfg(feature = "cable")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = LoadtestArgs::from_env();

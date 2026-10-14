@@ -57,7 +57,7 @@ path = "src/net4mqtt.rs"
 [[bin]]
 name = "datachannel_loadtest"
 path = "src/bin/datachannel_loadtest.rs"
-required-features = ["source"]
+required-features = ["cable"]
 test = false
 bench = false
 
@@ -176,6 +176,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
 source = ["liveion/source"]
+# Declared datachannel cables (label routing, parameters, UDP bridges)
+cable = ["liveion/cable"]
 cascade = ["liveion/cascade"]
 webui = ["liveion/webui", "liveman/webui"]
 net4mqtt = ["liveion/net4mqtt", "liveman/net4mqtt"]

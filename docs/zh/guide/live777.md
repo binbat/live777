@@ -162,11 +162,56 @@ url = "rtsp://mediamtx:8554/cam1"
 从服务器回传的关键帧请求（例如 mediamtx 转发的拉流端 PLI）会送达发布
 端。`whip://`、`rtp://`、`rtsp://` target 可以在同一条流上混用。
 
-## DataChannel 转发
+## DataChannel 转发（cable）
 
-> NOTE: 关于 `createDataChannel()`
-> 1. Live777 不支持 `label`, `createDataChannel(label)` 不使用 `label`
-> 2. Live777 不支持 `negotiated`, 不支持 `{ id: 42, negotiated: true }`
+每条流都带有经 SFU 桥接的 datachannel 消息管道：channel 的消息被广播到
+流的另一侧——发布者 ↔ 订阅者。注意这不是端到端的 WebRTC DataChannel：
+SFU 终结每个对端的 SCTP 关联再转发，因此没有端到端的有序/可靠保证
+（接收方消费慢导致总线溢出时，其消息会被丢弃并记录 warn 日志）。
+
+流可以声明命名管道——**cable**——以 channel 的 label 为键（使用 `cable`
+feature 构建）：
+
+```toml
+[stream.fpv]
+[[stream.fpv.cables]]
+label = "control"
+ordered = false          # 默认 true
+max_retransmits = 0      # 与 max_packet_life_time 互斥
+capacity = 1024          # 该 cable 两条总线的广播缓存容量（条数）
+# create = true          # 默认：服务器在每个会话上创建该 channel（下列参数
+                         # 随之生效）。false：只按 label 路由——由端自建。
+
+# cable <-> UDP 桥（一条 cable 可挂多个）：
+[[stream.fpv.cables.udp]]
+role = "source"          # 发布者席位：UDP <-> 订阅者（默认）
+listen = "0.0.0.0:8891"  # UDP -> cable 注入；缺省即为纯导出
+target = "127.0.0.1:8890" # cable -> UDP 导出；缺省即为纯注入
+
+[[stream.fpv.cables.udp]]
+role = "target"          # 订阅者席位：UDP <-> 发布者
+listen = "0.0.0.0:8893"
+target = "127.0.0.1:8892"
+```
+
+- **按 label 路由**：label 命中已声明 cable 的 channel 加入该 cable 的总线；
+  其余 label 混入匿名 default 总线对（cable 之前的行为），现有客户端不受影响。
+- **服务器创建**（`create = true`）：对 offer 中带有 `m=application`
+  section 的每个会话，live777 按配置的 `ordered`/`max_retransmits`/
+  `max_packet_life_time`/`protocol` 参数创建该 cable 的 channel（DCEP
+  创建方声明参数，浏览器会把参数镜像到双向）。客户端自建的同 label
+  channel 会被关闭——它必须回退到通过 `ondatachannel` 收到的服务器
+  创建的 channel。创建在会话首个入向 channel OPEN 到达时触发（此时
+  SCTP 关联已建立）。
+- **cable <-> UDP 桥**的监听端口随流的整个生命周期持有——provisioned
+  流的 reset 不会重新绑端口。
+- `whipinto`/`whepfrom` 会自动接受服务器创建的 channel；它们自建的
+  `control` channel 仍用于把 `m=application` 带进 offer。
+
+限制：不支持 `negotiated: true`（带外协商）的 channel；offer 必须携带
+`m=application`（answer 不能新增 m-line）；对于 Rust（rtc 栈）对端，
+被接受 channel 的反向仍是有序可靠的，直到上游 accept 镜像修复落地——
+服务器创建的 cable 在浏览器对端上没有此问题。
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 

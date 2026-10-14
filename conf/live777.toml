@@ -60,9 +60,13 @@ ice_udp_addrs = ["auto"]
 # [[stream.cam1.sources]]
 # url = "rtsp://username:password@host:port/path"
 
-# DataChannel <-> UDP forwarding for the "dc-udp" stream.
+# Cable (datachannel) <-> UDP forwarding for the "dc-udp" stream.
+# Need enabled `--features=cable`
 # [stream.dc-udp]
-# [stream.dc-udp.channel]
+# [[stream.dc-udp.cables]]
+# label = "control"
+# [[stream.dc-udp.cables.udp]]
+# role = "source"
 # listen = "0.0.0.0:8891"
 # target = "127.0.0.1:8890"
 
