@@ -1567,8 +1567,14 @@ impl PeerForwardInternal {
 /// stops delivering events (and never drops the event sender) once the peer
 /// is closed server-side, so `OnClose`/`None` alone could never be observed
 /// and the task would leak, keeping the bus — and anything keyed on its
+<<<<<<< HEAD
 /// closure, like the UDP channel bridge — alive forever. Every received
 /// message counts into the `in` DataChannel metrics on receipt.
+///
+/// A bus send fails only when the bus has no active receivers (e.g. a
+/// publisher messaging before any subscriber attaches): the message is
+/// dropped with a warn log and the loop keeps running, so receivers that
+/// attach later still get new messages.
 async fn dc_read_loop<P, Fut>(
     stream: String,
     mut poll: P,
@@ -1596,9 +1602,11 @@ async fn dc_read_loop<P, Fut>(
                     metrics::STREAM_DATACHANNEL_BYTES_TOTAL
                         .with_label_values(&[stream.as_str(), "in"])
                         .inc_by(data.data.len() as u64);
-                    if let Err(err) = sender.send(data.data.to_vec()) {
-                        debug!("send data channel err: {}", err);
-                        return;
+                    // A bus send fails only when the bus has no active
+                    // receivers: drop the message (logged) and keep the loop
+                    // alive, so later receivers still get new messages.
+                    if sender.send(data.data.to_vec()).is_err() {
+                        warn!("[{}] data channel bus has no receivers; dropping message", stream);
                     }
                 }
                 Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
@@ -2894,6 +2902,59 @@ mod tests {
         tx.send(RTCPeerConnectionState::Connected).unwrap();
 
         task.await.unwrap().unwrap();
+    }
+
+    /// A bus send fails when the bus has no active receivers. (`new_broadcast
+    /// _channel!` parks a drain receiver on the stream buses, so in production
+    /// this never fires — the test uses a plain bus to exercise the path.)
+    /// The read loop must drop the message and survive, so receivers that
+    /// attach later still get new messages.
+    #[tokio::test]
+    async fn dc_read_loop_survives_bus_without_receivers() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        // Zero active receivers: every send on the bus fails.
+        drop(bus_rx);
+        let cancel = CancellationToken::new();
+
+        let (events_tx, events_rx) =
+            tokio::sync::mpsc::unbounded_channel::<webrtc::data_channel::DataChannelEvent>();
+        let events_rx = std::sync::Arc::new(tokio::sync::Mutex::new(events_rx));
+        let poll = move || {
+            let events_rx = events_rx.clone();
+            async move { events_rx.lock().await.recv().await }
+        };
+
+        let task = tokio::spawn(dc_read_loop(poll, bus_tx.clone(), cancel.clone()));
+
+        let msg = || {
+            webrtc::data_channel::DataChannelEvent::OnMessage(
+                webrtc::data_channel::RTCDataChannelMessage {
+                    is_string: false,
+                    data: bytes::BytesMut::from(&b"x"[..]),
+                },
+            )
+        };
+
+        // Dropped (no receivers), but the loop must survive.
+        events_tx.send(msg()).unwrap();
+        events_tx.send(msg()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!task.is_finished());
+
+        // A receiver attaching later still gets new messages.
+        let mut bus_rx = bus_tx.subscribe();
+        events_tx.send(msg()).unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), bus_rx.recv())
+            .await
+            .expect("read loop died after send without receivers")
+            .unwrap();
+        assert_eq!(got, b"x");
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
