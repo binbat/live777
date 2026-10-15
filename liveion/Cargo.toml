@@ -78,6 +78,7 @@ recorder = [
 ]
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
+
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
 source-sdp = ["source", "livetwo/multicast"]
 source-rtsp = ["source", "rtsp/client"]
@@ -119,3 +120,4 @@ native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 tempfile = "3.26"
 toml = "1.0"
 socket2 = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

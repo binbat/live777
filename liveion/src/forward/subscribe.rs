@@ -88,6 +88,12 @@ pub(crate) struct SubscribeRTCPeerConnection {
     /// `PeerConnection::close` (it aborts first), so without this those
     /// tasks parked on `poll()` forever.
     dc_cancel: CancellationToken,
+    /// Set once this session's server-side cable channels were created (on
+    /// the first inbound channel announce — an incoming DCEP OPEN proves
+    /// the SCTP association is established and the DTLS role resolved, so
+    /// the server's stream-id parity cannot collide with the client's
+    /// channels and the OPEN write is not dropped as non-Established).
+    pub(crate) cables_spawned: std::sync::atomic::AtomicBool,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -144,6 +150,7 @@ impl SubscribeRTCPeerConnection {
             connection_state_rx,
             stats,
             dc_cancel: CancellationToken::new(),
+            cables_spawned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

@@ -14,8 +14,6 @@ use tracing::trace;
 use tracing::{debug, info, warn};
 
 use crate::AppError;
-#[cfg(feature = "source")]
-use crate::config::ChannelConfig;
 use crate::event::{Event, SessionStopReason};
 use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
 use crate::forward::message::{ForwardInfo, SessionInfo};
@@ -91,12 +89,6 @@ fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
         "{}/{}/channels={}/fmtp={}",
         codec.mime_type, codec.clock_rate, codec.channels, codec.sdp_fmtp_line
     )
-}
-
-#[derive(Clone)]
-struct DataChannelForward {
-    publish: broadcast::Sender<Vec<u8>>,
-    subscribe: broadcast::Sender<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -189,7 +181,7 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let pc = self.own_peer().await;
         if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
-            let _ = internal.publish_data_channel(pc, dc).await;
+            let _ = internal.publish_data_channel(pc, dc, true).await;
         }
     }
 
@@ -466,7 +458,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
         if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
-            let _ = internal.subscribe_data_channel(pc, dc).await;
+            let _ = internal.subscribe_data_channel(pc, dc, true).await;
         }
     }
 
@@ -915,7 +907,10 @@ pub(crate) struct PeerForwardInternal {
     pub(crate) subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     closed_publish_sessions: RwLock<Vec<SessionInfo>>,
     closed_subscribe_sessions: RwLock<Vec<SessionInfo>>,
-    data_channel_forward: DataChannelForward,
+    /// The stream-level cable hub: datachannel buses (anonymous default pair
+    /// plus one per declared cable) and the cable <-> UDP bridges. Owned by
+    /// the stream (Manager), so it survives a forward reset untouched.
+    pub(crate) cables: Arc<crate::stream::cable::CableHub>,
     ice_server: Vec<RTCIceServer>,
     ice_udp_addrs: Vec<SocketAddr>,
     /// Server-side sessions run as an ICE Lite agent (RFC 8445 section 2.7):
@@ -959,13 +954,6 @@ pub(crate) struct PeerForwardInternal {
     /// virtual-subscriber id so detach folds the un-sampled tail exactly
     /// once. std Mutex: every op is O(1) and never held across an await.
     tap_stats: std::sync::Mutex<HashMap<String, Arc<MediaStats>>>,
-    #[cfg(feature = "source")]
-    channel: Option<ChannelConfig>,
-    /// Running UDP <-> DataChannel bridge, if the stream configures one.
-    /// `close` stops it and waits for the listen socket to be released, so a
-    /// provisioned-stream reset can rebind the same port deterministically.
-    #[cfg(feature = "source")]
-    channel_task: Mutex<Option<super::channel::ChannelHandle>>,
     /// Effective strategy for this stream (global strategy merged with any
     /// per-stream override).
     pub(crate) strategy: api::strategy::Strategy,
@@ -977,7 +965,7 @@ impl PeerForwardInternal {
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
         ice_lite: bool,
-        #[cfg(feature = "source")] channel: Option<ChannelConfig>,
+        cables: Arc<crate::stream::cable::CableHub>,
         strategy: api::strategy::Strategy,
         lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
@@ -993,10 +981,7 @@ impl PeerForwardInternal {
             subscribe_group: RwLock::new(Vec::new()),
             closed_publish_sessions: RwLock::new(Vec::new()),
             closed_subscribe_sessions: RwLock::new(Vec::new()),
-            data_channel_forward: DataChannelForward {
-                publish: new_broadcast_channel!(1024),
-                subscribe: new_broadcast_channel!(1024),
-            },
+            cables,
             ice_server,
             ice_udp_addrs,
             ice_lite,
@@ -1014,10 +999,6 @@ impl PeerForwardInternal {
             stats_publish: MediaStats::new(),
             stats_subscribe: MediaStats::new(),
             tap_stats: std::sync::Mutex::new(HashMap::new()),
-            #[cfg(feature = "source")]
-            channel,
-            #[cfg(feature = "source")]
-            channel_task: Mutex::new(None),
             strategy,
         }
     }
@@ -1463,18 +1444,6 @@ impl PeerForwardInternal {
     /// stream teardown the forward is dropped, and the handler's weak
     /// reference to this internal would fail before it could clean up.
     pub(crate) async fn close(&self) -> Result<()> {
-        // Stop the UDP channel bridge first and wait for its socket to be
-        // released: a provisioned-stream reset re-initializes the bridge
-        // right after this returns, and the rebind must not race the old
-        // socket.
-        #[cfg(feature = "source")]
-        {
-            let handle = self.channel_task.lock().await.take();
-            if let Some(handle) = handle {
-                handle.stop().await;
-            }
-        }
-
         let publish = self.publish.write().await.take();
         if let Some(publish) = publish {
             // The `publish` lock is released by the take above, so reading
@@ -1509,20 +1478,6 @@ impl PeerForwardInternal {
         }
 
         info!("{} close", self.stream);
-        Ok(())
-    }
-
-    /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
-    #[cfg(feature = "source")]
-    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
-        if let Some(stream_cfg) = self.channel.clone() {
-            let dc_rx = self.data_channel_forward.publish.subscribe();
-            let dc_tx = self.data_channel_forward.subscribe.clone();
-            let handle =
-                super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg)
-                    .await?;
-            *self.channel_task.lock().await = Some(handle);
-        }
         Ok(())
     }
 
@@ -1569,6 +1524,11 @@ impl PeerForwardInternal {
 /// and the task would leak, keeping the bus — and anything keyed on its
 /// closure, like the UDP channel bridge — alive forever. Every received
 /// message counts into the `in` DataChannel metrics on receipt.
+///
+/// A bus send fails only when the bus has no active receivers (e.g. a
+/// publisher messaging before any subscriber attaches): the message is
+/// dropped with a warn log and the loop keeps running, so receivers that
+/// attach later still get new messages.
 async fn dc_read_loop<P, Fut>(
     stream: String,
     mut poll: P,
@@ -1596,9 +1556,11 @@ async fn dc_read_loop<P, Fut>(
                     metrics::STREAM_DATACHANNEL_BYTES_TOTAL
                         .with_label_values(&[stream.as_str(), "in"])
                         .inc_by(data.data.len() as u64);
-                    if let Err(err) = sender.send(data.data.to_vec()) {
-                        debug!("send data channel err: {}", err);
-                        return;
+                    // A bus send fails only when the bus has no active
+                    // receivers: drop the message (logged) and keep the loop
+                    // alive, so later receivers still get new messages.
+                    if sender.send(data.data.to_vec()).is_err() {
+                        warn!("[{}] data channel bus has no receivers; dropping message", stream);
                     }
                 }
                 Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
@@ -2286,16 +2248,63 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    /// Create the stream's server-side cable channels (cables with
+    /// `create = true`) on this session's peer and wire them onto the cable
+    /// buses. Called on the session's first inbound channel announce: an
+    /// incoming DCEP OPEN proves the SCTP association is established and the
+    /// DTLS role is resolved — creating earlier (e.g. at
+    /// `PeerConnectionState::Connected`) can drop the OPEN write as
+    /// non-Established or pick the wrong stream-id parity (colliding with a
+    /// client-created channel, which the client then silently swallows).
+    async fn create_server_cables(&self, peer: &Arc<dyn PeerConnection>, publisher: bool) {
+        for cfg in self.cables.server_created().cloned().collect::<Vec<_>>() {
+            let init = webrtc::data_channel::RTCDataChannelInit {
+                // Unset means the WebRTC default: ordered and reliable.
+                ordered: cfg.ordered.unwrap_or(true),
+                max_packet_life_time: cfg.max_packet_life_time,
+                max_retransmits: cfg.max_retransmits,
+                protocol: cfg.protocol.clone(),
+                negotiated: None,
+            };
+            match peer.create_data_channel(&cfg.label, Some(init)).await {
+                Ok(dc) => {
+                    debug!(
+                        "[{}] created server cable channel '{}'",
+                        self.stream, cfg.label
+                    );
+                    let _ = if publisher {
+                        self.publish_data_channel(peer.clone(), dc, false).await
+                    } else {
+                        self.subscribe_data_channel(peer.clone(), dc, false).await
+                    };
+                }
+                Err(err) => {
+                    warn!(
+                        "[{}] failed to create cable channel '{}': {:?}",
+                        self.stream, cfg.label, err
+                    );
+                }
+            }
+        }
+    }
+
+    /// Any declared cable the server creates channels for.
+    pub(crate) fn has_server_cables(&self) -> bool {
+        self.cables.server_created().next().is_some()
+    }
+
     pub(crate) async fn publish_data_channel(
         &self,
         peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
+        from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel) = {
+        let (gate, cancel, _spawn_cables) = {
             let publish = self.publish.read().await;
             match publish.as_ref() {
                 Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
-                    (Some(p.connection_state_rx()), p.dc_cancel_token())
+                    let spawn = from_client && !p.cables_spawned.swap(true, Ordering::Relaxed);
+                    (Some(p.connection_state_rx()), p.dc_cancel_token(), spawn)
                 }
                 _ => {
                     // A late `on_data_channel` from a publisher that was
@@ -2309,9 +2318,39 @@ impl PeerForwardInternal {
                 }
             }
         };
-        let sender = self.data_channel_forward.subscribe.clone();
-        let receiver = self.data_channel_forward.publish.subscribe();
-        Self::data_channel_forward(&self.stream, dc, sender, receiver, gate, cancel);
+        if _spawn_cables {
+            // Boxed: create_server_cables wires its channels through this
+            // very function (with from_client=false), and an unboxed async
+            // cycle is an infinitely sized future.
+            Box::pin(self.create_server_cables(&peer, true)).await;
+        }
+        // The publisher's channel: its messages go to all subscribers
+        // (to_subscribers), it receives what subscribers send (to_publisher).
+        let label = dc.label().await.unwrap_or_default();
+        if from_client
+            && let Some(cfg) = self.cables.declared(&label)
+            && cfg.create
+        {
+            // This cable's channel is created by the server on every
+            // session; wiring the client's same-label channel too would
+            // double-deliver every message. Close it: the client falls back
+            // to the server-created channel it receives via ondatachannel.
+            warn!(
+                "[{}] [publish] closing client channel '{}': the cable is server-created",
+                self.stream, label
+            );
+            let _ = dc.close().await;
+            return Ok(());
+        }
+        let bus = self.cables.route(&label);
+        Self::data_channel_forward(
+            &self.stream,
+            dc,
+            bus.to_subscribers.clone(),
+            bus.to_publisher.subscribe(),
+            gate,
+            cancel,
+        );
         Ok(())
     }
 
@@ -2835,11 +2874,15 @@ impl PeerForwardInternal {
         &self,
         peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
+        from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel) = {
+        let (gate, cancel, _spawn_cables) = {
             let subscribe_group = self.subscribe_group.read().await;
             match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
-                Some(s) => (Some(s.connection_state_rx()), s.dc_cancel_token()),
+                Some(s) => {
+                    let spawn = from_client && !s.cables_spawned.swap(true, Ordering::Relaxed);
+                    (Some(s.connection_state_rx()), s.dc_cancel_token(), spawn)
+                }
                 None => {
                     // A late `on_data_channel` from a session that was already
                     // removed must not register forwarding tasks on the
@@ -2852,9 +2895,36 @@ impl PeerForwardInternal {
                 }
             }
         };
-        let sender = self.data_channel_forward.publish.clone();
-        let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(&self.stream, dc, sender, receiver, gate, cancel);
+        if _spawn_cables {
+            // Boxed: see publish_data_channel.
+            Box::pin(self.create_server_cables(&peer, false)).await;
+        }
+        // A subscriber's channel: its messages go to the publisher
+        // (to_publisher), it receives what the publisher sends
+        // (to_subscribers).
+        let label = dc.label().await.unwrap_or_default();
+        if from_client
+            && let Some(cfg) = self.cables.declared(&label)
+            && cfg.create
+        {
+            // See publish_data_channel: server-created cable channels win;
+            // the client's same-label duplicate is closed.
+            warn!(
+                "[{}] [subscribe] closing client channel '{}': the cable is server-created",
+                self.stream, label
+            );
+            let _ = dc.close().await;
+            return Ok(());
+        }
+        let bus = self.cables.route(&label);
+        Self::data_channel_forward(
+            &self.stream,
+            dc,
+            bus.to_publisher.clone(),
+            bus.to_subscribers.subscribe(),
+            gate,
+            cancel,
+        );
         Ok(())
     }
 
@@ -3042,21 +3112,50 @@ mod dc_tests {
         task.await.unwrap();
     }
 
+    /// A bus send fails when the bus has no active receivers. The read loop
+    /// must drop the message and survive: receivers that attach later still
+    /// get new messages, and the loop only ends with the session's cancel.
     #[tokio::test]
-    async fn read_loop_exits_when_bus_has_no_receivers() {
-        let (tx, rx) = broadcast::channel::<Vec<u8>>(1);
-        drop(rx);
-        let events = VecDeque::from([on_message(b"a")]);
+    async fn read_loop_survives_bus_without_receivers() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        drop(bus_rx);
+        let cancel = CancellationToken::new();
+
+        // A live event source (the canned poll exhausts; this one stays
+        // open, so a message can still be delivered after a receiver
+        // attaches).
+        let (events_tx, events_rx) = mpsc::unbounded_channel::<DataChannelEvent>();
+        let events_rx = std::sync::Arc::new(tokio::sync::Mutex::new(events_rx));
+        let poll = move || {
+            let events_rx = events_rx.clone();
+            async move { events_rx.lock().await.recv().await }
+        };
         let task = tokio::spawn(dc_read_loop(
             "test".to_string(),
-            canned_poll(events),
-            tx,
-            CancellationToken::new(),
+            poll,
+            bus_tx.clone(),
+            cancel.clone(),
         ));
 
+        // Dropped (no receivers), but the loop must survive.
+        events_tx.send(on_message(b"a").unwrap()).unwrap();
+        events_tx.send(on_message(b"b").unwrap()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!task.is_finished());
+
+        // A receiver attaching later still gets new messages.
+        let mut bus_rx = bus_tx.subscribe();
+        events_tx.send(on_message(b"c").unwrap()).unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(1), bus_rx.recv())
+            .await
+            .expect("read loop died after send without receivers")
+            .unwrap();
+        assert_eq!(got, b"c");
+
+        cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), task)
             .await
-            .expect("read loop stuck after bus send failed")
+            .expect("read loop leaked")
             .unwrap();
     }
 
@@ -3452,51 +3551,65 @@ mod dc_tests {
         }
     }
 
-    // ── channel bridge lifecycle (P2 regression) ──────────────────────────
+    // ── cable bridge lifecycle (stream-level hub) ─────────────────────────
 
-    /// A closed forward must release the UDP bridge's listen port so the next
-    /// forward (provisioned-stream reset) can rebind it. Before the bridge
-    /// was tied to the forward lifecycle, the old bridge only exited when the
-    /// data-channel bus closed — which leaked data-channel tasks prevented
-    /// forever — and the reset's rebind failed with EADDRINUSE.
+    /// Cable UDP bridges are owned by the stream-level cable hub, not by the
+    /// forward: dropping the hub (stream deleted) cancels a bridge and
+    /// releases its listen port; a forward reset leaves the hub — and the
+    /// port — untouched.
     #[cfg(feature = "source")]
     #[tokio::test]
-    async fn channel_bridge_rebinds_after_close() {
+    async fn cable_bridge_dies_with_hub_not_forward() {
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let listen = probe.local_addr().unwrap();
         drop(probe);
 
-        let channel = ChannelConfig {
-            listen,
-            target: "127.0.0.1:9".parse().unwrap(),
+        let entry = crate::config::StreamEntry {
+            cables: vec![crate::config::CableConfig::new("control")],
+            sources: vec![crate::config::SourceConfig {
+                url: None,
+                cables: vec![crate::config::CableEndpoint {
+                    label: "control".to_string(),
+                    url: format!("udp://0.0.0.0:{}?host=127.0.0.1&port=9", listen.port()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
         };
-        let new_internal = || {
-            let (lifecycle_tx, _rx) = broadcast::channel(1);
-            PeerForwardInternal::new(
-                "test",
-                vec![],
-                vec![],
-                false,
-                Some(channel.clone()),
-                api::strategy::Strategy::default(),
-                lifecycle_tx,
-            )
-        };
-
-        let first = new_internal();
-        first.try_init_udp_channel().await.unwrap();
+        let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&entry.cables));
+        hub.attach_static_endpoints("test", &entry).await;
         assert!(
             tokio::net::UdpSocket::bind(listen).await.is_err(),
             "bridge must hold its configured port"
         );
 
-        first.close().await.unwrap();
+        // A forward reset swaps the forward but the hub is untouched.
+        let (lifecycle_tx, _rx) = broadcast::channel(1);
+        let forward = PeerForwardInternal::new(
+            "test",
+            vec![],
+            vec![],
+            false,
+            hub.clone(),
+            api::strategy::Strategy::default(),
+            lifecycle_tx,
+        );
+        forward.close().await.unwrap();
+        drop(forward);
+        assert!(
+            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            "forward close must not release the stream-level bridge's port"
+        );
 
-        let second = new_internal();
-        second
-            .try_init_udp_channel()
-            .await
-            .expect("rebind after close failed — the old bridge is still holding the port");
-        second.close().await.unwrap();
+        // Deleting the stream drops the hub, which cancels the bridge.
+        drop(hub);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while tokio::net::UdpSocket::bind(listen).await.is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bridge port still held after the hub was dropped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }

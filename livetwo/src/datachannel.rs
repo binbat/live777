@@ -14,9 +14,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 
-/// DataChannel label used to join liveion's per-stream channel group for
-/// bidirectional control messaging, on both the WHEP and the WHIP leg.
-pub const DATA_CHANNEL_LABEL: &str = "control";
+/// Default DataChannel label used to join the matching cable on the server,
+/// on both the WHEP and the WHIP leg. Clients can override it per run.
+pub const DEFAULT_CABLE_LABEL: &str = "-";
 
 /// Buffer size for incoming UDP packets.
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes
@@ -143,13 +143,57 @@ pub async fn spawn_channel(
     Ok(task)
 }
 
-/// Poll a DataChannel both ways: inbound messages go to `dc_recv_tx`,
-/// messages from `dc_send_rx` are sent over the channel. `owner` tags the
-/// log lines (e.g. "whepfrom" / "whipinto").
+/// Routes the single outbound queue (UDP -> DataChannel) to the currently
+/// active channel. live777 closes a client-created channel whose label
+/// matches a server-created cable; the accepted server-created channel then
+/// takes over the queue.
+///
+/// Channels are tracked in the order they opened; the most recently opened
+/// is the active target. When it closes (or a send to it fails) the router
+/// falls back to the next most recent still-open channel, so the outbound
+/// queue never gets stranded pointing at a dead channel just because a
+/// replacement channel opened earlier than the one being torn down.
+#[derive(Clone, Default)]
+pub struct CableRouter {
+    active: Arc<std::sync::Mutex<Vec<Arc<dyn DataChannel>>>>,
+}
+
+impl CableRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn activate(&self, dc: &Arc<dyn DataChannel>) {
+        let mut guard = self.active.lock().expect("cable router lock poisoned");
+        if !guard.iter().any(|c| Arc::ptr_eq(c, dc)) {
+            guard.push(dc.clone());
+        }
+    }
+
+    fn deactivate(&self, dc: &Arc<dyn DataChannel>) {
+        self.active
+            .lock()
+            .expect("cable router lock poisoned")
+            .retain(|c| !Arc::ptr_eq(c, dc));
+    }
+
+    fn current(&self) -> Option<Arc<dyn DataChannel>> {
+        self.active
+            .lock()
+            .expect("cable router lock poisoned")
+            .last()
+            .cloned()
+    }
+}
+
+/// Poll a DataChannel's inbound side: messages go to `dc_recv_tx`. While the
+/// channel is open it registers with `router`, so the outbound queue drained
+/// by [`run_cable_send_dispatch`] targets the live channel.
+/// `owner` tags the log lines (e.g. "whepfrom" / "whipinto").
 pub fn run_data_channel_loop(
     dc: Arc<dyn DataChannel>,
     dc_recv_tx: mpsc::UnboundedSender<Vec<u8>>,
-    mut dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    router: CableRouter,
     owner: &'static str,
 ) {
     tokio::spawn(async move {
@@ -172,39 +216,54 @@ pub fn run_data_channel_loop(
             }
         }
 
+        router.activate(&dc);
         loop {
-            tokio::select! {
-                event = dc.poll() => match event {
-                    Some(DataChannelEvent::OnMessage(msg))
-                        if dc_recv_tx.send(msg.data.to_vec()).is_err() =>
-                    {
+            match dc.poll().await {
+                Some(DataChannelEvent::OnMessage(msg)) => {
+                    if dc_recv_tx.send(msg.data.to_vec()).is_err() {
                         debug!("{}: DataChannel recv channel closed", owner);
                         break;
                     }
-                    Some(DataChannelEvent::OnClose) => {
-                        info!("{}: DataChannel closed", owner);
-                        break;
-                    }
-                    None => {
-                        info!("{}: DataChannel poll ended", owner);
-                        break;
-                    }
-                    _ => {}
-                },
-                msg = dc_send_rx.recv() => match msg {
-                    Some(data) => {
-                        if let Err(e) = dc.send(bytes::BytesMut::from(&data[..])).await {
-                            warn!("{}: DataChannel send failed: {}", owner, e);
-                            break;
-                        }
-                    }
-                    None => {
-                        info!("{}: DataChannel send channel closed", owner);
-                        break;
-                    }
-                },
+                }
+                Some(DataChannelEvent::OnClose) => {
+                    info!("{}: DataChannel closed", owner);
+                    break;
+                }
+                None => {
+                    info!("{}: DataChannel poll ended", owner);
+                    break;
+                }
+                _ => {}
             }
         }
+        router.deactivate(&dc);
+    });
+}
+
+/// Drain the outbound queue (UDP -> DataChannel) into the router's active
+/// channel. Messages are dropped — and logged — while no channel is active
+/// (e.g. the gap between the server closing the client-created channel and
+/// the accepted cable channel opening).
+pub fn run_cable_send_dispatch(
+    mut dc_send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    router: CableRouter,
+    owner: &'static str,
+) {
+    tokio::spawn(async move {
+        while let Some(data) = dc_send_rx.recv().await {
+            match router.current() {
+                Some(dc) => {
+                    if let Err(e) = dc.send(bytes::BytesMut::from(&data[..])).await {
+                        warn!("{}: DataChannel send failed: {}", owner, e);
+                        router.deactivate(&dc);
+                    }
+                }
+                None => {
+                    warn!("{}: no active cable channel; dropping message", owner);
+                }
+            }
+        }
+        info!("{}: DataChannel send channel closed", owner);
     });
 }
 
@@ -223,6 +282,7 @@ mod tests {
     use super::*;
     use tokio::net::UdpSocket;
     use tokio::sync::mpsc;
+    use webrtc::data_channel::{RTCDataChannelId, RTCDataChannelState};
 
     #[test]
     fn test_parse_channel_url_ipv4() {
@@ -349,5 +409,118 @@ mod tests {
                 .is_ok(),
             "listen port still occupied after channel stopped"
         );
+    }
+
+    /// Minimal DataChannel stub for exercising `CableRouter` routing without
+    /// a real peer connection.
+    struct MockDc;
+
+    #[async_trait::async_trait]
+    impl DataChannel for MockDc {
+        async fn label(&self) -> webrtc::error::Result<String> {
+            Ok("mock".to_string())
+        }
+        async fn ordered(&self) -> webrtc::error::Result<bool> {
+            Ok(true)
+        }
+        async fn max_packet_life_time(&self) -> webrtc::error::Result<Option<u16>> {
+            Ok(None)
+        }
+        async fn max_retransmits(&self) -> webrtc::error::Result<Option<u16>> {
+            Ok(None)
+        }
+        async fn protocol(&self) -> webrtc::error::Result<String> {
+            Ok(String::new())
+        }
+        async fn negotiated(&self) -> webrtc::error::Result<bool> {
+            Ok(false)
+        }
+        fn id(&self) -> RTCDataChannelId {
+            0
+        }
+        async fn ready_state(&self) -> webrtc::error::Result<RTCDataChannelState> {
+            Ok(RTCDataChannelState::Open)
+        }
+        async fn buffered_amount_high_threshold(&self) -> webrtc::error::Result<u32> {
+            Ok(u32::MAX)
+        }
+        async fn set_buffered_amount_high_threshold(
+            &self,
+            _threshold: u32,
+        ) -> webrtc::error::Result<()> {
+            Ok(())
+        }
+        async fn buffered_amount_low_threshold(&self) -> webrtc::error::Result<u32> {
+            Ok(0)
+        }
+        async fn set_buffered_amount_low_threshold(
+            &self,
+            _threshold: u32,
+        ) -> webrtc::error::Result<()> {
+            Ok(())
+        }
+        async fn send(&self, _data: bytes::BytesMut) -> webrtc::error::Result<()> {
+            Ok(())
+        }
+        async fn send_text(&self, _text: &str) -> webrtc::error::Result<()> {
+            Ok(())
+        }
+        async fn poll(&self) -> Option<DataChannelEvent> {
+            None
+        }
+        async fn close(&self) -> webrtc::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Deactivating the most recently opened channel must fall back to the
+    /// next most recent still-open one — the race where the server-created
+    /// cable channel activated before the client's own channel, and the
+    /// client channel's later close used to strand the outbound queue.
+    #[test]
+    fn test_cable_router_falls_back_after_deactivate() {
+        let router = CableRouter::new();
+        let older: Arc<dyn DataChannel> = Arc::new(MockDc);
+        let newer: Arc<dyn DataChannel> = Arc::new(MockDc);
+
+        router.activate(&older);
+        assert!(Arc::ptr_eq(&router.current().unwrap(), &older));
+
+        router.activate(&newer);
+        assert!(Arc::ptr_eq(&router.current().unwrap(), &newer));
+
+        router.deactivate(&newer);
+        assert!(Arc::ptr_eq(&router.current().unwrap(), &older));
+
+        router.deactivate(&older);
+        assert!(router.current().is_none());
+    }
+
+    /// Deactivating an older channel must not disturb the newer active one.
+    #[test]
+    fn test_cable_router_deactivate_is_targeted() {
+        let router = CableRouter::new();
+        let older: Arc<dyn DataChannel> = Arc::new(MockDc);
+        let newer: Arc<dyn DataChannel> = Arc::new(MockDc);
+        router.activate(&older);
+        router.activate(&newer);
+        router.deactivate(&older);
+        assert!(Arc::ptr_eq(&router.current().unwrap(), &newer));
+    }
+
+    /// Re-activating an already tracked channel must not duplicate it, so a
+    /// single deactivate fully removes it.
+    #[test]
+    fn test_cable_router_activate_is_idempotent() {
+        let router = CableRouter::new();
+        let a: Arc<dyn DataChannel> = Arc::new(MockDc);
+        let b: Arc<dyn DataChannel> = Arc::new(MockDc);
+        router.activate(&a);
+        router.activate(&a);
+        router.activate(&b);
+        router.deactivate(&b);
+        assert!(Arc::ptr_eq(&router.current().unwrap(), &a));
+        router.deactivate(&a);
+        assert!(router.current().is_none());
     }
 }

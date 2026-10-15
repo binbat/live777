@@ -281,26 +281,48 @@ clients via Link headers).
   covers stats) — live rates push every tick while media flows, a silent
   stream's zero rate flushes exactly once, and an idle server sends
   nothing.
-  DataChannel lifecycle: every channel gets a read and a write task
+  DataChannel lifecycle: every stream owns a stream-level **cable hub**
+  (`stream/cable.rs`, held by `Manager::cable_hubs`) — an anonymous default
+  bus pair plus one bus pair per declared cable — so a provisioned-stream
+  reset (which recreates the forward) never churns the buses or the cable
+  UDP bridges' listen ports; bridges die with the hub (stream delete), via
+  `Drop` cancelling a hub token. A peer channel joins the cable matching its
+  label (`CableHub::route`), else the default pair. Every channel gets a
+  read and a write task
   (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
-  the per-stream publish/subscribe broadcast buses. The webrtc driver never
-  delivers `OnClose` for a server-side `PeerConnection::close` (it aborts
-  first), so each session carries a `CancellationToken` (`dc_cancel` on
-  `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
-  `Drop`) that both loops `select!` on — without it the read loop parks on
-  `poll()` forever, and its bus sender clone keeps the bus open, which used
-  to pin the `[stream.x.channel]` UDP bridge (and its listen port) of a
-  dead stream forever. `on_data_channel` only wires a channel whose peer
-  still owns a live session (a late announce from a replaced/torn-down
-  session is dropped), and both sides gate sends on `Connected`
-  (`wait_for_peer_connected`, 15 s). The UDP bridge itself
-  (`forward/channel.rs`) is owned by the forward: `PeerForwardInternal::close`
-  cancels it and awaits the socket release, so a provisioned-stream reset
-  rebinds the same port deterministically (`bind_with_retry` covers slow
-  external holders). The client side mirrors this: whepfrom's and whipinto's
-  channel bridges (the shared `livetwo::datachannel` module — UDP bridge,
-  channel poll loop, `CancelOnDrop`) run on a session-scoped token that
-  `whep::from` / `whip::into` cancels and awaits before returning. On the
+  its cable's buses; a bus send failure (no active receivers) drops the
+  message with a warn log instead of killing the loop. The webrtc driver
+  never delivers `OnClose` for a server-side `PeerConnection::close` (it
+  aborts first), so each session carries a `CancellationToken` (`dc_cancel`
+  on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
+  `Drop`) that both loops `select!` on. `on_data_channel` only wires a
+  channel whose peer still owns a live session (a late announce from a
+  replaced/torn-down session is dropped), and both sides gate sends on
+  `Connected` (`wait_for_peer_connected`, 15 s). Cables with `create = true`
+  get a server-created channel per session —
+  created on the session's first inbound channel OPEN (an inbound OPEN
+  proves the SCTP association is Established and the DTLS role resolved;
+  creating at `Connected` drops the OPEN write as non-Established and can
+  collide stream-id parity with the client's channels) — and a client-created
+  channel matching such a cable's label is closed (the server-created
+  channel wins). DC UDP endpoints are declared as `udp://` URLs on the
+  stream's `sources` (broadcast seat: inbound packets go to all subscribers,
+  replies go to the endpoint's `?host`/`?port` target) and `targets`
+  (subscriber seat: publisher messages go to the target, inbound packets go
+  to the publisher), each a `cables` entry carrying the cable `label` it
+  joins plus a `udp://` URL, attached once via
+  `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
+  reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
+  for a future dynamic API). The `udp://` authority (listen) and the
+  `host`/`port` query pair (target) are independently optional (one-way
+  endpoints; an omitted target means reply-to-sender). The client side
+  mirrors this:
+  whepfrom's and whipinto's channel bridges (the shared
+  `livetwo::datachannel` module — UDP bridge, channel poll loop,
+  `CancelOnDrop`) run on a session-scoped token that `whep::from` /
+  `whip::into` cancels and awaits before returning; both accept
+  server-created cable channels (a `CableRouter` retargets the outbound
+  queue to the currently open channel). On the
   WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
   it adds an `m=application` section to the offer; the WHEP leg creates it
   unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the

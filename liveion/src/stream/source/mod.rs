@@ -234,6 +234,10 @@ impl InternalSourceConfig {
     }
 }
 
+// async_trait's generated methods carry `#[must_use]` on top of the `Future`
+// return type (itself must-use) — newer clippy flags that as
+// double_must_use; nothing here to act on.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait StreamSource: Send + Sync {
     fn stream_id(&self) -> &str;

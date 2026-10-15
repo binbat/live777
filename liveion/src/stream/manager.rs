@@ -22,6 +22,7 @@ use webrtc::peer_connection::RTCSessionDescription;
 use crate::forward::VIRTUAL_SOURCE_SESSION;
 use crate::forward::message::Layer;
 use crate::forward::{PeerForward, RemovePeerOutcome};
+use crate::stream::cable::CableHub;
 use crate::stream::config::ManagerConfig;
 use crate::{AppError, metrics, new_broadcast_channel};
 
@@ -131,6 +132,12 @@ pub struct Manager {
     /// `PublishStarted`/`PublishStopped`. The recorder deliberately does not
     /// register: it must not keep an on-demand source alive by itself.
     virtual_subscribers: Arc<RwLock<HashMap<String, Vec<VirtualSubscriber>>>>,
+    /// Per-stream cable hubs (datachannel buses + UDP bridges). Hubs are
+    /// stream-level, not forward-level: a provisioned-stream reset recreates
+    /// the forward but keeps the hub, so cable UDP bridges never churn their
+    /// listen ports on reset. std Mutex: every op is O(1) and never held
+    /// across an await.
+    cable_hubs: Arc<std::sync::Mutex<HashMap<String, Arc<CableHub>>>>,
     #[cfg(feature = "source")]
     pub source_manager: SourceManager,
     /// Bumped by the stats tick on every sample, so SSE stream subscribers
@@ -226,6 +233,7 @@ impl Manager {
         let send = new_broadcast_channel!(64);
         let provisioned: Arc<HashSet<String>> =
             Arc::new(cfg.stream.streams.keys().cloned().collect());
+        let cable_hubs: Arc<std::sync::Mutex<HashMap<String, Arc<CableHub>>>> = Default::default();
 
         tokio::spawn(Self::event_logger(send.subscribe(), cancel.clone()));
 
@@ -236,6 +244,7 @@ impl Manager {
             stream_map.clone(),
             send.clone(),
             provisioned.clone(),
+            cable_hubs.clone(),
             #[cfg(feature = "source")]
             source_manager.clone(),
             cancel.clone(),
@@ -244,6 +253,7 @@ impl Manager {
             stream_map.clone(),
             send.clone(),
             provisioned.clone(),
+            cable_hubs.clone(),
             #[cfg(feature = "source")]
             source_manager.clone(),
             cancel.clone(),
@@ -270,6 +280,7 @@ impl Manager {
             #[cfg(feature = "source")]
             on_demand_locks: Default::default(),
             virtual_subscribers,
+            cable_hubs,
             #[cfg(feature = "source")]
             source_manager,
             stats_version,
@@ -351,6 +362,7 @@ impl Manager {
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         event_sender: broadcast::Sender<Event>,
         provisioned: Arc<HashSet<String>>,
+        cable_hubs: Arc<std::sync::Mutex<HashMap<String, Arc<CableHub>>>>,
         #[cfg(feature = "source")] source_manager: SourceManager,
         cancel: CancellationToken,
     ) {
@@ -406,6 +418,12 @@ impl Manager {
                     {
                         let _ = forward.close().await;
                         stream_map.remove(stream);
+                        // The stream is gone for good: drop its cable hub,
+                        // cancelling any UDP bridges and freeing their ports.
+                        cable_hubs
+                            .lock()
+                            .expect("cable hubs lock poisoned")
+                            .remove(stream);
                         let publish_leave_at =
                             DateTime::from_timestamp_millis(forward_info.publish_leave_at)
                                 .unwrap()
@@ -431,6 +449,7 @@ impl Manager {
         stream_map: Arc<RwLock<HashMap<String, PeerForward>>>,
         event_sender: broadcast::Sender<Event>,
         provisioned: Arc<HashSet<String>>,
+        cable_hubs: Arc<std::sync::Mutex<HashMap<String, Arc<CableHub>>>>,
         #[cfg(feature = "source")] source_manager: SourceManager,
         cancel: CancellationToken,
     ) {
@@ -514,6 +533,12 @@ impl Manager {
                     }
                     let _ = forward.close().await;
                     stream_map.remove(stream);
+                    // The stream is gone for good: drop its cable hub,
+                    // cancelling any UDP bridges and freeing their ports.
+                    cable_hubs
+                        .lock()
+                        .expect("cable hubs lock poisoned")
+                        .remove(stream);
                     let reason = if orphaned {
                         StreamDeleteReason::Orphaned
                     } else {
@@ -624,21 +649,34 @@ impl Manager {
             .is_some_and(|e| e.on_demand)
     }
 
+    /// Get (or create) the stream-level cable hub for `stream`. Hubs are
+    /// created alongside the forward and survive provisioned-stream resets;
+    /// they are dropped only when the stream itself is deleted.
+    fn cable_hub_for(&self, stream: &str) -> Arc<CableHub> {
+        let mut hubs = self.cable_hubs.lock().expect("cable hubs lock poisoned");
+        hubs.entry(stream.to_string())
+            .or_insert_with(|| {
+                if let Some(entry) = self.config.stream.streams.get(stream) {
+                    return Arc::new(CableHub::from_configs(&entry.cables));
+                }
+                Arc::new(CableHub::bare())
+            })
+            .clone()
+    }
+
     fn build_forward(&self, stream: &str) -> PeerForward {
         let entry = self.config.stream.streams.get(stream);
         let strategy = api::strategy::Strategy::effective(
             &self.config.strategy,
             entry.and_then(|e| e.strategy.as_ref()),
         );
-        #[cfg(feature = "source")]
-        let channel = entry.and_then(|entry| entry.channel.clone());
+        let cables = self.cable_hub_for(stream);
         PeerForward::new(
             stream.to_string(),
             self.config.ice_servers.clone(),
             self.config.ice_udp_addrs.clone(),
             self.config.ice_lite,
-            #[cfg(feature = "source")]
-            channel,
+            cables,
             strategy,
             self.event_sender.clone(),
         )
@@ -650,14 +688,12 @@ impl Manager {
     }
 
     async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
-        #[cfg(feature = "source")]
-        if let Err(e) = forward.try_init_udp_channel().await {
-            tracing::warn!("Failed to init UDP channel for stream {}: {:?}", stream, e);
+        if let Some(entry) = self.config.stream.streams.get(stream) {
+            forward
+                .cables()
+                .attach_static_endpoints(stream, entry)
+                .await;
         }
-        // When the `source` feature is disabled this async fn is empty.
-        // The compiler eliminates the future allocation in release builds
-        // via dead-code elimination.
-        let _ = (stream, forward);
     }
 
     /// Public stream deletion (admin API). Provisioned streams are owned by
@@ -701,8 +737,15 @@ impl Manager {
             let _ = self
                 .stop_stream_source(stream, SessionStopReason::PeerClosed)
                 .await;
+            // The cable hub is intentionally NOT dropped: the reset rebuilds
+            // the forward on the same hub, so cable buses and UDP bridges
+            // (and their listen ports) survive the reset untouched.
             self.reset_provisioned_stream(stream).await;
         } else {
+            self.cable_hubs
+                .lock()
+                .expect("cable hubs lock poisoned")
+                .remove(stream);
             self.do_stream_delete(stream.to_string()).await;
             info!("remove stream : {}", stream);
         }
@@ -1106,8 +1149,9 @@ impl Manager {
         self.maybe_arm_on_demand_stop(stream).await;
     }
 
-    /// Fill in the config-derived flags (`provisioned`, `on_demand`) on an
-    /// API stream view; the forward itself doesn't know them.
+    /// Fill in the config-derived flags (`provisioned`, `on_demand`) and the
+    /// declared cables on an API stream view; the forward itself doesn't
+    /// know them.
     fn backfill_stream_flags(
         stream_cfg: &crate::config::StreamConfig,
         stream: &mut api::response::Stream,
@@ -1115,6 +1159,7 @@ impl Manager {
         if let Some(entry) = stream_cfg.streams.get(&stream.id) {
             stream.provisioned = true;
             stream.on_demand = entry.on_demand;
+            stream.cables = entry.cables.iter().map(Into::into).collect();
         }
     }
 
@@ -1903,7 +1948,7 @@ impl Manager {
         }
 
         // Create the forward outside the write lock (via the shared
-        // `build_forward` helper) so I/O in `try_init_udp_channel` does not
+        // `build_forward` helper) so I/O in `init_stream_forward` does not
         // block unrelated stream operations.
         let forward = self.build_forward(stream_id);
 
@@ -1924,13 +1969,7 @@ impl Manager {
 
         self.register_stream_created(stream_id);
         tracing::info!("Created PeerForward for source: {}", stream_id);
-        if let Err(e) = forward.try_init_udp_channel().await {
-            tracing::warn!(
-                "Failed to init UDP channel for source {}: {:?}",
-                stream_id,
-                e
-            );
-        }
+        self.init_stream_forward(stream_id, &forward).await;
         forward
     }
 
@@ -1975,6 +2014,7 @@ mod tests {
     fn source_config(url: &str) -> crate::config::SourceConfig {
         crate::config::SourceConfig {
             url: Some(url.to_string()),
+            cables: vec![],
             multicast_interface: None,
             #[cfg(feature = "native-source")]
             capture: None,
@@ -2249,6 +2289,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path)),
+                        cables: vec![],
                         multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,
@@ -2541,6 +2582,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path.to_string_lossy())),
+                        cables: vec![],
                         multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,

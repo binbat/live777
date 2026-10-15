@@ -177,9 +177,9 @@ mix freely on one stream.
 
 ## DataChannel Forward
 
-> NOTE: About `createDataChannel()`
-> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
-> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+See [Cable (DataChannel forwarding)](./cable) for the full reference:
+declared per-label message pipes (`[[stream.<name>.cables]]`), server-created
+channels with parameters, and cable <-> UDP bridges.
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 

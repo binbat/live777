@@ -1,9 +1,9 @@
-/// Integration test: liveion UDP channel <-> whepfrom DataChannel <-> UDP
+/// Integration test: liveion cable <-> whepfrom DataChannel <-> UDP
 ///
-/// This test verifies end-to-end DataChannel <-> UDP forwarding without a WHIP
-/// publisher. liveion's own UDP channel (stream.<name>.channel) is initialized at
-/// stream creation time, and whepfrom bridges its DataChannel to UDP via
-/// the --channel flag.
+/// This test verifies end-to-end cable <-> UDP forwarding without a WHIP
+/// publisher. liveion's own cable UDP bridge (`[[stream.<name>.cables]]`)
+/// starts at stream creation time, and whepfrom bridges its DataChannel to
+/// UDP via the --channel flag.
 ///
 /// Topology:
 ///
@@ -20,26 +20,19 @@
 ///   whepfrom DataChannel --> liveion publish broadcast
 ///       |
 ///   liveion UDP channel --> liveion UDP target (8703)
-#[cfg(any(feature = "source", feature = "source-all"))]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-#[cfg(any(feature = "source", feature = "source-all"))]
 use tokio::net::{TcpListener, UdpSocket};
-#[cfg(any(feature = "source", feature = "source-all"))]
 use tokio_util::sync::CancellationToken;
 
-#[cfg(any(feature = "source", feature = "source-all"))]
 mod common;
-#[cfg(any(feature = "source", feature = "source-all"))]
 use common::shutdown_signal;
 
 /// Metrics registration is process-global and panics on a second call;
 /// nextest isolates test processes, but plain `cargo test` shares one, so
 /// every test that needs the registry must go through this single `Once`.
-#[cfg(any(feature = "source", feature = "source-all"))]
 static METRICS_REGISTER: std::sync::Once = std::sync::Once::new();
 
-#[cfg(any(feature = "source", feature = "source-all"))]
 fn init_tracing() {
     use std::sync::Once;
     static TRACING_INIT: Once = Once::new();
@@ -53,7 +46,6 @@ fn init_tracing() {
     });
 }
 
-#[cfg(any(feature = "source", feature = "source-all"))]
 async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool {
     for _ in 0..200 {
         let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
@@ -75,7 +67,46 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
     false
 }
 
-#[cfg(any(feature = "source", feature = "source-all"))]
+/// A DC source endpoint (broadcast seat) keyed to a cable label: inbound
+/// UDP packets broadcast to every subscriber, replies go to the target.
+fn dc_source(listen: u16, target: u16, label: &str) -> liveion::config::SourceConfig {
+    liveion::config::SourceConfig {
+        url: None,
+        cables: vec![liveion::config::CableEndpoint {
+            label: label.to_string(),
+            url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
+        }],
+        multicast_interface: None,
+        #[cfg(feature = "native-source")]
+        capture: None,
+        #[cfg(feature = "native-source")]
+        encoder: None,
+        #[cfg(feature = "native-source")]
+        output: Default::default(),
+        #[cfg(feature = "native-source")]
+        tiers: Vec::new(),
+    }
+}
+
+/// A DC target endpoint (subscriber seat) keyed to a cable label: the
+/// publisher's messages export to the target, inbound packets go to the
+/// publisher.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+fn dc_target(listen: u16, target: u16, label: &str) -> liveion::config::TargetConfig {
+    liveion::config::TargetConfig {
+        url: String::new(),
+        cables: vec![liveion::config::CableEndpoint {
+            label: label.to_string(),
+            url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
+        }],
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn test_whepfrom_datachannel_udp_forwarding() {
     METRICS_REGISTER.call_once(liveion::metrics_register);
@@ -93,13 +124,8 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            sources: vec![],
-            strategy: None,
-            hooks: Default::default(),
-            channel: Some(liveion::config::ChannelConfig {
-                listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
-                target: format!("127.0.0.1:{liveion_ch_target}").parse().unwrap(),
-            }),
+            cables: vec![liveion::config::CableConfig::new("control")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
             ..Default::default()
         },
     );
@@ -122,6 +148,7 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -229,7 +256,6 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
 
 /// Send one message each way across the liveion <-> whepfrom DataChannel
 /// bridge and assert both arrive.
-#[cfg(any(feature = "source", feature = "source-all"))]
 async fn assert_channel_roundtrip(
     label: &str,
     liveion_ch_listen: u16,
@@ -279,7 +305,6 @@ async fn assert_channel_roundtrip(
 
 /// Wait for a client task to wind down after its peer was closed
 /// server-side; cancel it if the close notification got lost.
-#[cfg(any(feature = "source", feature = "source-all"))]
 async fn wait_or_cancel<T>(ct: &CancellationToken, handle: tokio::task::JoinHandle<T>) {
     tokio::pin!(handle);
     if tokio::time::timeout(std::time::Duration::from_secs(10), &mut handle)
@@ -299,7 +324,6 @@ async fn wait_or_cancel<T>(ct: &CancellationToken, handle: tokio::task::JoinHand
 /// bridge never released the port, the rebind failed with EADDRINUSE (warn
 /// only), and the bridge stayed dead until the process restarted — the
 /// "datachannel reconnect conflict" reported by users.
-#[cfg(any(feature = "source", feature = "source-all"))]
 #[tokio::test]
 async fn test_udp_channel_survives_stream_reset() {
     init_tracing();
@@ -318,13 +342,8 @@ async fn test_udp_channel_survives_stream_reset() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            sources: vec![],
-            strategy: None,
-            hooks: Default::default(),
-            channel: Some(liveion::config::ChannelConfig {
-                listen: format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap(),
-                target: format!("127.0.0.1:{liveion_ch_target}").parse().unwrap(),
-            }),
+            cables: vec![liveion::config::CableConfig::new("control")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
             ..Default::default()
         },
     );
@@ -355,6 +374,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -391,6 +411,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url.clone()),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -451,6 +472,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -494,7 +516,6 @@ async fn test_udp_channel_survives_stream_reset() {
 ///   whepfrom DataChannel --> liveion publish broadcast
 ///       |
 ///   whipinto DataChannel --> whipinto UDP target (8731)
-#[cfg(any(feature = "source", feature = "source-all"))]
 #[tokio::test]
 async fn test_whipinto_datachannel_udp_forwarding() {
     init_tracing();
@@ -513,13 +534,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
     let mut cfg = liveion::config::Config::default();
     cfg.stream.streams.insert(
         stream_id.to_string(),
-        liveion::config::StreamEntry {
-            sources: vec![],
-            strategy: None,
-            hooks: Default::default(),
-            channel: None,
-            ..Default::default()
-        },
+        liveion::config::StreamEntry::default(),
     );
     let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -549,6 +564,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whipinto_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -587,6 +603,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -655,6 +672,322 @@ async fn test_whipinto_datachannel_udp_forwarding() {
     );
 
     // ── 6. Teardown ───────────────────────────────────────────────────────────
+    ct_pub.cancel();
+    ct_sub.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whip).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whepfrom).await;
+    let _ = std::fs::remove_file(&sdp_path);
+}
+
+/// Wait until the stream has a Connected publish session.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+async fn wait_for_publish_connected(addr: &SocketAddr, stream_id: &str) -> bool {
+    for _ in 0..200 {
+        let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
+            .await
+            .unwrap()
+            .json::<Vec<api::response::Stream>>()
+            .await
+            .unwrap_or_default();
+
+        if let Some(stream) = body.into_iter().find(|s| s.id == stream_id)
+            && let Some(session) = stream.publish.sessions.first()
+            && session.state == api::response::RTCPeerConnectionState::Connected
+        {
+            return true;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Receive one datagram within `timeout`.
+async fn recv_udp(socket: &UdpSocket, buf: &mut [u8], what: &str) -> usize {
+    let (n, _) = tokio::time::timeout(std::time::Duration::from_secs(3), socket.recv_from(buf))
+        .await
+        .unwrap_or_else(|_| panic!("timeout waiting for {what}"))
+        .unwrap();
+    n
+}
+
+/// Nothing may arrive within a short window.
+async fn assert_no_udp(socket: &UdpSocket, what: &str) {
+    let mut buf = vec![0u8; 256];
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        socket.try_recv_from(&mut buf).is_err(),
+        "unexpected datagram: {what}"
+    );
+}
+
+/// Two declared cables on one stream are independent pipes: a channel joins
+/// its label's cable, and messages never cross cables. The "telemetry" cable
+/// is `create = false` (route-only), so the subscriber never gets a channel
+/// for it — its traffic must not reach the subscriber at all.
+#[tokio::test]
+async fn test_cable_label_isolation() {
+    init_tracing();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let stream_id = "test-cable-isolation";
+
+    // Ports 8740-8749 (the other tests in this binary use 8700-8734).
+    let control_listen: u16 = 8740;
+    let control_target: u16 = 8741;
+    let telemetry_listen: u16 = 8742;
+    let telemetry_target: u16 = 8743;
+    let whepfrom_ch_listen: u16 = 8744;
+    let whepfrom_ch_target: u16 = 8745;
+
+    let mut cfg = liveion::config::Config::default();
+    cfg.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            cables: vec![
+                liveion::config::CableConfig {
+                    create: true,
+                    ..liveion::config::CableConfig::new("control")
+                },
+                liveion::config::CableConfig {
+                    create: false,
+                    ..liveion::config::CableConfig::new("telemetry")
+                },
+            ],
+            sources: vec![
+                dc_source(control_listen, control_target, "control"),
+                dc_source(telemetry_listen, telemetry_target, "telemetry"),
+            ],
+            ..Default::default()
+        },
+    );
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // whepfrom's channel is labeled "control": it joins the control cable.
+    let ct = CancellationToken::new();
+    let whep_channel_url =
+        format!("udp://0.0.0.0:{whepfrom_ch_listen}?host=127.0.0.1&port={whepfrom_ch_target}");
+    let handle_whepfrom = tokio::spawn(livetwo::whep::from(
+        ct.clone(),
+        format!("rtp://{ip}"),
+        format!("http://{addr}{}", api::path::whep(stream_id)),
+        None,
+        None,
+        None,
+        Some(whep_channel_url),
+        "control".to_string(),
+        Vec::new(),
+    ));
+    assert!(
+        wait_for_session_connected(&addr, stream_id).await,
+        "WHEP subscriber failed to connect"
+    );
+
+    let control_target = UdpSocket::bind(format!("127.0.0.1:{control_target}"))
+        .await
+        .unwrap();
+    let telemetry_target = UdpSocket::bind(format!("127.0.0.1:{telemetry_target}"))
+        .await
+        .unwrap();
+    let whepfrom_target = UdpSocket::bind(format!("127.0.0.1:{whepfrom_ch_target}"))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+    let udp_sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut buf = vec![0u8; 256];
+
+    // Inject into the control cable: the subscriber's channel receives it,
+    // and the telemetry cable's bridge sees nothing.
+    udp_sender
+        .send_to(b"ctrl-in", format!("127.0.0.1:{control_listen}"))
+        .await
+        .unwrap();
+    let n = recv_udp(
+        &whepfrom_target,
+        &mut buf,
+        "control message at whepfrom target",
+    )
+    .await;
+    assert_eq!(&buf[..n], b"ctrl-in");
+    assert_no_udp(
+        &telemetry_target,
+        "control message leaked into the telemetry bridge",
+    )
+    .await;
+
+    // Inject into the telemetry cable: the subscriber has no channel on it
+    // (create = false), and the control cable's bridge sees nothing.
+    udp_sender
+        .send_to(b"telemetry-in", format!("127.0.0.1:{telemetry_listen}"))
+        .await
+        .unwrap();
+    assert_no_udp(&whepfrom_target, "telemetry leaked into the subscriber").await;
+    assert_no_udp(&control_target, "telemetry leaked into the control bridge").await;
+
+    // The subscriber's message exports through the control cable's bridge
+    // only.
+    udp_sender
+        .send_to(b"sub-out", format!("127.0.0.1:{whepfrom_ch_listen}"))
+        .await
+        .unwrap();
+    let n = recv_udp(
+        &control_target,
+        &mut buf,
+        "subscriber message at control cable target",
+    )
+    .await;
+    assert_eq!(&buf[..n], b"sub-out");
+    assert_no_udp(
+        &telemetry_target,
+        "subscriber message leaked into the telemetry bridge",
+    )
+    .await;
+
+    ct.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whepfrom).await;
+}
+
+/// A DC target takes the subscriber seat on the cable: UDP input reaches the
+/// publisher, and the publisher's messages export to the UDP target (in
+/// addition to the regular subscribers, which the to-subscribers bus always
+/// feeds).
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+#[tokio::test]
+async fn test_cable_target_reaches_the_publisher() {
+    init_tracing();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let stream_id = "test-cable-target";
+
+    // Ports 8750-8759.
+    let bridge_listen: u16 = 8750;
+    let bridge_target: u16 = 8751;
+    let whipinto_ch_listen: u16 = 8752;
+    let whipinto_ch_target: u16 = 8753;
+    let whepfrom_ch_listen: u16 = 8754;
+    let whepfrom_ch_target: u16 = 8755;
+
+    let mut cfg = liveion::config::Config::default();
+    cfg.stream.streams.insert(
+        stream_id.to_string(),
+        liveion::config::StreamEntry {
+            cables: vec![liveion::config::CableConfig::new("control")],
+            targets: vec![dc_target(bridge_listen, bridge_target, "control")],
+            ..Default::default()
+        },
+    );
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    // Publisher (SDP-file input, no RTP) with a channel.
+    let rtp_listen_port: u16 = 8756;
+    let sdp_path = std::env::temp_dir().join(format!(
+        "live777-test-{stream_id}-{}.sdp",
+        std::process::id()
+    ));
+    std::fs::write(
+        &sdp_path,
+        format!(
+            "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=No Name\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=video {rtp_listen_port} RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\n"
+        ),
+    )
+    .unwrap();
+
+    let ct_pub = CancellationToken::new();
+    let whipinto_channel_url =
+        format!("udp://0.0.0.0:{whipinto_ch_listen}?host=127.0.0.1&port={whipinto_ch_target}");
+    let handle_whip = tokio::spawn(livetwo::whip::into(
+        ct_pub.clone(),
+        sdp_path.to_string_lossy().to_string(),
+        format!("http://{addr}{}", api::path::whip(stream_id)),
+        None,
+        None,
+        Some(whipinto_channel_url),
+        "control".to_string(),
+        Vec::new(),
+    ));
+    assert!(
+        wait_for_publish_connected(&addr, stream_id).await,
+        "WHIP publish session did not reach Connected"
+    );
+
+    let ct_sub = CancellationToken::new();
+    let whep_channel_url =
+        format!("udp://0.0.0.0:{whepfrom_ch_listen}?host=127.0.0.1&port={whepfrom_ch_target}");
+    let handle_whepfrom = tokio::spawn(livetwo::whep::from(
+        ct_sub.clone(),
+        format!("rtp://{ip}"),
+        format!("http://{addr}{}", api::path::whep(stream_id)),
+        None,
+        None,
+        None,
+        Some(whep_channel_url),
+        "control".to_string(),
+        Vec::new(),
+    ));
+    assert!(
+        wait_for_session_connected(&addr, stream_id).await,
+        "WHEP subscriber failed to connect"
+    );
+
+    let bridge_target = UdpSocket::bind(format!("127.0.0.1:{bridge_target}"))
+        .await
+        .unwrap();
+    let whipinto_target = UdpSocket::bind(format!("127.0.0.1:{whipinto_ch_target}"))
+        .await
+        .unwrap();
+    let whepfrom_target = UdpSocket::bind(format!("127.0.0.1:{whepfrom_ch_target}"))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+    let udp_sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut buf = vec![0u8; 256];
+
+    // UDP -> subscriber-role bridge -> to_publisher bus -> the publisher.
+    udp_sender
+        .send_to(b"cmd-for-publisher", format!("127.0.0.1:{bridge_listen}"))
+        .await
+        .unwrap();
+    let n = recv_udp(&whipinto_target, &mut buf, "command at the publisher").await;
+    assert_eq!(&buf[..n], b"cmd-for-publisher");
+    // The to_publisher bus feeds no subscriber.
+    assert_no_udp(
+        &whepfrom_target,
+        "publisher-bound command reached a subscriber",
+    )
+    .await;
+
+    // Publisher -> to_subscribers bus -> both the subscribers and the
+    // subscriber-role bridge's UDP target.
+    udp_sender
+        .send_to(b"telemetry-down", format!("127.0.0.1:{whipinto_ch_listen}"))
+        .await
+        .unwrap();
+    let n = recv_udp(
+        &bridge_target,
+        &mut buf,
+        "publisher message at the bridge target",
+    )
+    .await;
+    assert_eq!(&buf[..n], b"telemetry-down");
+    let n = recv_udp(
+        &whepfrom_target,
+        &mut buf,
+        "publisher message at the subscriber",
+    )
+    .await;
+    assert_eq!(&buf[..n], b"telemetry-down");
+
     ct_pub.cancel();
     ct_sub.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whip).await;
