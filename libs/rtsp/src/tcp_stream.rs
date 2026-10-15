@@ -13,10 +13,6 @@ use crate::types::SessionMode;
 
 pub type InterleavedFrame = (u8, Vec<u8>);
 
-// async_trait's generated methods carry `#[must_use]` on top of the
-// `Future` return type (itself must-use) — newer clippy flags that as
-// double_must_use; nothing here to act on.
-#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub(crate) trait InterleavedSender: Send + Sync {
     async fn send_interleaved(
@@ -25,7 +21,6 @@ pub(crate) trait InterleavedSender: Send + Sync {
     ) -> Result<(), SendError<InterleavedFrame>>;
 }
 
-#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 impl InterleavedSender for Sender<InterleavedFrame> {
     async fn send_interleaved(
@@ -36,13 +31,11 @@ impl InterleavedSender for Sender<InterleavedFrame> {
     }
 }
 
-#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub(crate) trait InterleavedReceiver: Send {
     async fn recv_interleaved(&mut self) -> Option<InterleavedFrame>;
 }
 
-#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 impl InterleavedReceiver for Receiver<InterleavedFrame> {
     async fn recv_interleaved(&mut self) -> Option<InterleavedFrame> {
