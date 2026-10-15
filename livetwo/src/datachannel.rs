@@ -14,9 +14,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 
-/// DataChannel label used to join liveion's per-stream channel group for
-/// bidirectional control messaging, on both the WHEP and the WHIP leg.
-pub const DATA_CHANNEL_LABEL: &str = "control";
+/// Default DataChannel label used to join the matching cable on the server,
+/// on both the WHEP and the WHIP leg. Clients can override it per run.
+pub const DEFAULT_CABLE_LABEL: &str = "default";
 
 /// Buffer size for incoming UDP packets.
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes

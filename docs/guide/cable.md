@@ -30,7 +30,7 @@ Consequences to keep in mind:
 ```toml
 [stream.fpv]
 [[stream.fpv.cables]]
-label = "control"          # cable identity (channel label), required
+label = "default"          # cable identity (channel label), required
 # ordered = false          # unset: WebRTC default (ordered, reliable)
 # max_retransmits = 0      # partial reliability; mutually exclusive with
                            # max_packet_life_time
@@ -43,14 +43,14 @@ label = "control"          # cable identity (channel label), required
 # broadcast to every subscriber, and subscribers' replies go to its target.
 [[stream.fpv.sources]]
 [[stream.fpv.sources.cables]]
-label = "control"          # which cable this endpoint joins
+label = "default"          # which cable this endpoint joins
 url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 
 # A DC target takes the subscriber seat: the publisher's messages go to its
 # target, and its inbound packets go to the publisher.
 [[stream.fpv.targets]]
 [[stream.fpv.targets.cables]]
-label = "control"
+label = "default"
 url = "udp://?host=127.0.0.1&port=8892"  # export-only
 ```
 
@@ -126,7 +126,7 @@ open). Browser clients just handle `ondatachannel` for server-created cables:
 
 ```js
 pc.ondatachannel = (ev) => {
-  // ev.channel.label === "control", parameters as configured on the server
+  // ev.channel.label === "default", parameters as configured on the server
   ev.channel.onmessage = (m) => { /* ... */ };
 };
 ```

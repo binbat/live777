@@ -19,7 +19,7 @@ use webrtc::peer_connection::{
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
 
 use crate::datachannel::{
-    CableRouter, DATA_CHANNEL_LABEL, run_cable_send_dispatch, run_data_channel_loop,
+    CableRouter, DEFAULT_CABLE_LABEL, run_cable_send_dispatch, run_data_channel_loop,
 };
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -120,9 +120,9 @@ pub struct WhepPeerOptions {
     /// `LIVE777_WEBRTC_ICE_UDP_ADDRS` resolution (env override or OS
     /// default allocation).
     pub ice_udp_addrs: Vec<std::net::SocketAddr>,
-    /// Create the "control" DataChannel joining liveion's WHEP group for
-    /// bidirectional control messaging. Pull-only consumers (e.g. the
-    /// liveion WHEP source) should disable it.
+    /// Create the DataChannel joining the matching cable for bidirectional
+    /// messaging. Pull-only consumers (e.g. the liveion WHEP source) should
+    /// disable it.
     pub control_channel: bool,
     /// Label of the DataChannel this peer creates (when `control_channel`
     /// is on). Joins the matching cable on the server.
@@ -135,7 +135,7 @@ impl Default for WhepPeerOptions {
             ice_servers: Vec::new(),
             ice_udp_addrs: Vec::new(),
             control_channel: true,
-            cable_label: DATA_CHANNEL_LABEL.to_string(),
+            cable_label: DEFAULT_CABLE_LABEL.to_string(),
         }
     }
 }

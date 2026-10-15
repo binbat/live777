@@ -124,8 +124,8 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig::new("control")],
-            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
+            cables: vec![liveion::config::CableConfig::new("default")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "default")],
             ..Default::default()
         },
     );
@@ -148,7 +148,7 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
 
@@ -342,8 +342,8 @@ async fn test_udp_channel_survives_stream_reset() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig::new("control")],
-            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
+            cables: vec![liveion::config::CableConfig::new("default")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "default")],
             ..Default::default()
         },
     );
@@ -374,7 +374,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         None,
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
 
@@ -411,7 +411,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url.clone()),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -472,7 +472,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -498,7 +498,7 @@ async fn test_udp_channel_survives_stream_reset() {
 /// Integration test: whipinto DataChannel <-> liveion <-> whepfrom DataChannel
 ///
 /// The publisher-side counterpart of test_whepfrom_datachannel_udp_forwarding:
-/// whipinto joins the stream's channel group by creating the "control"
+/// whipinto joins the stream's channel group by creating the "default"
 /// DataChannel on its WHIP publish session (--channel). liveion's publish peer
 /// bridges it into the stream buses, so the publisher's and a subscriber's
 /// channels exchange messages both ways:
@@ -564,7 +564,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whipinto_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
 
@@ -603,7 +603,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -879,8 +879,8 @@ async fn test_cable_target_reaches_the_publisher() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig::new("control")],
-            targets: vec![dc_target(bridge_listen, bridge_target, "control")],
+            cables: vec![liveion::config::CableConfig::new("default")],
+            targets: vec![dc_target(bridge_listen, bridge_target, "default")],
             ..Default::default()
         },
     );
@@ -912,7 +912,7 @@ async fn test_cable_target_reaches_the_publisher() {
         None,
         None,
         Some(whipinto_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -931,7 +931,7 @@ async fn test_cable_target_reaches_the_publisher() {
         None,
         None,
         Some(whep_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         Vec::new(),
     ));
     assert!(

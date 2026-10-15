@@ -28,9 +28,9 @@ pub use webrtc::setup_whip_peer;
 /// inputs it is the default ICE server list, overridable with the URL's `ice`
 /// query parameter.
 ///
-/// `channel_url` (`udp://<listen>?host=<target>&port=<port>`) creates the
-/// "control" DataChannel on the publish session — joining the stream's
-/// channel group on a liveion server — and bridges it to UDP both ways. It is
+/// `cable_url` (`udp://<listen>?host=<target>&port=<port>`) creates the
+/// DataChannel on the publish session — joining the matching cable on a
+/// liveion server — and bridges it to UDP both ways. It is
 /// opt-in because it adds an `m=application` section to the WHIP offer.
 #[allow(clippy::too_many_arguments)]
 pub async fn into(
@@ -39,7 +39,7 @@ pub async fn into(
     whip_url: String,
     token: Option<String>,
     command: Option<String>,
-    channel_url: Option<String>,
+    cable_url: Option<String>,
     cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
@@ -97,14 +97,14 @@ pub async fn into(
             &mut client,
             input_source.media_info(),
             target_url.clone(),
-            channel_url.is_some(),
+            cable_url.is_some(),
             cable_label,
             ice_servers,
         )
         .await?;
     info!("WHIP peer setup completed; waiting for WebRTC connection");
 
-    // Start DataChannel <-> UDP forwarding if channel_url is configured. Like
+    // Start DataChannel <-> UDP forwarding if cable_url is configured. Like
     // on the WHEP side (`crate::whep::from`), the bridge runs on a
     // session-scoped token: it stops — releasing its UDP listen port — when
     // this session ends (any exit path, see `_session_guard`), so an
@@ -112,7 +112,7 @@ pub async fn into(
     let session_ct = ct.child_token();
     let _session_guard = crate::datachannel::CancelOnDrop(session_ct.clone());
     let channel_handle =
-        if let (Some(url), Some((dc_recv_rx, dc_send_tx))) = (channel_url, dc_channels) {
+        if let (Some(url), Some((dc_recv_rx, dc_send_tx))) = (cable_url, dc_channels) {
             debug!("Starting DataChannel <-> UDP forwarding: {}", url);
             Some(
                 crate::datachannel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone())

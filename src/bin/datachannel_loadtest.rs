@@ -149,11 +149,11 @@ async fn setup_topology(
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig::new("control")],
+            cables: vec![liveion::config::CableConfig::new("default")],
             sources: vec![liveion::config::SourceConfig {
                 url: None,
                 cables: vec![liveion::config::CableEndpoint {
-                    label: "control".to_string(),
+                    label: "default".to_string(),
                     url: format!(
                         "udp://0.0.0.0:{liveion_ch_listen}?host={}&port={liveion_ch_target}",
                         args.target_host
@@ -192,7 +192,7 @@ async fn setup_topology(
         None,
         None,
         Some(whep_channel_url),
-        "control".to_string(),
+        "default".to_string(),
         // In-process loopback test: host candidates suffice, no ICE servers
         // needed.
         Vec::new(),

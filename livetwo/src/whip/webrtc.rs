@@ -12,18 +12,16 @@ use tokio::sync::{Notify, mpsc, mpsc::UnboundedSender, watch};
 use tracing::debug;
 use webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 
-use crate::datachannel::{
-    CableRouter, run_cable_send_dispatch, run_data_channel_loop,
-};
+use crate::datachannel::{CableRouter, run_cable_send_dispatch, run_data_channel_loop};
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 use crate::whip::core::{self, PublishDiagnostics, PublishPeerOptions};
 use crate::whip::track;
 
-/// `control_channel` creates the "control" DataChannel joining liveion's
-/// per-stream channel group; it must be requested by the caller (via
-/// `--channel`) because it adds an `m=application` section to the WHIP offer,
-/// which not every WHIP server accepts.
+/// `control_channel` creates the DataChannel joining the matching cable; it
+/// must be requested by the caller (via `--cable-url`) because it adds an
+/// `m=application` section to the WHIP offer, which not every WHIP server
+/// accepts.
 pub async fn setup_whip_peer(
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
