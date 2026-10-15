@@ -811,7 +811,7 @@ mod tests {
     fn rtp_target(url: &str) -> TargetConfig {
         TargetConfig {
             url: url.to_string(),
-            cable_label: None,
+            cables: vec![],
             multicast_interface: None,
             ttl: None,
             payload_type: None,
@@ -1869,7 +1869,7 @@ mod tests {
             crate::config::StreamEntry {
                 sources: vec![crate::config::SourceConfig {
                     url: Some(format!("file://{}", sdp_path.to_string_lossy())),
-                    cable_label: None,
+                    cables: vec![],
                     multicast_interface: None,
                     #[cfg(feature = "native-source")]
                     capture: None,

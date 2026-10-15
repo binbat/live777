@@ -93,9 +93,6 @@ pub fn init(manager: Arc<Manager>) {
             .unwrap_or("")
             .to_ascii_lowercase();
         match scheme.as_str() {
-            // DC target: consumes a cable, not the media plane; its bridge
-            // is attached by `init_stream_forward`.
-            "udp" => {}
             #[cfg(feature = "target-whip")]
             "whip" | "whips" => match TargetContext::new(manager.clone(), stream, target) {
                 Ok(ctx) => {

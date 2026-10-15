@@ -213,10 +213,10 @@ impl CableHub {
         Ok(id)
     }
 
-    /// Attach the stream's statically configured `udp://` source/target
-    /// endpoints, exactly once per hub. A provisioned-stream reset reuses the
-    /// hub, so the second call is a no-op. Per-endpoint failures are logged
-    /// and skipped — one bad endpoint must not take the others down with it.
+    /// Attach the stream's statically configured DC endpoints, exactly once
+    /// per hub. A provisioned-stream reset reuses the hub, so the second
+    /// call is a no-op. Per-endpoint failures are logged and skipped — one
+    /// bad endpoint must not take the others down with it.
     pub(crate) async fn attach_static_endpoints(
         &self,
         stream: &str,
@@ -227,36 +227,31 @@ impl CableHub {
         }
         // DC sources take the broadcast seat.
         for source in &entry.sources {
-            let Some(url) = source.url.as_deref() else {
-                continue;
-            };
-            if !url.to_ascii_lowercase().starts_with("udp://") {
-                continue;
-            }
-            let Some(label) = source.cable_label.as_deref() else {
-                continue;
-            };
-            let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(url) else {
-                continue;
-            };
-            if let Err(err) = self.attach_source(stream, label, &endpoint).await {
-                tracing::warn!("dc source [{stream}/{label}] failed to attach: {err:?}");
+            for ep in &source.cables {
+                let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
+                    continue;
+                };
+                if let Err(err) = self.attach_source(stream, &ep.label, &endpoint).await {
+                    tracing::warn!(
+                        "dc source [{stream}/{}] failed to attach: {err:?}",
+                        ep.label
+                    );
+                }
             }
         }
         // DC targets take the subscriber seat.
         #[cfg(feature = "target")]
         for target in &entry.targets {
-            if !target.url.trim().to_ascii_lowercase().starts_with("udp://") {
-                continue;
-            }
-            let Some(label) = target.cable_label.as_deref() else {
-                continue;
-            };
-            let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&target.url) else {
-                continue;
-            };
-            if let Err(err) = self.attach_target(stream, label, &endpoint).await {
-                tracing::warn!("dc target [{stream}/{label}] failed to attach: {err:?}");
+            for ep in &target.cables {
+                let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
+                    continue;
+                };
+                if let Err(err) = self.attach_target(stream, &ep.label, &endpoint).await {
+                    tracing::warn!(
+                        "dc target [{stream}/{}] failed to attach: {err:?}",
+                        ep.label
+                    );
+                }
             }
         }
     }

@@ -35,13 +35,15 @@ label = "control"          # cable 标识（channel label），必填
 
 # DC source 坐广播席位：入向 UDP 包广播给全体订阅者，订阅者的回话发到其 target。
 [[stream.fpv.sources]]
+[[stream.fpv.sources.cables]]
+label = "control"          # 该端点接入哪条 cable
 url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
-cable_label = "control"
 
 # DC target 坐订阅者席位：发布者的消息发到其 target，入向包发给发布者。
 [[stream.fpv.targets]]
+[[stream.fpv.targets.cables]]
+label = "control"
 url = "udp://?host=127.0.0.1&port=8892"  # 纯导出
-cable_label = "control"
 ```
 
 | 字段 | 默认值 | 含义 |
@@ -77,8 +79,8 @@ channel 参数；对端只读接受。浏览器还会把参数镜像到自己的
 
 ## cable <-> UDP 端点
 
-DC 端点以 `udp://` URL 声明在流的 `sources` 和 `targets` 上，用
-`cable_label` 关联到某条 cable：
+DC 端点以 `cables` 条目声明在流的 `sources` 和 `targets` 上，每个条目带
+`label`（接入哪条 cable）和 `udp://` URL：
 
 - **DC source** 坐广播席位：入向 UDP 包（`udp://<listen>` authority 部分）
   广播给全体订阅者；订阅者的消息发到其 `?host=`/`?port=` target。

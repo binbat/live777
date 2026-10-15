@@ -42,14 +42,16 @@ label = "control"          # cable identity (channel label), required
 # A DC source takes the broadcast seat: its inbound UDP packets are
 # broadcast to every subscriber, and subscribers' replies go to its target.
 [[stream.fpv.sources]]
+[[stream.fpv.sources.cables]]
+label = "control"          # which cable this endpoint joins
 url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
-cable_label = "control"
 
 # A DC target takes the subscriber seat: the publisher's messages go to its
 # target, and its inbound packets go to the publisher.
 [[stream.fpv.targets]]
+[[stream.fpv.targets.cables]]
+label = "control"
 url = "udp://?host=127.0.0.1&port=8892"  # export-only
-cable_label = "control"
 ```
 
 | field | default | meaning |
@@ -89,8 +91,8 @@ outgoing direction, making the parameters bidirectional there.)
 
 ## Cable <-> UDP endpoints
 
-DC endpoints are declared as `udp://` URLs on the stream's `sources` and
-`targets`, keyed to a cable by `cable_label`:
+DC endpoints are declared as `cables` entries on the stream's `sources` and
+`targets`, each carrying the cable `label` it joins plus a `udp://` URL:
 
 - A **DC source** takes the broadcast seat: its inbound UDP packets (the
   `udp://<listen>` authority) are delivered to all subscribers, and

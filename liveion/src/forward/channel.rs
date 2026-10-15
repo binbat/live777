@@ -10,8 +10,9 @@
 ///   [[stream.camera.cables]]
 ///   label = "control"
 ///   [[stream.camera.sources]]
+///   [[stream.camera.sources.cables]]
+///   label = "control"
 ///   url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
-///   cable_label = "control"
 use std::net::SocketAddr;
 use std::time::Duration;
 

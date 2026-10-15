@@ -309,7 +309,8 @@ clients via Link headers).
   stream's `sources` (broadcast seat: inbound packets go to all subscribers,
   replies go to the endpoint's `?host`/`?port` target) and `targets`
   (subscriber seat: publisher messages go to the target, inbound packets go
-  to the publisher), keyed to a cable by `cable_label` and attached once via
+  to the publisher), each a `cables` entry carrying the cable `label` it
+  joins plus a `udp://` URL, attached once via
   `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
   reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
   for a future dynamic API). The `udp://` authority (listen) and the

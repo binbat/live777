@@ -911,7 +911,7 @@ mod tests {
     fn rtsp_target(url: &str) -> TargetConfig {
         TargetConfig {
             url: url.to_string(),
-            cable_label: None,
+            cables: vec![],
             multicast_interface: None,
             ttl: None,
             payload_type: None,

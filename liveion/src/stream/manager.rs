@@ -1605,11 +1605,6 @@ impl Manager {
             }
             // URL-based sources (RTSP / SDP / WHEP)
             if let Some(ref url) = source_cfg.url {
-                // DC sources (`udp://`) feed a cable, not the media plane;
-                // their bridges are attached by `init_stream_forward`.
-                if url.to_ascii_lowercase().starts_with("udp://") {
-                    continue;
-                }
                 tracing::info!(
                     "Starting URL-based source: {} from {}",
                     stream_id,
@@ -2019,7 +2014,7 @@ mod tests {
     fn source_config(url: &str) -> crate::config::SourceConfig {
         crate::config::SourceConfig {
             url: Some(url.to_string()),
-            cable_label: None,
+            cables: vec![],
             multicast_interface: None,
             #[cfg(feature = "native-source")]
             capture: None,
@@ -2294,7 +2289,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path)),
-                        cable_label: None,
+                        cables: vec![],
                         multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,
@@ -2587,7 +2582,7 @@ mod tests {
                 crate::config::StreamEntry {
                     sources: vec![crate::config::SourceConfig {
                         url: Some(format!("file://{}", sdp_path.to_string_lossy())),
-                        cable_label: None,
+                        cables: vec![],
                         multicast_interface: None,
                         #[cfg(feature = "native-source")]
                         capture: None,

@@ -71,10 +71,11 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
 /// UDP packets broadcast to every subscriber, replies go to the target.
 fn dc_source(listen: u16, target: u16, label: &str) -> liveion::config::SourceConfig {
     liveion::config::SourceConfig {
-        url: Some(format!(
-            "udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"
-        )),
-        cable_label: Some(label.to_string()),
+        url: None,
+        cables: vec![liveion::config::CableEndpoint {
+            label: label.to_string(),
+            url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
+        }],
         multicast_interface: None,
         #[cfg(feature = "native-source")]
         capture: None,
@@ -97,8 +98,11 @@ fn dc_source(listen: u16, target: u16, label: &str) -> liveion::config::SourceCo
 ))]
 fn dc_target(listen: u16, target: u16, label: &str) -> liveion::config::TargetConfig {
     liveion::config::TargetConfig {
-        url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
-        cable_label: Some(label.to_string()),
+        url: String::new(),
+        cables: vec![liveion::config::CableEndpoint {
+            label: label.to_string(),
+            url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
+        }],
         ..Default::default()
     }
 }
