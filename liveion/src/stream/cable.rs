@@ -59,6 +59,9 @@ pub(crate) type BridgeId = usize;
 enum Seat {
     /// The broadcast (source) seat: inbound packets are broadcast to all
     /// subscribers, and subscribers' replies come back to the target.
+    /// Constructed only when the `source` feature enables DC sources; the
+    /// runtime `attach_source` foundation keeps it reachable.
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
     Source,
     /// The subscriber (target) seat: inbound packets are delivered to the
     /// publisher, and the publisher's messages come back to the target.
@@ -142,7 +145,10 @@ impl CableHub {
 
     /// Attach a datachannel UDP endpoint at the broadcast (source) seat:
     /// inbound packets are broadcast to every subscriber, and subscribers'
-    /// replies are sent to the endpoint's target.
+    /// replies are sent to the endpoint's target. This is the runtime
+    /// foundation for a future dynamic DC-source API; statically configured
+    /// DC sources go through [`attach_static_endpoints`].
+    #[cfg_attr(not(feature = "source"), allow(dead_code))]
     pub(crate) async fn attach_source(
         &self,
         stream: &str,
@@ -222,38 +228,42 @@ impl CableHub {
         stream: &str,
         entry: &crate::config::StreamEntry,
     ) {
-        if self.static_attached.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        // DC sources take the broadcast seat.
-        for source in &entry.sources {
-            for ep in &source.cables {
-                let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
-                    continue;
-                };
-                if let Err(err) = self.attach_source(stream, &ep.label, &endpoint).await {
-                    tracing::warn!(
-                        "dc source [{stream}/{}] failed to attach: {err:?}",
-                        ep.label
-                    );
+        if !self.static_attached.swap(true, Ordering::Relaxed) {
+            // DC sources take the broadcast seat. They follow the media
+            // source feature gate: without `source`, configured DC sources
+            // are inert (like `url`), and are neither validated nor attached.
+            #[cfg(feature = "source")]
+            for source in &entry.sources {
+                for ep in &source.cables {
+                    let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
+                        continue;
+                    };
+                    if let Err(err) = self.attach_source(stream, &ep.label, &endpoint).await {
+                        tracing::warn!(
+                            "dc source [{stream}/{}] failed to attach: {err:?}",
+                            ep.label
+                        );
+                    }
+                }
+            }
+            // DC targets take the subscriber seat.
+            #[cfg(feature = "target")]
+            for target in &entry.targets {
+                for ep in &target.cables {
+                    let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
+                        continue;
+                    };
+                    if let Err(err) = self.attach_target(stream, &ep.label, &endpoint).await {
+                        tracing::warn!(
+                            "dc target [{stream}/{}] failed to attach: {err:?}",
+                            ep.label
+                        );
+                    }
                 }
             }
         }
-        // DC targets take the subscriber seat.
-        #[cfg(feature = "target")]
-        for target in &entry.targets {
-            for ep in &target.cables {
-                let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
-                    continue;
-                };
-                if let Err(err) = self.attach_target(stream, &ep.label, &endpoint).await {
-                    tracing::warn!(
-                        "dc target [{stream}/{}] failed to attach: {err:?}",
-                        ep.label
-                    );
-                }
-            }
-        }
+        // Keep the params live even when both endpoint kinds are compiled out.
+        let _ = (stream, entry);
     }
 }
 

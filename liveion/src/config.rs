@@ -672,6 +672,33 @@ impl Config {
                     );
                 }
             }
+            // DC endpoints must reference a declared cable: a misspelled or
+            // missing label would otherwise only surface as a warn at attach
+            // time. Reject it here so config errors fail loudly.
+            #[cfg(feature = "source")]
+            for source in &entry.sources {
+                for ep in &source.cables {
+                    if !seen_labels.contains(ep.label.as_str()) {
+                        anyhow::bail!(
+                            "stream[{}] source cable endpoint references undeclared cable '{}'",
+                            stream_id,
+                            ep.label
+                        );
+                    }
+                }
+            }
+            #[cfg(feature = "target")]
+            for target in &entry.targets {
+                for ep in &target.cables {
+                    if !seen_labels.contains(ep.label.as_str()) {
+                        anyhow::bail!(
+                            "stream[{}] target cable endpoint references undeclared cable '{}'",
+                            stream_id,
+                            ep.label
+                        );
+                    }
+                }
+            }
         }
 
         #[cfg(feature = "target")]
