@@ -105,10 +105,6 @@ impl ProbeResult {
 
 /// Backend that can probe a WHEP endpoint and report whether the stream is
 /// reachable and decodable/playable.
-// async_trait's generated methods carry `#[must_use]` on top of the `Future`
-// return type (itself must-use) — newer clippy flags that as
-// double_must_use; nothing here to act on.
-#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ProbeBackend: Send + Sync {
     /// Backend identifier, used in reports.
