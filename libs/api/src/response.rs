@@ -71,29 +71,6 @@ pub struct Cable {
     pub create: bool,
     /// Broadcast capacity of the cable's two direction buses, in messages.
     pub capacity: usize,
-    /// Cable <-> UDP bridges attached to this cable.
-    #[serde(default)]
-    pub udp: Vec<CableUdp>,
-}
-
-/// One cable <-> UDP bridge of a cable.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CableUdp {
-    pub role: CableRole,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub listen: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
-/// Which seat a cable <-> UDP bridge takes on the cable: `publisher` = the
-/// publisher's seat, `subscriber` = a subscriber's seat.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum CableRole {
-    Publisher,
-    Subscriber,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

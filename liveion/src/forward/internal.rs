@@ -3563,16 +3563,15 @@ mod dc_tests {
         let listen = probe.local_addr().unwrap();
         drop(probe);
 
-        let cable = crate::config::CableConfig {
-            udp: vec![crate::config::CableUdpConfig {
-                role: crate::config::CableRole::Publisher,
-                listen: Some(listen),
-                target: Some("127.0.0.1:9".parse().unwrap()),
-            }],
-            ..crate::config::CableConfig::new("control")
-        };
+        let cable = crate::config::CableConfig::new("control");
         let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&[cable]));
-        hub.start_bridges("test").await;
+        let endpoint = crate::config::DcUdpEndpoint {
+            listen: Some(listen),
+            target: Some("127.0.0.1:9".parse().unwrap()),
+        };
+        hub.attach_source("test", "control", &endpoint)
+            .await
+            .unwrap();
         assert!(
             tokio::net::UdpSocket::bind(listen).await.is_err(),
             "bridge must hold its configured port"

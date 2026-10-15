@@ -15,6 +15,7 @@
 //! is dropped (stream deleted).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +51,23 @@ pub(crate) struct Cable {
     pub(crate) config: crate::config::CableConfig,
 }
 
+/// Identifier of a running cable endpoint bridge.
+pub(crate) type BridgeId = usize;
+
+/// Which cable seat an endpoint bridge takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Seat {
+    /// The broadcast (source) seat: inbound packets are broadcast to all
+    /// subscribers, and subscribers' replies come back to the target.
+    Source,
+    /// The subscriber (target) seat: inbound packets are delivered to the
+    /// publisher, and the publisher's messages come back to the target.
+    /// Constructed only when the `target` feature enables DC targets; the
+    /// runtime `attach_target` foundation keeps it reachable.
+    #[cfg_attr(not(feature = "target"), allow(dead_code))]
+    Target,
+}
+
 /// The stream-level owner of all cable state: the anonymous default bus
 /// pair, every declared cable's buses, and the cable <-> UDP bridges.
 pub(crate) struct CableHub {
@@ -59,13 +77,17 @@ pub(crate) struct CableHub {
     /// bridges must not outlive the stream, but equally must not churn when
     /// the forward is reset underneath them.
     cancel: CancellationToken,
-    /// Running bridge tasks keyed by (cable label, udp index), so a
-    /// partially-failed start retries only the bridges that never came up on
-    /// a later `start_bridges` call (e.g. after a provisioned-stream reset
-    /// frees a held port) instead of re-spawning the healthy ones. tokio
-    /// Mutex: the guard is held across bridge spawns (which await), so it
-    /// must stay Send to keep the HTTP handler futures Send.
-    bridges: tokio::sync::Mutex<HashMap<(String, usize), crate::forward::channel::ChannelHandle>>,
+    /// Running endpoint bridges keyed by a monotonically increasing id, so a
+    /// later dynamic API can detach them individually. tokio Mutex: the
+    /// guard is held across bridge spawns (which await), so it must stay
+    /// Send to keep the HTTP handler futures Send.
+    bridges: tokio::sync::Mutex<HashMap<BridgeId, crate::forward::channel::ChannelHandle>>,
+    /// Next bridge id; never reused within a hub's lifetime.
+    next_id: AtomicUsize,
+    /// Set once the stream's statically configured DC endpoints have been
+    /// attached, so a provisioned-stream reset (which reuses the hub) never
+    /// re-spawns them.
+    static_attached: AtomicBool,
 }
 
 impl CableHub {
@@ -76,6 +98,8 @@ impl CableHub {
             cables: HashMap::new(),
             cancel: CancellationToken::new(),
             bridges: tokio::sync::Mutex::new(HashMap::new()),
+            next_id: AtomicUsize::new(0),
+            static_attached: AtomicBool::new(false),
         }
     }
 
@@ -116,49 +140,123 @@ impl CableHub {
         self.cables.values().map(|c| &c.config).filter(|c| c.create)
     }
 
-    /// Start every configured UDP bridge. Idempotent per bridge: a bridge
-    /// that already started successfully (e.g. after a provisioned-stream
-    /// reset reuses the hub) is left alone, while any bridge that failed to
-    /// start is retried on the next call. Per-bridge failures are logged and
-    /// skipped — one bad bridge must not take the others down with it.
-    pub(crate) async fn start_bridges(&self, stream: &str) {
-        let mut bridges = self.bridges.lock().await;
-        for cable in self.cables.values() {
-            for (udp_index, udp) in cable.config.udp.iter().enumerate() {
-                let key = (cable.config.label.clone(), udp_index);
-                if bridges.contains_key(&key) {
-                    // This bridge already started successfully; leave it.
-                    continue;
-                }
-                let (dc_rx, dc_tx) = match udp.role {
-                    crate::config::CableRole::Publisher => (
-                        udp.target.map(|_| cable.bus.to_publisher.subscribe()),
-                        udp.listen.map(|_| cable.bus.to_subscribers.clone()),
-                    ),
-                    crate::config::CableRole::Subscriber => (
-                        udp.target.map(|_| cable.bus.to_subscribers.subscribe()),
-                        udp.listen.map(|_| cable.bus.to_publisher.clone()),
-                    ),
-                };
-                match crate::forward::channel::spawn_channel(
-                    format!("{stream}/{}", cable.config.label),
-                    udp,
-                    dc_rx,
-                    dc_tx,
-                    self.cancel.clone(),
-                )
-                .await
-                {
-                    Ok(handle) => {
-                        bridges.insert(key, handle);
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            "cable bridge [{stream}/{}] failed to start: {err:?}",
-                            cable.config.label
-                        );
-                    }
-                }
+    /// Attach a datachannel UDP endpoint at the broadcast (source) seat:
+    /// inbound packets are broadcast to every subscriber, and subscribers'
+    /// replies are sent to the endpoint's target.
+    pub(crate) async fn attach_source(
+        &self,
+        stream: &str,
+        label: &str,
+        endpoint: &crate::config::DcUdpEndpoint,
+    ) -> anyhow::Result<BridgeId> {
+        self.attach(stream, label, endpoint, Seat::Source).await
+    }
+
+    /// Attach a datachannel UDP endpoint at the subscriber (target) seat:
+    /// the publisher's messages are sent to the endpoint's target, and
+    /// inbound packets are delivered to the publisher. This is the runtime
+    /// foundation for a future dynamic DC-target API; statically configured
+    /// DC targets go through [`attach_static_endpoints`].
+    #[cfg_attr(not(feature = "target"), allow(dead_code))]
+    pub(crate) async fn attach_target(
+        &self,
+        stream: &str,
+        label: &str,
+        endpoint: &crate::config::DcUdpEndpoint,
+    ) -> anyhow::Result<BridgeId> {
+        self.attach(stream, label, endpoint, Seat::Target).await
+    }
+
+    /// Detach a previously attached endpoint bridge. Idempotent: an unknown
+    /// id is a no-op. This is the runtime foundation for a future dynamic
+    /// DC-endpoint API.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn detach(&self, id: BridgeId) {
+        if let Some(handle) = self.bridges.lock().await.remove(&id) {
+            handle.stop().await;
+        }
+    }
+
+    /// Attach `endpoint` to the cable with `label` at `seat`.
+    async fn attach(
+        &self,
+        stream: &str,
+        label: &str,
+        endpoint: &crate::config::DcUdpEndpoint,
+        seat: Seat,
+    ) -> anyhow::Result<BridgeId> {
+        let Some(cable) = self.cables.get(label) else {
+            anyhow::bail!("cable '{label}' is not declared on stream '{stream}'");
+        };
+        let (dc_rx, dc_tx) = match seat {
+            Seat::Source => (
+                endpoint.target.map(|_| cable.bus.to_publisher.subscribe()),
+                endpoint.listen.map(|_| cable.bus.to_subscribers.clone()),
+            ),
+            Seat::Target => (
+                endpoint
+                    .target
+                    .map(|_| cable.bus.to_subscribers.subscribe()),
+                endpoint.listen.map(|_| cable.bus.to_publisher.clone()),
+            ),
+        };
+        let handle = crate::forward::channel::spawn_channel(
+            format!("{stream}/{label}"),
+            endpoint,
+            dc_rx,
+            dc_tx,
+            self.cancel.clone(),
+        )
+        .await?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.bridges.lock().await.insert(id, handle);
+        Ok(id)
+    }
+
+    /// Attach the stream's statically configured `udp://` source/target
+    /// endpoints, exactly once per hub. A provisioned-stream reset reuses the
+    /// hub, so the second call is a no-op. Per-endpoint failures are logged
+    /// and skipped — one bad endpoint must not take the others down with it.
+    pub(crate) async fn attach_static_endpoints(
+        &self,
+        stream: &str,
+        entry: &crate::config::StreamEntry,
+    ) {
+        if self.static_attached.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        // DC sources take the broadcast seat.
+        for source in &entry.sources {
+            let Some(url) = source.url.as_deref() else {
+                continue;
+            };
+            if !url.to_ascii_lowercase().starts_with("udp://") {
+                continue;
+            }
+            let Some(label) = source.cable_label.as_deref() else {
+                continue;
+            };
+            let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(url) else {
+                continue;
+            };
+            if let Err(err) = self.attach_source(stream, label, &endpoint).await {
+                tracing::warn!("dc source [{stream}/{label}] failed to attach: {err:?}");
+            }
+        }
+        // DC targets take the subscriber seat.
+        #[cfg(feature = "target")]
+        for target in &entry.targets {
+            if !target.url.trim().to_ascii_lowercase().starts_with("udp://") {
+                continue;
+            }
+            let Some(label) = target.cable_label.as_deref() else {
+                continue;
+            };
+            let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&target.url) else {
+                continue;
+            };
+            if let Err(err) = self.attach_target(stream, label, &endpoint).await {
+                tracing::warn!("dc target [{stream}/{label}] failed to attach: {err:?}");
             }
         }
     }
@@ -225,50 +323,52 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), vec![0]);
     }
 
-    /// A bridge whose start failed must be retried on a later `start_bridges`
-    /// call, while the bridge that already started is left alone.
+    /// A source endpoint bridge holds its listen port and releases it on
+    /// detach.
     #[tokio::test]
-    async fn start_bridges_retries_only_the_failed_bridge() {
-        // Hold a port so the first bridge's bind fails on the first pass.
-        let blocker = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let blocked_addr = blocker.local_addr().unwrap();
+    async fn attach_source_then_detach_releases_port() {
+        let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let listen = probe.local_addr().unwrap();
+        drop(probe);
 
-        // The second bridge gets a free port so it starts on the first pass.
-        let free_probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let free_addr = free_probe.local_addr().unwrap();
-        drop(free_probe);
+        let hub = CableHub::from_configs(&[cable("control")]);
+        let endpoint = crate::config::DcUdpEndpoint {
+            listen: Some(listen),
+            target: Some("127.0.0.1:9".parse().unwrap()),
+        };
 
-        let mut control = crate::config::CableConfig::new("control");
-        control.udp = vec![
-            crate::config::CableUdpConfig {
-                role: crate::config::CableRole::Publisher,
-                listen: Some(blocked_addr),
-                target: Some("127.0.0.1:9".parse().unwrap()),
-            },
-            crate::config::CableUdpConfig {
-                role: crate::config::CableRole::Publisher,
-                listen: Some(free_addr),
-                target: Some("127.0.0.1:9".parse().unwrap()),
-            },
-        ];
-
-        let hub = CableHub::from_configs(&[control]);
-
-        // First pass: the blocked bridge fails and is skipped; the free one
-        // starts and holds its port.
-        hub.start_bridges("test").await;
+        let id = hub
+            .attach_source("test", "control", &endpoint)
+            .await
+            .unwrap();
         assert!(
-            UdpSocket::bind(free_addr).await.is_err(),
-            "the healthy bridge must hold its port"
+            UdpSocket::bind(listen).await.is_err(),
+            "bridge must hold its port"
         );
 
-        // Free the blocked port, then start again: only the failed bridge is
-        // retried, and it now binds successfully.
-        drop(blocker);
-        hub.start_bridges("test").await;
+        hub.detach(id).await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while UdpSocket::bind(listen).await.is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "port still held after detach"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Attaching to an undeclared cable label fails.
+    #[tokio::test]
+    async fn attach_to_undeclared_cable_fails() {
+        let hub = CableHub::from_configs(&[cable("control")]);
+        let endpoint = crate::config::DcUdpEndpoint {
+            listen: None,
+            target: Some("127.0.0.1:9".parse().unwrap()),
+        };
         assert!(
-            UdpSocket::bind(blocked_addr).await.is_err(),
-            "the previously failed bridge must hold its port after the retry"
+            hub.attach_source("test", "missing", &endpoint)
+                .await
+                .is_err()
         );
     }
 }

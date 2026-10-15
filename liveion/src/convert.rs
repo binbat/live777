@@ -59,20 +59,6 @@ impl From<&crate::config::CableConfig> for api::response::Cable {
             protocol: value.protocol.clone(),
             create: value.create,
             capacity: value.capacity,
-            udp: value
-                .udp
-                .iter()
-                .map(|u| api::response::CableUdp {
-                    role: match u.role {
-                        crate::config::CableRole::Publisher => api::response::CableRole::Publisher,
-                        crate::config::CableRole::Subscriber => {
-                            api::response::CableRole::Subscriber
-                        }
-                    },
-                    listen: u.listen.map(|a| a.to_string()),
-                    target: u.target.map(|a| a.to_string()),
-                })
-                .collect(),
         }
     }
 }

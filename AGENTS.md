@@ -305,11 +305,17 @@ clients via Link headers).
   creating at `Connected` drops the OPEN write as non-Established and can
   collide stream-id parity with the client's channels) — and a client-created
   channel matching such a cable's label is closed (the server-created
-  channel wins). The cable UDP bridges (`forward/channel.rs`) take a
-  `role`: `publisher` = the publisher's seat (UDP <-> all
-  subscribers; the pre-cable `[stream.x.channel]` behavior), `subscriber` =
-  a subscriber's seat (UDP <-> the publisher); `listen`/`target` are
-  independently optional (one-way bridges). The client side mirrors this:
+  channel wins). DC UDP endpoints are declared as `udp://` URLs on the
+  stream's `sources` (broadcast seat: inbound packets go to all subscribers,
+  replies go to the endpoint's `?host`/`?port` target) and `targets`
+  (subscriber seat: publisher messages go to the target, inbound packets go
+  to the publisher), keyed to a cable by `cable_label` and attached once via
+  `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
+  reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
+  for a future dynamic API). The `udp://` authority (listen) and the
+  `host`/`port` query pair (target) are independently optional (one-way
+  endpoints; an omitted target means reply-to-sender). The client side
+  mirrors this:
   whepfrom's and whipinto's channel bridges (the shared
   `livetwo::datachannel` module — UDP bridge, channel poll loop,
   `CancelOnDrop`) run on a session-scoped token that `whep::from` /

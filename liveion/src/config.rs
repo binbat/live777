@@ -212,9 +212,6 @@ pub struct CableConfig {
     /// Broadcast capacity of the cable's two direction buses, in messages.
     #[serde(default = "default_cable_capacity")]
     pub capacity: usize,
-    /// Cable <-> UDP bridges attached to this cable.
-    #[serde(default)]
-    pub udp: Vec<CableUdpConfig>,
 }
 
 impl CableConfig {
@@ -227,40 +224,108 @@ impl CableConfig {
             protocol: String::new(),
             create: default_cable_create(),
             capacity: default_cable_capacity(),
-            udp: Vec::new(),
         }
     }
 }
 
-/// Which seat a cable <-> UDP bridge takes on the cable.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CableRole {
-    /// The publisher's seat: UDP input is delivered to all subscribers;
-    /// subscribers' messages are sent to the UDP target. (The pre-cable
-    /// `[stream.x.channel]` behavior.)
-    #[default]
-    Publisher,
-    /// A subscriber's seat: UDP input is delivered to the publisher; the
-    /// publisher's messages are sent to the UDP target.
-    Subscriber,
-}
-
-/// One cable <-> UDP bridge. `listen` and `target` are independent: setting
-/// only `listen` makes an inject-only bridge (UDP -> cable), only `target`
-/// an export-only one (cable -> UDP). At least one must be set.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CableUdpConfig {
-    #[serde(default)]
-    pub role: CableRole,
+/// One datachannel UDP endpoint, resolved from a `udp://` source/target URL.
+///
+/// The URL's authority is the local bind (`listen`, UDP -> cable injection)
+/// and the `host`/`port` query pair is the fixed destination (`target`,
+/// cable -> UDP export):
+///
+/// ```text
+/// udp://<listen_host>:<listen_port>[?host=<target_host>&port=<target_port>]
+/// ```
+///
+/// Both halves are optional but at least one must be present:
+/// `udp://0.0.0.0:8891` is inject-only, `udp://?host=127.0.0.1&port=8890`
+/// is export-only, and the full form is bidirectional. An omitted `target`
+/// means reply-to-sender: the bridge sends back to the last inbound source
+/// address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DcUdpEndpoint {
     /// Local UDP socket address to bind for inbound packets (UDP -> cable).
-    /// Example: `"0.0.0.0:8891"` or `"[::]:8891"`.
-    #[serde(default)]
     pub listen: Option<std::net::SocketAddr>,
     /// UDP destination for cable messages (cable -> UDP).
-    /// Example: `"127.0.0.1:8890"`.
-    #[serde(default)]
     pub target: Option<std::net::SocketAddr>,
+}
+
+impl DcUdpEndpoint {
+    pub fn parse(url: &str) -> anyhow::Result<Self> {
+        let rest = url
+            .strip_prefix("udp://")
+            .ok_or_else(|| anyhow::anyhow!("dc endpoint must use udp:// scheme, got {url}"))?;
+
+        // Split authority (listen) from query (target).
+        let (authority, query) = match rest.split_once('?') {
+            Some((a, q)) => (a, Some(q)),
+            None => (rest, None),
+        };
+
+        // Authority = listen; empty means export-only (no listen).
+        let listen = if authority.is_empty() {
+            None
+        } else {
+            Some(authority.parse::<std::net::SocketAddr>().map_err(|e| {
+                anyhow::anyhow!("invalid dc listen address '{authority}' in {url}: {e}")
+            })?)
+        };
+
+        // Query = target host/port pair.
+        let mut target = None;
+        if let Some(query) = query {
+            let mut host: Option<&str> = None;
+            let mut port: Option<u16> = None;
+            for pair in query.split('&') {
+                let (key, value) = pair.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("invalid dc endpoint query '{pair}' in {url}")
+                })?;
+                match key {
+                    "host" => host = Some(value),
+                    "port" => {
+                        port = Some(value.parse().map_err(|e| {
+                            anyhow::anyhow!("invalid dc target port '{value}' in {url}: {e}")
+                        })?)
+                    }
+                    other => {
+                        anyhow::bail!("unknown dc endpoint query parameter '{other}' in {url}")
+                    }
+                }
+            }
+            match (host, port) {
+                (Some(host), Some(port)) => {
+                    let host = bracket_ipv6(host);
+                    target = Some(
+                        format!("{host}:{port}")
+                            .parse::<std::net::SocketAddr>()
+                            .map_err(|e| {
+                                anyhow::anyhow!("invalid dc target address in {url}: {e}")
+                            })?,
+                    );
+                }
+                (None, None) => {}
+                _ => anyhow::bail!("dc endpoint target host and port must be set together: {url}"),
+            }
+        }
+
+        if listen.is_none() && target.is_none() {
+            anyhow::bail!("dc endpoint needs at least one of listen or target: {url}");
+        }
+        Ok(Self { listen, target })
+    }
+}
+
+/// Wrap a bare IPv6 host in brackets so it composes into a `host:port`
+/// socket address.
+fn bracket_ipv6(host: &str) -> String {
+    if host.starts_with('[') {
+        host.to_string()
+    } else if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -278,31 +343,24 @@ mod tests {
     }
 
     #[test]
-    fn test_cable_udp_config_ipv4() {
-        let s: CableUdpConfig = toml::from_str(
-            r#"
-            listen = "0.0.0.0:7774"
-            target = "127.0.0.1:1234"
-            "#,
-        )
-        .unwrap();
-        assert_eq!(s.role, CableRole::Publisher);
-        assert_eq!(s.listen.unwrap().to_string(), "0.0.0.0:7774");
-        assert_eq!(s.target.unwrap().to_string(), "127.0.0.1:1234");
+    fn test_dc_udp_endpoint_ipv4() {
+        let e = DcUdpEndpoint::parse("udp://0.0.0.0:7774?host=127.0.0.1&port=1234").unwrap();
+        assert_eq!(e.listen.unwrap().to_string(), "0.0.0.0:7774");
+        assert_eq!(e.target.unwrap().to_string(), "127.0.0.1:1234");
     }
 
     #[test]
-    fn test_cable_udp_config_ipv6() {
-        let s: CableUdpConfig = toml::from_str(
-            r#"
-            role = "subscriber"
-            listen = "[::]:7774"
-            "#,
-        )
-        .unwrap();
-        assert_eq!(s.role, CableRole::Subscriber);
-        assert_eq!(s.listen.unwrap().to_string(), "[::]:7774");
-        assert!(s.target.is_none());
+    fn test_dc_udp_endpoint_ipv6_inject_only() {
+        let e = DcUdpEndpoint::parse("udp://[::]:7774").unwrap();
+        assert_eq!(e.listen.unwrap().to_string(), "[::]:7774");
+        assert!(e.target.is_none());
+    }
+
+    #[test]
+    fn test_dc_udp_endpoint_export_only() {
+        let e = DcUdpEndpoint::parse("udp://?host=127.0.0.1&port=1234").unwrap();
+        assert!(e.listen.is_none());
+        assert_eq!(e.target.unwrap().to_string(), "127.0.0.1:1234");
     }
 
     #[test]
@@ -315,7 +373,6 @@ mod tests {
         assert!(c.max_retransmits.is_none());
         assert!(c.max_packet_life_time.is_none());
         assert!(c.protocol.is_empty());
-        assert!(c.udp.is_empty());
     }
 
     #[test]
@@ -410,6 +467,7 @@ mod tests {
     fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
         SourceConfig {
             url: Some(url.to_string()),
+            cable_label: None,
             multicast_interface: multicast_interface.map(str::to_string),
             #[cfg(feature = "native-source")]
             capture: None,
@@ -591,24 +649,6 @@ impl Config {
                         stream_id,
                         cable.label
                     );
-                }
-                for udp in &cable.udp {
-                    if udp.listen.is_none() && udp.target.is_none() {
-                        anyhow::bail!(
-                            "stream[{}] cable '{}': a udp bridge needs at least one of listen/target",
-                            stream_id,
-                            cable.label
-                        );
-                    }
-                    if udp.listen.is_some_and(|a| a.port() == 0)
-                        || udp.target.is_some_and(|a| a.port() == 0)
-                    {
-                        anyhow::bail!(
-                            "stream[{}] cable '{}': udp listen/target ports must be non-zero",
-                            stream_id,
-                            cable.label
-                        );
-                    }
                 }
             }
         }
@@ -956,6 +996,13 @@ pub struct TargetConfig {
     /// an IP literal (v6 in brackets); a multicast address sends to the
     /// group, anything else is unicast.
     pub url: String,
+    /// Cable label this target consumes (`udp://` targets only): the target's
+    /// UDP endpoint is attached to the stream's cable with this label, at
+    /// the subscriber seat — the publisher's messages are sent to its
+    /// target, and its inbound packets are delivered to the publisher.
+    /// Ignored by media (WHIP/RTP/RTSP) targets.
+    #[serde(default)]
+    pub cable_label: Option<String>,
     /// Outbound multicast interface for `rtp://` targets: an IPv4 address
     /// for IPv4 groups; an interface index or name for IPv6 groups. Unset
     /// lets the kernel choose. Only valid with a multicast `rtp://` url.
@@ -985,6 +1032,30 @@ impl TargetConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         let url = self.url.trim();
         let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+        if scheme == "udp" {
+            // DC target: consumes a cable, not the media plane.
+            if self
+                .cable_label
+                .as_deref()
+                .is_none_or(|l| l.trim().is_empty())
+            {
+                anyhow::bail!("cable_label is required for udp:// targets");
+            }
+            if self.multicast_interface.is_some()
+                || self.ttl.is_some()
+                || self.payload_type.is_some()
+                || self.sdp_file.is_some()
+            {
+                anyhow::bail!(
+                    "multicast_interface, ttl, payload_type and sdp_file \
+                     are only valid with an rtp:// target"
+                );
+            }
+            return DcUdpEndpoint::parse(url).map(|_| ());
+        }
+        if self.cable_label.is_some() {
+            anyhow::bail!("cable_label is only valid with udp:// targets");
+        }
         match scheme.as_str() {
             #[cfg(feature = "target-whip")]
             "whip" | "whips" => {
@@ -1015,6 +1086,14 @@ pub struct SourceConfig {
     /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Cable label this source feeds (`udp://` sources only): the source's
+    /// UDP endpoint is attached to the stream's cable with this label, at
+    /// the broadcast (publisher) seat — its inbound packets are broadcast to
+    /// every subscriber, and subscribers' replies are sent to its target.
+    /// Ignored by media (RTSP/WHEP/SDP/native) sources.
+    #[serde(default)]
+    pub cable_label: Option<String>,
 
     /// Interface for joining multicast groups (SDP file sources whose SDP
     /// connection address is a multicast group, e.g. `c=IN IP4 230.1.1.1`).
@@ -1100,6 +1179,25 @@ impl SourceConfig {
         let url = self.url.as_deref().unwrap_or("");
         if url.is_empty() {
             anyhow::bail!("either url or capture must be set");
+        }
+
+        // DC sources (`udp://`) feed a cable, not the media plane.
+        if url.to_ascii_lowercase().starts_with("udp://") {
+            if self
+                .cable_label
+                .as_deref()
+                .is_none_or(|l| l.trim().is_empty())
+            {
+                anyhow::bail!("cable_label is required for udp:// sources");
+            }
+            if self.multicast_interface.is_some() {
+                anyhow::bail!("multicast_interface is only valid with SDP file sources");
+            }
+            DcUdpEndpoint::parse(url)?;
+            return Ok(());
+        }
+        if self.cable_label.is_some() {
+            anyhow::bail!("cable_label is only valid with udp:// sources");
         }
 
         let url_lower = url.to_lowercase();
@@ -1426,6 +1524,7 @@ mod target_tests {
     fn rtp_target(url: &str) -> TargetConfig {
         TargetConfig {
             url: url.to_string(),
+            cable_label: None,
             multicast_interface: None,
             ttl: None,
             payload_type: None,
@@ -1444,6 +1543,7 @@ mod target_tests {
         ] {
             let target = TargetConfig {
                 url: url.into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1464,6 +1564,7 @@ mod target_tests {
         ] {
             let target = TargetConfig {
                 url: url.into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1477,6 +1578,7 @@ mod target_tests {
         {
             let target = TargetConfig {
                 url: "rtsp://edge-1/cam1".into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1500,6 +1602,7 @@ mod target_tests {
         ] {
             let target = TargetConfig {
                 url: url.into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1514,6 +1617,7 @@ mod target_tests {
     fn target_config_validate_rejects_whip_url_with_multicast_options() {
         let target = TargetConfig {
             url: "whip://edge-1:7777/whip/cam1".into(),
+            cable_label: None,
             multicast_interface: Some("192.168.1.10".into()),
             ttl: None,
             payload_type: None,
@@ -1527,6 +1631,7 @@ mod target_tests {
 
         let target = TargetConfig {
             url: "whip://edge-1:7777/whip/cam1".into(),
+            cable_label: None,
             multicast_interface: None,
             ttl: Some(16),
             payload_type: None,
@@ -1546,6 +1651,7 @@ mod target_tests {
         ] {
             let target = TargetConfig {
                 url: url.into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1560,6 +1666,7 @@ mod target_tests {
     fn target_config_validate_accepts_multicast_rtp_options() {
         let target = TargetConfig {
             url: "rtp://230.1.1.1:1720".into(),
+            cable_label: None,
             multicast_interface: Some("192.168.1.10".into()),
             ttl: Some(16),
             payload_type: None,
@@ -1569,6 +1676,7 @@ mod target_tests {
 
         let target = TargetConfig {
             url: "rtp://[ff12::1]:1720".into(),
+            cable_label: None,
             multicast_interface: Some("2".into()),
             ttl: Some(255),
             payload_type: None,
@@ -1590,6 +1698,7 @@ mod target_tests {
         ] {
             let target = TargetConfig {
                 url: url.into(),
+                cable_label: None,
                 multicast_interface: None,
                 ttl: None,
                 payload_type: None,
@@ -1605,6 +1714,7 @@ mod target_tests {
         // TTL out of range.
         let target = TargetConfig {
             url: "rtp://230.1.1.1:1720".into(),
+            cable_label: None,
             multicast_interface: None,
             ttl: Some(256),
             payload_type: None,
@@ -1617,6 +1727,7 @@ mod target_tests {
         for interface in ["eth0", "2"] {
             let target = TargetConfig {
                 url: "rtp://230.1.1.1:1720".into(),
+                cable_label: None,
                 multicast_interface: Some(interface.into()),
                 ttl: None,
                 payload_type: None,
@@ -1632,6 +1743,7 @@ mod target_tests {
         // IPv6 group: an IPv4 interface address does not fit.
         let target = TargetConfig {
             url: "rtp://[ff12::1]:1720".into(),
+            cable_label: None,
             multicast_interface: Some("192.168.1.10".into()),
             ttl: None,
             payload_type: None,
@@ -1643,6 +1755,7 @@ mod target_tests {
         for (interface, ttl) in [(Some("192.168.1.10"), None), (None, Some(16))] {
             let target = TargetConfig {
                 url: "rtp://192.168.1.10:5004".into(),
+                cable_label: None,
                 multicast_interface: interface.map(str::to_string),
                 ttl,
                 payload_type: None,
@@ -1661,6 +1774,7 @@ mod target_tests {
     fn target_config_validate_accepts_payload_type_and_sdp_file() {
         let target = TargetConfig {
             url: "rtp://230.1.1.1:1720".into(),
+            cable_label: None,
             payload_type: Some(96),
             sdp_file: Some("/etc/live777/robot-cam.sdp".into()),
             multicast_interface: None,
@@ -1699,6 +1813,7 @@ mod target_tests {
         // options: an rtp://-only knob on a WHIP target is rejected.
         let target = TargetConfig {
             url: "whip://edge-1:7777/whip/cam1".into(),
+            cable_label: None,
             multicast_interface: None,
             ttl: None,
             payload_type: Some(96),
@@ -1712,6 +1827,7 @@ mod target_tests {
 
         let target = TargetConfig {
             url: "whip://edge-1:7777/whip/cam1".into(),
+            cable_label: None,
             multicast_interface: None,
             ttl: None,
             payload_type: None,
@@ -1773,6 +1889,7 @@ mod target_tests {
             StreamEntry {
                 targets: vec![TargetConfig {
                     url: "whep://edge-1/whep/cam1".into(),
+                    cable_label: None,
                     multicast_interface: None,
                     ttl: None,
                     payload_type: None,
@@ -1801,6 +1918,7 @@ mod target_tests {
                 targets: vec![
                     TargetConfig {
                         url: url.into(),
+                        cable_label: None,
                         multicast_interface: None,
                         ttl: None,
                         payload_type: None,
@@ -1808,6 +1926,7 @@ mod target_tests {
                     },
                     TargetConfig {
                         url: url.into(),
+                        cable_label: None,
                         multicast_interface: None,
                         ttl: None,
                         payload_type: None,

@@ -1,20 +1,17 @@
 /// Cable <-> UDP bidirectional forwarding
 ///
-/// Each cable maps to independent UDP bridges configured per
-/// `[[stream.<name>.cables.udp]]` entry. The bridge takes a seat on the
-/// cable: `role = "publisher"` (the publisher's seat, the pre-cable
-/// `[stream.x.channel]` behavior) or `role = "subscriber"` (a subscriber's
-/// seat). `listen` and `target` are independent — one without the other
-/// makes a one-way bridge.
+/// Each cable maps to UDP bridges configured as `udp://` endpoints on the
+/// stream's `sources` (broadcast seat) and `targets` (subscriber seat).
+/// `listen` and `target` are independent — one without the other makes a
+/// one-way bridge.
 ///
 /// Configuration example (conf/live777.toml):
 ///   [stream.camera]
 ///   [[stream.camera.cables]]
 ///   label = "control"
-///   [[stream.camera.cables.udp]]
-///   role = "publisher"
-///   listen = "0.0.0.0:7774"
-///   target = "127.0.0.1:1234"
+///   [[stream.camera.sources]]
+///   url = "udp://0.0.0.0:7774?host=127.0.0.1&port=1234"
+///   cable_label = "control"
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -23,7 +20,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::config::CableUdpConfig;
+use crate::config::DcUdpEndpoint;
 
 /// Buffer size for incoming UDP packets.
 /// - WebRTC DataChannel SCTP max: 1024 * 64 = 65536 bytes
@@ -60,24 +57,24 @@ impl ChannelHandle {
 }
 
 /// Spawn the bridge task and return its handle. `dc_rx`/`dc_tx` are the
-/// cable bus ends resolved from the mapping's role: `dc_rx` is present when
-/// `cfg.target` is (cable -> UDP export), `dc_tx` when `cfg.listen` is
-/// (UDP -> cable injection).
+/// cable bus ends resolved by the caller from the endpoint's seat: `dc_rx`
+/// is present when `endpoint.target` is (cable -> UDP export), `dc_tx` when
+/// `endpoint.listen` is (UDP -> cable injection).
 pub(crate) async fn spawn_channel(
     name: String,
-    cfg: &CableUdpConfig,
+    endpoint: &DcUdpEndpoint,
     dc_rx: Option<broadcast::Receiver<Vec<u8>>>,
     dc_tx: Option<broadcast::Sender<Vec<u8>>>,
     cancel: CancellationToken,
 ) -> anyhow::Result<ChannelHandle> {
-    let socket = match cfg.listen {
+    let socket = match endpoint.listen {
         Some(listen) => {
             bind_with_retry(&name, listen, BIND_RETRY_ATTEMPTS, BIND_RETRY_INTERVAL).await?
         }
         // Export-only bridge: no listen address, send from an ephemeral port
         // of the target's address family.
         None => {
-            let any: SocketAddr = if cfg.target.is_some_and(|t| t.is_ipv6()) {
+            let any: SocketAddr = if endpoint.target.is_some_and(|t| t.is_ipv6()) {
                 "[::]:0".parse().expect("valid v6 any addr")
             } else {
                 "0.0.0.0:0".parse().expect("valid v4 any addr")
@@ -86,19 +83,19 @@ pub(crate) async fn spawn_channel(
         }
     };
     info!(
-        "channel [{}]: listen={} target={} role={:?}",
+        "channel [{}]: listen={} target={}",
         name,
         socket.local_addr()?,
-        cfg.target
+        endpoint
+            .target
             .map(|t| t.to_string())
             .unwrap_or_else(|| "-".to_string()),
-        cfg.role
     );
 
     let task = tokio::spawn(run_channel(
         name,
         socket,
-        cfg.target,
+        endpoint.target,
         dc_rx,
         dc_tx,
         cancel.clone(),
@@ -209,18 +206,14 @@ async fn run_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CableRole;
+    use crate::config::DcUdpEndpoint;
 
     fn msg_events() -> (broadcast::Sender<Vec<u8>>, broadcast::Receiver<Vec<u8>>) {
         broadcast::channel(4)
     }
 
-    fn udp_config(listen: Option<SocketAddr>, target: Option<SocketAddr>) -> CableUdpConfig {
-        CableUdpConfig {
-            role: CableRole::Publisher,
-            listen,
-            target,
-        }
+    fn udp_config(listen: Option<SocketAddr>, target: Option<SocketAddr>) -> DcUdpEndpoint {
+        DcUdpEndpoint { listen, target }
     }
 
     /// The bridge releases its listen port on cancellation, so a later bridge

@@ -149,17 +149,22 @@ async fn setup_topology(
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig {
-                udp: vec![liveion::config::CableUdpConfig {
-                    role: liveion::config::CableRole::Publisher,
-                    listen: Some(format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap()),
-                    target: Some(
-                        format!("{}:{liveion_ch_target}", args.target_host)
-                            .parse()
-                            .unwrap(),
-                    ),
-                }],
-                ..liveion::config::CableConfig::new("control")
+            cables: vec![liveion::config::CableConfig::new("control")],
+            sources: vec![liveion::config::SourceConfig {
+                url: Some(format!(
+                    "udp://0.0.0.0:{liveion_ch_listen}?host={}&port={liveion_ch_target}",
+                    args.target_host
+                )),
+                cable_label: Some("control".to_string()),
+                multicast_interface: None,
+                #[cfg(feature = "native-source")]
+                capture: None,
+                #[cfg(feature = "native-source")]
+                encoder: None,
+                #[cfg(feature = "native-source")]
+                output: Default::default(),
+                #[cfg(feature = "native-source")]
+                tiers: Vec::new(),
             }],
             ..Default::default()
         },

@@ -67,6 +67,42 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
     false
 }
 
+/// A DC source endpoint (broadcast seat) keyed to a cable label: inbound
+/// UDP packets broadcast to every subscriber, replies go to the target.
+fn dc_source(listen: u16, target: u16, label: &str) -> liveion::config::SourceConfig {
+    liveion::config::SourceConfig {
+        url: Some(format!(
+            "udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"
+        )),
+        cable_label: Some(label.to_string()),
+        multicast_interface: None,
+        #[cfg(feature = "native-source")]
+        capture: None,
+        #[cfg(feature = "native-source")]
+        encoder: None,
+        #[cfg(feature = "native-source")]
+        output: Default::default(),
+        #[cfg(feature = "native-source")]
+        tiers: Vec::new(),
+    }
+}
+
+/// A DC target endpoint (subscriber seat) keyed to a cable label: the
+/// publisher's messages export to the target, inbound packets go to the
+/// publisher.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+fn dc_target(listen: u16, target: u16, label: &str) -> liveion::config::TargetConfig {
+    liveion::config::TargetConfig {
+        url: format!("udp://0.0.0.0:{listen}?host=127.0.0.1&port={target}"),
+        cable_label: Some(label.to_string()),
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn test_whepfrom_datachannel_udp_forwarding() {
     METRICS_REGISTER.call_once(liveion::metrics_register);
@@ -84,14 +120,8 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig {
-                udp: vec![liveion::config::CableUdpConfig {
-                    role: liveion::config::CableRole::Publisher,
-                    listen: Some(format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap()),
-                    target: Some(format!("127.0.0.1:{liveion_ch_target}").parse().unwrap()),
-                }],
-                ..liveion::config::CableConfig::new("control")
-            }],
+            cables: vec![liveion::config::CableConfig::new("control")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
             ..Default::default()
         },
     );
@@ -307,14 +337,8 @@ async fn test_udp_channel_survives_stream_reset() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig {
-                udp: vec![liveion::config::CableUdpConfig {
-                    role: liveion::config::CableRole::Publisher,
-                    listen: Some(format!("0.0.0.0:{liveion_ch_listen}").parse().unwrap()),
-                    target: Some(format!("127.0.0.1:{liveion_ch_target}").parse().unwrap()),
-                }],
-                ..liveion::config::CableConfig::new("control")
-            }],
+            cables: vec![liveion::config::CableConfig::new("control")],
+            sources: vec![dc_source(liveion_ch_listen, liveion_ch_target, "control")],
             ..Default::default()
         },
     );
@@ -646,6 +670,11 @@ async fn test_whipinto_datachannel_udp_forwarding() {
 }
 
 /// Wait until the stream has a Connected publish session.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
 async fn wait_for_publish_connected(addr: &SocketAddr, stream_id: &str) -> bool {
     for _ in 0..200 {
         let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
@@ -703,24 +732,23 @@ async fn test_cable_label_isolation() {
     let whepfrom_ch_listen: u16 = 8744;
     let whepfrom_ch_target: u16 = 8745;
 
-    let cable_with_udp =
-        |label: &str, create: bool, listen: u16, target: u16| liveion::config::CableConfig {
-            create,
-            udp: vec![liveion::config::CableUdpConfig {
-                role: liveion::config::CableRole::Publisher,
-                listen: Some(format!("0.0.0.0:{listen}").parse().unwrap()),
-                target: Some(format!("127.0.0.1:{target}").parse().unwrap()),
-            }],
-            ..liveion::config::CableConfig::new(label)
-        };
-
     let mut cfg = liveion::config::Config::default();
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
             cables: vec![
-                cable_with_udp("control", true, control_listen, control_target),
-                cable_with_udp("telemetry", false, telemetry_listen, telemetry_target),
+                liveion::config::CableConfig {
+                    create: true,
+                    ..liveion::config::CableConfig::new("control")
+                },
+                liveion::config::CableConfig {
+                    create: false,
+                    ..liveion::config::CableConfig::new("telemetry")
+                },
+            ],
+            sources: vec![
+                dc_source(control_listen, control_target, "control"),
+                dc_source(telemetry_listen, telemetry_target, "telemetry"),
             ],
             ..Default::default()
         },
@@ -813,12 +841,17 @@ async fn test_cable_label_isolation() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whepfrom).await;
 }
 
-/// A `role = "subscriber"` bridge takes a subscriber's seat on the cable: UDP
-/// input reaches the publisher, and the publisher's messages export to the
-/// UDP target (in addition to the regular subscribers, which the
-/// to-subscribers bus always feeds).
+/// A DC target takes the subscriber seat on the cable: UDP input reaches the
+/// publisher, and the publisher's messages export to the UDP target (in
+/// addition to the regular subscribers, which the to-subscribers bus always
+/// feeds).
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
 #[tokio::test]
-async fn test_cable_role_subscriber_reaches_the_publisher() {
+async fn test_cable_target_reaches_the_publisher() {
     init_tracing();
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let stream_id = "test-cable-target";
@@ -835,14 +868,8 @@ async fn test_cable_role_subscriber_reaches_the_publisher() {
     cfg.stream.streams.insert(
         stream_id.to_string(),
         liveion::config::StreamEntry {
-            cables: vec![liveion::config::CableConfig {
-                udp: vec![liveion::config::CableUdpConfig {
-                    role: liveion::config::CableRole::Subscriber,
-                    listen: Some(format!("0.0.0.0:{bridge_listen}").parse().unwrap()),
-                    target: Some(format!("127.0.0.1:{bridge_target}").parse().unwrap()),
-                }],
-                ..liveion::config::CableConfig::new("control")
-            }],
+            cables: vec![liveion::config::CableConfig::new("control")],
+            targets: vec![dc_target(bridge_listen, bridge_target, "control")],
             ..Default::default()
         },
     );

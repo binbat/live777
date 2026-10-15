@@ -33,16 +33,15 @@ label = "control"          # cable 标识（channel label），必填
 # capacity = 1024          # 该 cable 两条总线的广播缓存（条数）
 # create = true            # 默认；见“服务器创建”
 
-# cable <-> UDP 桥（一条 cable 可挂多个）：
-[[stream.fpv.cables.udp]]
-role = "publisher"         # 发布者席位（默认）
-listen = "0.0.0.0:8891"    # UDP -> cable 注入；缺省即为纯导出
-target = "127.0.0.1:8890"  # cable -> UDP 导出；缺省即为纯注入
+# DC source 坐广播席位：入向 UDP 包广播给全体订阅者，订阅者的回话发到其 target。
+[[stream.fpv.sources]]
+url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
+cable_label = "control"
 
-[[stream.fpv.cables.udp]]
-role = "subscriber"        # 订阅者席位
-listen = "0.0.0.0:8893"
-target = "127.0.0.1:8892"
+# DC target 坐订阅者席位：发布者的消息发到其 target，入向包发给发布者。
+[[stream.fpv.targets]]
+url = "udp://?host=127.0.0.1&port=8892"  # 纯导出
+cable_label = "control"
 ```
 
 | 字段 | 默认值 | 含义 |
@@ -54,9 +53,6 @@ target = "127.0.0.1:8892"
 | `protocol` | `""` | 服务器创建 channel 的子协议。 |
 | `capacity` | `1024` | 该 cable 两条总线的广播缓存容量（条数）。 |
 | `create` | `true` | 服务器在每个会话上创建此 cable 的 channel；`false`：仅按 label 路由。 |
-| `udp[].role` | `publisher` | 桥的席位：`publisher`（UDP ↔ 全体订阅者）或 `subscriber`（UDP ↔ 发布者）。 |
-| `udp[].listen` | 缺省 | 入向包的本地 UDP 绑定（UDP → cable）。 |
-| `udp[].target` | 缺省 | cable 消息的 UDP 目标（cable → UDP）。 |
 
 ## label 路由与 default 对
 
@@ -79,18 +75,20 @@ channel 参数；对端只读接受。浏览器还会把参数镜像到自己的
 - `create = false` 时 cable 退化为纯 label 路由：各端自建 channel、参数
   归各端。
 
-## cable <-> UDP 桥
+## cable <-> UDP 端点
 
-每个桥在 cable 上坐一个席位：
+DC 端点以 `udp://` URL 声明在流的 `sources` 和 `targets` 上，用
+`cable_label` 关联到某条 cable：
 
-- `role = "publisher"`——发布者席位（cable 之前 `[stream.x.channel]`
-  的行为）：UDP 入向包发给全体订阅者；订阅者的消息发到 UDP target。
-- `role = "subscriber"`——订阅者席位：UDP 入向包发给发布者；发布者的
-  消息发到 UDP target（订阅者照常也会收到——总线本来就连着它们）。
+- **DC source** 坐广播席位：入向 UDP 包（`udp://<listen>` authority 部分）
+  广播给全体订阅者；订阅者的消息发到其 `?host=`/`?port=` target。
+- **DC target** 坐订阅者席位：发布者的消息发到其 target；入向包发给
+  发布者。
 
-`listen` 与 `target` 各自独立可选，因此可以表达单向桥（纯注入/纯导出）。
-桥的监听端口随流的整个生命周期持有——provisioned 流的 reset 不会重新
-绑端口。
+`udp://` 的 authority（本地绑定）与 `host`/`port` 查询对（固定目的地）
+各自独立可选，因此可以表达单向端点（纯注入/纯导出）；省略 target 即
+reply-to-sender。端点的监听端口随流的整个生命周期持有——provisioned 流的
+reset 不会重新绑端口。
 
 ## 限制
 

@@ -64,10 +64,9 @@ ice_udp_addrs = ["auto"]
 # [stream.dc-udp]
 # [[stream.dc-udp.cables]]
 # label = "control"
-# [[stream.dc-udp.cables.udp]]
-# role = "publisher"
-# listen = "0.0.0.0:8891"
-# target = "127.0.0.1:8890"
+# [[stream.dc-udp.sources]]
+# url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
+# cable_label = "control"
 
 # Need enabled `--features=source`
 # [stream.test-source]

@@ -39,16 +39,17 @@ label = "control"          # cable identity (channel label), required
 # capacity = 1024          # per-cable bus buffer, in messages
 # create = true            # default; see "Server-created channels"
 
-# Cable <-> UDP bridges (several per cable allowed):
-[[stream.fpv.cables.udp]]
-role = "publisher"         # the publisher's seat (default)
-listen = "0.0.0.0:8891"    # UDP -> cable injection; omit for export-only
-target = "127.0.0.1:8890"  # cable -> UDP export; omit for inject-only
+# A DC source takes the broadcast seat: its inbound UDP packets are
+# broadcast to every subscriber, and subscribers' replies go to its target.
+[[stream.fpv.sources]]
+url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
+cable_label = "control"
 
-[[stream.fpv.cables.udp]]
-role = "subscriber"        # a subscriber's seat
-listen = "0.0.0.0:8893"
-target = "127.0.0.1:8892"
+# A DC target takes the subscriber seat: the publisher's messages go to its
+# target, and its inbound packets go to the publisher.
+[[stream.fpv.targets]]
+url = "udp://?host=127.0.0.1&port=8892"  # export-only
+cable_label = "control"
 ```
 
 | field | default | meaning |
@@ -60,9 +61,6 @@ target = "127.0.0.1:8892"
 | `protocol` | `""` | Sub-protocol of the server-created channel. |
 | `capacity` | `1024` | Broadcast buffer of the cable's two buses, in messages. |
 | `create` | `true` | The server creates this cable's channel on every session; `false`: route by label only. |
-| `udp[].role` | `publisher` | The bridge's seat: `publisher` (UDP ↔ all subscribers) or `subscriber` (UDP ↔ the publisher). |
-| `udp[].listen` | unset | Local UDP bind for inbound packets (UDP → cable). |
-| `udp[].target` | unset | UDP destination for cable messages (cable → UDP). |
 
 ## Label routing and the default pair
 
@@ -89,20 +87,22 @@ outgoing direction, making the parameters bidirectional there.)
 - `create = false` turns a cable into pure label routing: endpoints create
   their own channels with their own parameters.
 
-## Cable <-> UDP bridges
+## Cable <-> UDP endpoints
 
-Each bridge takes a seat on the cable:
+DC endpoints are declared as `udp://` URLs on the stream's `sources` and
+`targets`, keyed to a cable by `cable_label`:
 
-- `role = "publisher"` — the publisher's seat (the pre-cable
-  `[stream.x.channel]` behavior): UDP input is delivered to all subscribers;
-  subscribers' messages are sent to the UDP target.
-- `role = "subscriber"` — a subscriber's seat: UDP input is delivered to the
-  publisher; the publisher's messages are sent to the UDP target (in addition
-  to the subscribers, which the bus always feeds).
+- A **DC source** takes the broadcast seat: its inbound UDP packets (the
+  `udp://<listen>` authority) are delivered to all subscribers, and
+  subscribers' messages are sent to its `?host=`/`?port=` target.
+- A **DC target** takes the subscriber seat: the publisher's messages are
+  sent to its target, and its inbound packets are delivered to the publisher.
 
-`listen` and `target` are independently optional, so one-way (inject-only /
-export-only) bridges are expressible. Bridges own their listen ports for the
-stream's whole lifetime — a provisioned-stream reset does not rebind them.
+The `udp://` authority (local bind) and the `host`/`port` query pair (fixed
+destination) are independently optional, so one-way (inject-only /
+export-only) endpoints are expressible; an omitted target means
+reply-to-sender. Endpoints own their listen ports for the stream's whole
+lifetime — a provisioned-stream reset does not rebind them.
 
 ## Limitations
 

@@ -137,6 +137,7 @@ async fn create_source(
 
     let config = crate::config::SourceConfig {
         url: Some(req.url.clone()),
+        cable_label: None,
         multicast_interface: None,
         #[cfg(feature = "native-source")]
         capture: None,
