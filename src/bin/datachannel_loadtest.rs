@@ -192,6 +192,7 @@ async fn setup_topology(
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         // In-process loopback test: host candidates suffice, no ICE servers
         // needed.
         Vec::new(),

@@ -124,6 +124,9 @@ pub struct WhepPeerOptions {
     /// bidirectional control messaging. Pull-only consumers (e.g. the
     /// liveion WHEP source) should disable it.
     pub control_channel: bool,
+    /// Label of the DataChannel this peer creates (when `control_channel`
+    /// is on). Joins the matching cable on the server.
+    pub cable_label: String,
 }
 
 impl Default for WhepPeerOptions {
@@ -132,6 +135,7 @@ impl Default for WhepPeerOptions {
             ice_servers: Vec::new(),
             ice_udp_addrs: Vec::new(),
             control_channel: true,
+            cable_label: DATA_CHANNEL_LABEL.to_string(),
         }
     }
 }
@@ -532,7 +536,7 @@ async fn create_peer(
     if let Some((dc_recv_tx, router)) = &cable {
         // Create DataChannel to participate in liveion's WHEP group
         let dc = peer
-            .create_data_channel(DATA_CHANNEL_LABEL, None)
+            .create_data_channel(&options.cable_label, None)
             .await
             .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
 

@@ -32,6 +32,7 @@ pub use webrtc::setup_whip_peer;
 /// "control" DataChannel on the publish session — joining the stream's
 /// channel group on a liveion server — and bridges it to UDP both ways. It is
 /// opt-in because it adds an `m=application` section to the WHIP offer.
+#[allow(clippy::too_many_arguments)]
 pub async fn into(
     ct: CancellationToken,
     target_url: String,
@@ -39,6 +40,7 @@ pub async fn into(
     token: Option<String>,
     command: Option<String>,
     channel_url: Option<String>,
+    cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     info!("Starting WHIP session: {}", target_url);
@@ -96,6 +98,7 @@ pub async fn into(
             input_source.media_info(),
             target_url.clone(),
             channel_url.is_some(),
+            cable_label,
             ice_servers,
         )
         .await?;

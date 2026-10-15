@@ -29,6 +29,9 @@ struct Args {
     /// Example: udp://0.0.0.0:9001?host=127.0.0.1&port=9000
     #[arg(long)]
     channel: Option<String>,
+    /// DataChannel label, joins the matching cable on the server
+    #[arg(long, default_value = "control")]
+    cable_label: String,
     #[command(flatten)]
     ice: iceserver::IceServerArgs,
 }
@@ -57,6 +60,7 @@ async fn main() -> Result<()> {
         args.token.clone(),
         args.command.clone(),
         args.channel.clone(),
+        args.cable_label.clone(),
         args.ice.to_rtc_ice_servers(),
     ));
 

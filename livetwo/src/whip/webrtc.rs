@@ -13,7 +13,7 @@ use tracing::debug;
 use webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 
 use crate::datachannel::{
-    CableRouter, DATA_CHANNEL_LABEL, run_cable_send_dispatch, run_data_channel_loop,
+    CableRouter, run_cable_send_dispatch, run_data_channel_loop,
 };
 use crate::utils;
 use crate::utils::stats::RtcpStats;
@@ -29,6 +29,7 @@ pub async fn setup_whip_peer(
     media_info: &rtsp::MediaInfo,
     input_id: String,
     control_channel: bool,
+    cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<(
     Arc<dyn PeerConnection>,
@@ -74,7 +75,7 @@ pub async fn setup_whip_peer(
 
     let dc_channels = if let Some((dc_recv_tx, dc_recv_rx, dc_send_tx, router)) = cable {
         let dc = peer
-            .create_data_channel(DATA_CHANNEL_LABEL, None)
+            .create_data_channel(&cable_label, None)
             .await
             .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
         run_data_channel_loop(dc, dc_recv_tx, router, "whipinto");

@@ -457,6 +457,7 @@ async fn test_livetwo_whipinto_synth_input() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -549,6 +550,7 @@ async fn test_liveion_stream_stats() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -563,6 +565,7 @@ async fn test_liveion_stream_stats() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -906,6 +909,7 @@ async fn test_liveion_stream_stats_churn() {
             None,
             None,
             None,
+            "control".to_string(),
             Vec::new(),
         ))
     };

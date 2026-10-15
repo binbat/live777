@@ -131,6 +131,7 @@ async fn play_rtp_output(
                 None,
                 None,
                 None,
+                "control".to_string(),
                 Vec::new(),
             )
             .await

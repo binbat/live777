@@ -148,6 +148,7 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -373,6 +374,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -409,6 +411,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url.clone()),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -469,6 +472,7 @@ async fn test_udp_channel_survives_stream_reset() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -560,6 +564,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whipinto_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -598,6 +603,7 @@ async fn test_whipinto_datachannel_udp_forwarding() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -773,6 +779,7 @@ async fn test_cable_label_isolation() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -905,6 +912,7 @@ async fn test_cable_target_reaches_the_publisher() {
         None,
         None,
         Some(whipinto_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(
@@ -923,6 +931,7 @@ async fn test_cable_target_reaches_the_publisher() {
         None,
         None,
         Some(whep_channel_url),
+        "control".to_string(),
         Vec::new(),
     ));
     assert!(

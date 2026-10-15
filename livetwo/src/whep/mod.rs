@@ -37,6 +37,7 @@ pub async fn from(
     token: Option<String>,
     command: Option<String>,
     channel_url: Option<String>,
+    cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     from_with_state(
@@ -47,6 +48,7 @@ pub async fn from(
         token,
         command,
         channel_url,
+        cable_label,
         None,
         ice_servers,
     )
@@ -62,6 +64,7 @@ pub async fn from_with_state(
     token: Option<String>,
     command: Option<String>,
     channel_url: Option<String>,
+    cable_label: String,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
@@ -91,6 +94,7 @@ pub async fn from_with_state(
         codec_info.clone(),
         webrtc::WhepPeerOptions {
             ice_servers,
+            cable_label,
             ..Default::default()
         },
         state_tx,

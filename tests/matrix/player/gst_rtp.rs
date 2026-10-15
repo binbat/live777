@@ -95,8 +95,18 @@ impl Player for GstRtpPlayer {
         let mut handle_whep = Some(tokio::spawn({
             let ct = ct.clone();
             async move {
-                livetwo::whep::from(ct, output_url, whep_url, None, None, None, None, Vec::new())
-                    .await
+                livetwo::whep::from(
+                    ct,
+                    output_url,
+                    whep_url,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "control".to_string(),
+                    Vec::new(),
+                )
+                .await
             }
         }));
 
