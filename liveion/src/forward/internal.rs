@@ -3557,21 +3557,27 @@ mod dc_tests {
     /// forward: dropping the hub (stream deleted) cancels a bridge and
     /// releases its listen port; a forward reset leaves the hub — and the
     /// port — untouched.
+    #[cfg(feature = "source")]
     #[tokio::test]
     async fn cable_bridge_dies_with_hub_not_forward() {
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let listen = probe.local_addr().unwrap();
         drop(probe);
 
-        let cable = crate::config::CableConfig::new("control");
-        let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&[cable]));
-        let endpoint = crate::config::DcUdpEndpoint {
-            listen: Some(listen),
-            target: Some("127.0.0.1:9".parse().unwrap()),
+        let entry = crate::config::StreamEntry {
+            cables: vec![crate::config::CableConfig::new("control")],
+            sources: vec![crate::config::SourceConfig {
+                url: None,
+                cables: vec![crate::config::CableEndpoint {
+                    label: "control".to_string(),
+                    url: format!("udp://0.0.0.0:{}?host=127.0.0.1&port=9", listen.port()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
         };
-        hub.attach_source("test", "control", &endpoint)
-            .await
-            .unwrap();
+        let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&entry.cables));
+        hub.attach_static_endpoints("test", &entry).await;
         assert!(
             tokio::net::UdpSocket::bind(listen).await.is_err(),
             "bridge must hold its configured port"

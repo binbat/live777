@@ -39,35 +39,18 @@ const UDP_BUF_SIZE: usize = 1500;
 const BIND_RETRY_ATTEMPTS: u32 = 5;
 const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Handle to a running channel bridge. `stop` cancels the task and waits for
-/// it to release the UDP socket.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct ChannelHandle {
-    cancel: CancellationToken,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl ChannelHandle {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn stop(self) {
-        self.cancel.cancel();
-        if let Err(err) = self.task.await {
-            warn!("channel bridge task join error: {}", err);
-        }
-    }
-}
-
-/// Spawn the bridge task and return its handle. `dc_rx`/`dc_tx` are the
-/// cable bus ends resolved by the caller from the endpoint's seat: `dc_rx`
-/// is present when `endpoint.target` is (cable -> UDP export), `dc_tx` when
-/// `endpoint.listen` is (UDP -> cable injection).
+/// Spawn the bridge task. `dc_rx`/`dc_tx` are the cable bus ends resolved by
+/// the caller from the endpoint's seat: `dc_rx` is present when
+/// `endpoint.target` is (cable -> UDP export), `dc_tx` when `endpoint.listen`
+/// is (UDP -> cable injection). The task runs until `cancel` fires or the bus
+/// closes; its socket is released on exit.
 pub(crate) async fn spawn_channel(
     name: String,
     endpoint: &DcUdpEndpoint,
     dc_rx: Option<broadcast::Receiver<Vec<u8>>>,
     dc_tx: Option<broadcast::Sender<Vec<u8>>>,
     cancel: CancellationToken,
-) -> anyhow::Result<ChannelHandle> {
+) -> anyhow::Result<()> {
     let socket = match endpoint.listen {
         Some(listen) => {
             bind_with_retry(&name, listen, BIND_RETRY_ATTEMPTS, BIND_RETRY_INTERVAL).await?
@@ -93,15 +76,15 @@ pub(crate) async fn spawn_channel(
             .unwrap_or_else(|| "-".to_string()),
     );
 
-    let task = tokio::spawn(run_channel(
+    tokio::spawn(run_channel(
         name,
         socket,
         endpoint.target,
         dc_rx,
         dc_tx,
-        cancel.clone(),
+        cancel,
     ));
-    Ok(ChannelHandle { cancel, task })
+    Ok(())
 }
 
 async fn bind_with_retry(
@@ -346,12 +329,13 @@ mod tests {
         let target = target_socket.local_addr().unwrap();
 
         let (tx, rx) = msg_events();
-        let handle = spawn_channel(
+        let cancel = CancellationToken::new();
+        spawn_channel(
             "s".to_string(),
             &udp_config(None, Some(target)),
             Some(rx),
             None, // no listen: injection arm disabled
-            CancellationToken::new(),
+            cancel.clone(),
         )
         .await
         .unwrap();
@@ -366,7 +350,7 @@ mod tests {
         assert_eq!(&buf[..n], b"out");
         assert_ne!(from.port(), 0);
 
-        handle.stop().await;
+        cancel.cancel();
     }
 
     #[tokio::test]

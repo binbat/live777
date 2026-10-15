@@ -15,7 +15,7 @@
 //! is dropped (stream deleted).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -51,26 +51,6 @@ pub(crate) struct Cable {
     pub(crate) config: crate::config::CableConfig,
 }
 
-/// Identifier of a running cable endpoint bridge.
-pub(crate) type BridgeId = usize;
-
-/// Which cable seat an endpoint bridge takes.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Seat {
-    /// The broadcast (source) seat: inbound packets are broadcast to all
-    /// subscribers, and subscribers' replies come back to the target.
-    /// Constructed only when the `source` feature enables DC sources; the
-    /// runtime `attach_source` foundation keeps it reachable.
-    #[cfg_attr(not(feature = "source"), allow(dead_code))]
-    Source,
-    /// The subscriber (target) seat: inbound packets are delivered to the
-    /// publisher, and the publisher's messages come back to the target.
-    /// Constructed only when the `target` feature enables DC targets; the
-    /// runtime `attach_target` foundation keeps it reachable.
-    #[cfg_attr(not(feature = "target"), allow(dead_code))]
-    Target,
-}
-
 /// The stream-level owner of all cable state: the anonymous default bus
 /// pair, every declared cable's buses, and the cable <-> UDP bridges.
 pub(crate) struct CableHub {
@@ -80,13 +60,6 @@ pub(crate) struct CableHub {
     /// bridges must not outlive the stream, but equally must not churn when
     /// the forward is reset underneath them.
     cancel: CancellationToken,
-    /// Running endpoint bridges keyed by a monotonically increasing id, so a
-    /// later dynamic API can detach them individually. tokio Mutex: the
-    /// guard is held across bridge spawns (which await), so it must stay
-    /// Send to keep the HTTP handler futures Send.
-    bridges: tokio::sync::Mutex<HashMap<BridgeId, crate::forward::channel::ChannelHandle>>,
-    /// Next bridge id; never reused within a hub's lifetime.
-    next_id: AtomicUsize,
     /// Set once the stream's statically configured DC endpoints have been
     /// attached, so a provisioned-stream reset (which reuses the hub) never
     /// re-spawns them.
@@ -100,8 +73,6 @@ impl CableHub {
             default: CableBus::new(DEFAULT_CABLE_BUS_CAPACITY),
             cables: HashMap::new(),
             cancel: CancellationToken::new(),
-            bridges: tokio::sync::Mutex::new(HashMap::new()),
-            next_id: AtomicUsize::new(0),
             static_attached: AtomicBool::new(false),
         }
     }
@@ -143,82 +114,6 @@ impl CableHub {
         self.cables.values().map(|c| &c.config).filter(|c| c.create)
     }
 
-    /// Attach a datachannel UDP endpoint at the broadcast (source) seat:
-    /// inbound packets are broadcast to every subscriber, and subscribers'
-    /// replies are sent to the endpoint's target. This is the runtime
-    /// foundation for a future dynamic DC-source API; statically configured
-    /// DC sources go through [`attach_static_endpoints`].
-    #[cfg_attr(not(feature = "source"), allow(dead_code))]
-    pub(crate) async fn attach_source(
-        &self,
-        stream: &str,
-        label: &str,
-        endpoint: &crate::config::DcUdpEndpoint,
-    ) -> anyhow::Result<BridgeId> {
-        self.attach(stream, label, endpoint, Seat::Source).await
-    }
-
-    /// Attach a datachannel UDP endpoint at the subscriber (target) seat:
-    /// the publisher's messages are sent to the endpoint's target, and
-    /// inbound packets are delivered to the publisher. This is the runtime
-    /// foundation for a future dynamic DC-target API; statically configured
-    /// DC targets go through [`attach_static_endpoints`].
-    #[cfg_attr(not(feature = "target"), allow(dead_code))]
-    pub(crate) async fn attach_target(
-        &self,
-        stream: &str,
-        label: &str,
-        endpoint: &crate::config::DcUdpEndpoint,
-    ) -> anyhow::Result<BridgeId> {
-        self.attach(stream, label, endpoint, Seat::Target).await
-    }
-
-    /// Detach a previously attached endpoint bridge. Idempotent: an unknown
-    /// id is a no-op. This is the runtime foundation for a future dynamic
-    /// DC-endpoint API.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn detach(&self, id: BridgeId) {
-        if let Some(handle) = self.bridges.lock().await.remove(&id) {
-            handle.stop().await;
-        }
-    }
-
-    /// Attach `endpoint` to the cable with `label` at `seat`.
-    async fn attach(
-        &self,
-        stream: &str,
-        label: &str,
-        endpoint: &crate::config::DcUdpEndpoint,
-        seat: Seat,
-    ) -> anyhow::Result<BridgeId> {
-        let Some(cable) = self.cables.get(label) else {
-            anyhow::bail!("cable '{label}' is not declared on stream '{stream}'");
-        };
-        let (dc_rx, dc_tx) = match seat {
-            Seat::Source => (
-                endpoint.target.map(|_| cable.bus.to_publisher.subscribe()),
-                endpoint.listen.map(|_| cable.bus.to_subscribers.clone()),
-            ),
-            Seat::Target => (
-                endpoint
-                    .target
-                    .map(|_| cable.bus.to_subscribers.subscribe()),
-                endpoint.listen.map(|_| cable.bus.to_publisher.clone()),
-            ),
-        };
-        let handle = crate::forward::channel::spawn_channel(
-            format!("{stream}/{label}"),
-            endpoint,
-            dc_rx,
-            dc_tx,
-            self.cancel.clone(),
-        )
-        .await?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.bridges.lock().await.insert(id, handle);
-        Ok(id)
-    }
-
     /// Attach the stream's statically configured DC endpoints, exactly once
     /// per hub. A provisioned-stream reset reuses the hub, so the second
     /// call is a no-op. Per-endpoint failures are logged and skipped — one
@@ -238,7 +133,24 @@ impl CableHub {
                     let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
                         continue;
                     };
-                    if let Err(err) = self.attach_source(stream, &ep.label, &endpoint).await {
+                    let Some(cable) = self.cables.get(&ep.label) else {
+                        tracing::warn!(
+                            "dc source [{stream}/{}] references an undeclared cable",
+                            ep.label
+                        );
+                        continue;
+                    };
+                    let dc_rx = endpoint.target.map(|_| cable.bus.to_publisher.subscribe());
+                    let dc_tx = endpoint.listen.map(|_| cable.bus.to_subscribers.clone());
+                    if let Err(err) = crate::forward::channel::spawn_channel(
+                        format!("{stream}/{}", ep.label),
+                        &endpoint,
+                        dc_rx,
+                        dc_tx,
+                        self.cancel.clone(),
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             "dc source [{stream}/{}] failed to attach: {err:?}",
                             ep.label
@@ -253,7 +165,26 @@ impl CableHub {
                     let Ok(endpoint) = crate::config::DcUdpEndpoint::parse(&ep.url) else {
                         continue;
                     };
-                    if let Err(err) = self.attach_target(stream, &ep.label, &endpoint).await {
+                    let Some(cable) = self.cables.get(&ep.label) else {
+                        tracing::warn!(
+                            "dc target [{stream}/{}] references an undeclared cable",
+                            ep.label
+                        );
+                        continue;
+                    };
+                    let dc_rx = endpoint
+                        .target
+                        .map(|_| cable.bus.to_subscribers.subscribe());
+                    let dc_tx = endpoint.listen.map(|_| cable.bus.to_publisher.clone());
+                    if let Err(err) = crate::forward::channel::spawn_channel(
+                        format!("{stream}/{}", ep.label),
+                        &endpoint,
+                        dc_rx,
+                        dc_tx,
+                        self.cancel.clone(),
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             "dc target [{stream}/{}] failed to attach: {err:?}",
                             ep.label
@@ -280,6 +211,7 @@ impl Drop for CableHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "source")]
     use tokio::net::UdpSocket;
 
     fn cable(label: &str) -> crate::config::CableConfig {
@@ -328,52 +260,42 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), vec![0]);
     }
 
-    /// A source endpoint bridge holds its listen port and releases it on
-    /// detach.
+    /// A static DC source bridge holds its listen port, released when the hub
+    /// (stream) is dropped.
+    #[cfg(feature = "source")]
     #[tokio::test]
-    async fn attach_source_then_detach_releases_port() {
+    async fn attach_static_then_drop_releases_port() {
         let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let listen = probe.local_addr().unwrap();
         drop(probe);
 
-        let hub = CableHub::from_configs(&[cable("control")]);
-        let endpoint = crate::config::DcUdpEndpoint {
-            listen: Some(listen),
-            target: Some("127.0.0.1:9".parse().unwrap()),
+        let entry = crate::config::StreamEntry {
+            cables: vec![cable("control")],
+            sources: vec![crate::config::SourceConfig {
+                url: None,
+                cables: vec![crate::config::CableEndpoint {
+                    label: "control".to_string(),
+                    url: format!("udp://0.0.0.0:{}?host=127.0.0.1&port=9", listen.port()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
         };
-
-        let id = hub
-            .attach_source("test", "control", &endpoint)
-            .await
-            .unwrap();
+        let hub = CableHub::from_configs(&entry.cables);
+        hub.attach_static_endpoints("test", &entry).await;
         assert!(
             UdpSocket::bind(listen).await.is_err(),
             "bridge must hold its port"
         );
 
-        hub.detach(id).await;
+        drop(hub);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while UdpSocket::bind(listen).await.is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "port still held after detach"
+                "port still held after the hub was dropped"
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }
-
-    /// Attaching to an undeclared cable label fails.
-    #[tokio::test]
-    async fn attach_to_undeclared_cable_fails() {
-        let hub = CableHub::from_configs(&[cable("control")]);
-        let endpoint = crate::config::DcUdpEndpoint {
-            listen: None,
-            target: Some("127.0.0.1:9".parse().unwrap()),
-        };
-        assert!(
-            hub.attach_source("test", "missing", &endpoint)
-                .await
-                .is_err()
-        );
     }
 }

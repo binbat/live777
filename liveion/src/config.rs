@@ -1126,7 +1126,7 @@ impl TargetConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceConfig {
     /// URL source for RTSP / WHEP / SDP inputs. Mutually exclusive with structured native fields.
     /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp

@@ -78,6 +78,7 @@ pub(crate) mod av1_assembler;
     feature = "source-whep"
 ))]
 pub(crate) mod av1_repacketizer;
+#[cfg(any(feature = "source", feature = "target"))]
 pub(crate) mod channel;
 pub(crate) mod codec_compat;
 mod internal;
