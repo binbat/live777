@@ -42,6 +42,10 @@ pub enum SessionEndpoint {
 /// A single server can multiplex many streams by URL path: the first path
 /// segment of the request URI is treated as the stream identifier and passed
 /// to each callback.
+// async_trait's generated methods carry `#[must_use]` on top of the `Future`
+// return type (itself must-use) — newer clippy flags that as
+// double_must_use; nothing here to act on.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait SessionHandler: Send + Sync + 'static {
     /// Called when a PUSH client sends ANNOUNCE. `path` is the first URL path

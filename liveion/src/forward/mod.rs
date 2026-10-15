@@ -185,6 +185,7 @@ impl PeerForward {
     }
 
     /// This stream's cable hub (buses, declared cables, UDP bridges).
+    #[cfg(feature = "cable")]
     pub(crate) fn cables(&self) -> Arc<crate::stream::cable::CableHub> {
         self.internal.cables.clone()
     }
@@ -1254,7 +1255,9 @@ mod test {
         RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
     };
     use sdp::extmap::TRANSPORT_CC_URI;
+    #[cfg(feature = "cable")]
     use std::sync::Arc;
+    #[cfg(feature = "cable")]
     use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
     use webrtc::peer_connection::{
