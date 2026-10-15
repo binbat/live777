@@ -156,11 +156,6 @@ Key feature groups defined in the root `Cargo.toml`:
 - `target-rtsp`    — RTSP client-push output targets: push a stream to an
   RTSP server with ANNOUNCE/SETUP/RECORD (the counterpart of `source-rtsp`;
   built on the `libs/rtsp` client shared with whepfrom).
-- `cable`          — declared datachannel cables (`[[stream.<name>.cables]]`):
-  per-label message pipes with channel parameters (`ordered`,
-  `max_retransmits`/`max_packet_life_time`), per-cable bus `capacity`, and
-  cable <-> UDP bridges. Without it, datachannels forward through one
-  anonymous bus pair per stream.
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -169,7 +164,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,cable`
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp`
 instead of `--all-features`.
 
 ### Cross-Compilation
@@ -303,17 +298,17 @@ clients via Link headers).
   `Drop`) that both loops `select!` on. `on_data_channel` only wires a
   channel whose peer still owns a live session (a late announce from a
   replaced/torn-down session is dropped), and both sides gate sends on
-  `Connected` (`wait_for_peer_connected`, 15 s). With the `cable` feature,
-  cables with `create = true` get a server-created channel per session —
+  `Connected` (`wait_for_peer_connected`, 15 s). Cables with `create = true`
+  get a server-created channel per session —
   created on the session's first inbound channel OPEN (an inbound OPEN
   proves the SCTP association is Established and the DTLS role resolved;
   creating at `Connected` drops the OPEN write as non-Established and can
   collide stream-id parity with the client's channels) — and a client-created
   channel matching such a cable's label is closed (the server-created
-  channel wins). The cable UDP bridges (`forward/channel.rs`, `cable`
-  feature) take a `role`: `source` = the publisher's seat (UDP <-> all
-  subscribers; the pre-cable `[stream.x.channel]` behavior), `target` = a
-  subscriber's seat (UDP <-> the publisher); `listen`/`target` are
+  channel wins). The cable UDP bridges (`forward/channel.rs`) take a
+  `role`: `publisher` = the publisher's seat (UDP <-> all
+  subscribers; the pre-cable `[stream.x.channel]` behavior), `subscriber` =
+  a subscriber's seat (UDP <-> the publisher); `listen`/`target` are
   independently optional (one-way bridges). The client side mirrors this:
   whepfrom's and whipinto's channel bridges (the shared
   `livetwo::datachannel` module — UDP bridge, channel poll loop,
@@ -552,7 +547,7 @@ Run tests:
 ```bash
 # full workspace with coverage, matching the CI feature set
 cargo llvm-cov nextest --profile ci --workspace \
-  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp,cable \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp \
   --lcov --output-path lcov.info
 
 # without coverage

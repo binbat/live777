@@ -61,7 +61,6 @@ ice_udp_addrs = ["auto"]
 # url = "rtsp://username:password@host:port/path"
 
 # Cable (datachannel) <-> UDP forwarding for the "dc-udp" stream.
-# Need enabled `--features=cable`
 # [stream.dc-udp]
 # [[stream.dc-udp.cables]]
 # label = "control"

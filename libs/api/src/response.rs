@@ -45,8 +45,7 @@ pub struct Stream {
     #[serde(default)]
     pub stats_scope: StatsScope,
     /// Declared datachannel cables of this stream (`[[stream.<id>.cables]]`).
-    /// Empty when the server was built without the `cable` feature or the
-    /// stream declares none.
+    /// Empty when the stream declares none.
     #[serde(default)]
     pub cables: Vec<Cable>,
 }

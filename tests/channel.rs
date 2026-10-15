@@ -20,26 +20,19 @@
 ///   whepfrom DataChannel --> liveion publish broadcast
 ///       |
 ///   liveion UDP channel --> liveion UDP target (8703)
-#[cfg(feature = "cable")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-#[cfg(feature = "cable")]
 use tokio::net::{TcpListener, UdpSocket};
-#[cfg(feature = "cable")]
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "cable")]
 mod common;
-#[cfg(feature = "cable")]
 use common::shutdown_signal;
 
 /// Metrics registration is process-global and panics on a second call;
 /// nextest isolates test processes, but plain `cargo test` shares one, so
 /// every test that needs the registry must go through this single `Once`.
-#[cfg(feature = "cable")]
 static METRICS_REGISTER: std::sync::Once = std::sync::Once::new();
 
-#[cfg(feature = "cable")]
 fn init_tracing() {
     use std::sync::Once;
     static TRACING_INIT: Once = Once::new();
@@ -53,7 +46,6 @@ fn init_tracing() {
     });
 }
 
-#[cfg(feature = "cable")]
 async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool {
     for _ in 0..200 {
         let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
@@ -75,7 +67,6 @@ async fn wait_for_session_connected(addr: &SocketAddr, stream_id: &str) -> bool 
     false
 }
 
-#[cfg(feature = "cable")]
 #[tokio::test]
 async fn test_whepfrom_datachannel_udp_forwarding() {
     METRICS_REGISTER.call_once(liveion::metrics_register);
@@ -230,7 +221,6 @@ async fn test_whepfrom_datachannel_udp_forwarding() {
 
 /// Send one message each way across the liveion <-> whepfrom DataChannel
 /// bridge and assert both arrive.
-#[cfg(feature = "cable")]
 async fn assert_channel_roundtrip(
     label: &str,
     liveion_ch_listen: u16,
@@ -280,7 +270,6 @@ async fn assert_channel_roundtrip(
 
 /// Wait for a client task to wind down after its peer was closed
 /// server-side; cancel it if the close notification got lost.
-#[cfg(feature = "cable")]
 async fn wait_or_cancel<T>(ct: &CancellationToken, handle: tokio::task::JoinHandle<T>) {
     tokio::pin!(handle);
     if tokio::time::timeout(std::time::Duration::from_secs(10), &mut handle)
@@ -300,7 +289,6 @@ async fn wait_or_cancel<T>(ct: &CancellationToken, handle: tokio::task::JoinHand
 /// bridge never released the port, the rebind failed with EADDRINUSE (warn
 /// only), and the bridge stayed dead until the process restarted — the
 /// "datachannel reconnect conflict" reported by users.
-#[cfg(feature = "cable")]
 #[tokio::test]
 async fn test_udp_channel_survives_stream_reset() {
     init_tracing();
@@ -496,7 +484,6 @@ async fn test_udp_channel_survives_stream_reset() {
 ///   whepfrom DataChannel --> liveion publish broadcast
 ///       |
 ///   whipinto DataChannel --> whipinto UDP target (8731)
-#[cfg(feature = "cable")]
 #[tokio::test]
 async fn test_whipinto_datachannel_udp_forwarding() {
     init_tracing();
@@ -659,7 +646,6 @@ async fn test_whipinto_datachannel_udp_forwarding() {
 }
 
 /// Wait until the stream has a Connected publish session.
-#[cfg(feature = "cable")]
 async fn wait_for_publish_connected(addr: &SocketAddr, stream_id: &str) -> bool {
     for _ in 0..200 {
         let body = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
@@ -681,7 +667,6 @@ async fn wait_for_publish_connected(addr: &SocketAddr, stream_id: &str) -> bool 
 }
 
 /// Receive one datagram within `timeout`.
-#[cfg(feature = "cable")]
 async fn recv_udp(socket: &UdpSocket, buf: &mut [u8], what: &str) -> usize {
     let (n, _) = tokio::time::timeout(std::time::Duration::from_secs(3), socket.recv_from(buf))
         .await
@@ -691,7 +676,6 @@ async fn recv_udp(socket: &UdpSocket, buf: &mut [u8], what: &str) -> usize {
 }
 
 /// Nothing may arrive within a short window.
-#[cfg(feature = "cable")]
 async fn assert_no_udp(socket: &UdpSocket, what: &str) {
     let mut buf = vec![0u8; 256];
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -705,7 +689,6 @@ async fn assert_no_udp(socket: &UdpSocket, what: &str) {
 /// its label's cable, and messages never cross cables. The "telemetry" cable
 /// is `create = false` (route-only), so the subscriber never gets a channel
 /// for it — its traffic must not reach the subscriber at all.
-#[cfg(feature = "cable")]
 #[tokio::test]
 async fn test_cable_label_isolation() {
     init_tracing();
@@ -834,7 +817,6 @@ async fn test_cable_label_isolation() {
 /// input reaches the publisher, and the publisher's messages export to the
 /// UDP target (in addition to the regular subscribers, which the
 /// to-subscribers bus always feeds).
-#[cfg(feature = "cable")]
 #[tokio::test]
 async fn test_cable_role_subscriber_reaches_the_publisher() {
     init_tracing();

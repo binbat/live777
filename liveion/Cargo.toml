@@ -79,10 +79,6 @@ recorder = [
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
 
-# Declared datachannel cables: per-stream cable topology (label routing,
-# channel parameters, bus capacity) and cable <-> UDP bridges. Without it,
-# datachannels still forward through one anonymous bus pair per stream.
-cable = []
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
 source-sdp = ["source", "livetwo/multicast"]
 source-rtsp = ["source", "rtsp/client"]

@@ -656,7 +656,6 @@ impl Manager {
         let mut hubs = self.cable_hubs.lock().expect("cable hubs lock poisoned");
         hubs.entry(stream.to_string())
             .or_insert_with(|| {
-                #[cfg(feature = "cable")]
                 if let Some(entry) = self.config.stream.streams.get(stream) {
                     return Arc::new(CableHub::from_configs(&entry.cables));
                 }
@@ -689,12 +688,7 @@ impl Manager {
     }
 
     async fn init_stream_forward(&self, stream: &str, forward: &PeerForward) {
-        #[cfg(feature = "cable")]
         forward.cables().start_bridges(stream).await;
-        // Without the `cable` feature this async fn is empty. The compiler
-        // eliminates the future allocation in release builds via dead-code
-        // elimination.
-        let _ = (stream, forward);
     }
 
     /// Public stream deletion (admin API). Provisioned streams are owned by
@@ -1160,10 +1154,7 @@ impl Manager {
         if let Some(entry) = stream_cfg.streams.get(&stream.id) {
             stream.provisioned = true;
             stream.on_demand = entry.on_demand;
-            #[cfg(feature = "cable")]
-            {
-                stream.cables = entry.cables.iter().map(Into::into).collect();
-            }
+            stream.cables = entry.cables.iter().map(Into::into).collect();
         }
     }
 

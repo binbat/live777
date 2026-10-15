@@ -2,7 +2,7 @@
 
 A **cable** is a named, bidirectional datachannel message pipe on a live777
 stream, keyed by the channel's `label`. Cables are declared per stream with
-`[[stream.<name>.cables]]` and need the `cable` build feature.
+`[[stream.<name>.cables]]`.
 
 ## Architecture
 

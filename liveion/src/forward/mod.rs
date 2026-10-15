@@ -78,7 +78,6 @@ pub(crate) mod av1_assembler;
     feature = "source-whep"
 ))]
 pub(crate) mod av1_repacketizer;
-#[cfg(feature = "cable")]
 pub(crate) mod channel;
 pub(crate) mod codec_compat;
 mod internal;
@@ -185,7 +184,6 @@ impl PeerForward {
     }
 
     /// This stream's cable hub (buses, declared cables, UDP bridges).
-    #[cfg(feature = "cable")]
     pub(crate) fn cables(&self) -> Arc<crate::stream::cable::CableHub> {
         self.internal.cables.clone()
     }
@@ -387,7 +385,6 @@ impl PeerForward {
             // Server-side cable channels are created on the session's first
             // inbound channel (see create_server_cables). A peer without an
             // m=application section can never carry them — surface that.
-            #[cfg(feature = "cable")]
             if !media_info.has_data_channel && self.internal.has_server_cables() {
                 tracing::warn!(
                     "[{}] cables are declared but the peer offered no datachannel section; \
@@ -764,7 +761,6 @@ impl PeerForward {
             let mut sdp = sdp;
             sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
-            #[cfg(feature = "cable")]
             let has_data_channel = media_info.has_data_channel;
             let session = self
                 .internal
@@ -780,7 +776,6 @@ impl PeerForward {
             // Server-side cable channels are created on the session's first
             // inbound channel (see create_server_cables). A peer without an
             // m=application section can never carry them — surface that.
-            #[cfg(feature = "cable")]
             if !has_data_channel && self.internal.has_server_cables() {
                 tracing::warn!(
                     "[{}] cables are declared but the peer offered no datachannel section; \
@@ -1255,9 +1250,7 @@ mod test {
         RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
     };
     use sdp::extmap::TRANSPORT_CC_URI;
-    #[cfg(feature = "cable")]
     use std::sync::Arc;
-    #[cfg(feature = "cable")]
     use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
     use webrtc::peer_connection::{
@@ -1272,13 +1265,11 @@ mod test {
     impl PeerConnectionEventHandler for TestPeerHandler {}
 
     /// Captures inbound (server-created) data channels.
-    #[cfg(feature = "cable")]
     #[derive(Clone)]
     struct ChannelCapturingHandler {
         tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn DataChannel>>,
     }
 
-    #[cfg(feature = "cable")]
     #[async_trait::async_trait]
     impl PeerConnectionEventHandler for ChannelCapturingHandler {
         async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
@@ -1351,7 +1342,6 @@ a=end-of-candidates";
     /// client receives it via `ondatachannel` and reads the parameters off
     /// it. The client's own (carrier) channel negotiates the m=application
     /// section, and its OPEN is what triggers the server-side creation.
-    #[cfg(feature = "cable")]
     #[tokio::test]
     async fn server_created_cable_uses_configured_params() -> crate::result::Result<()> {
         let _ = tracing_subscriber::fmt()
@@ -1423,7 +1413,6 @@ a=end-of-candidates";
     /// The client's self-created channel whose label matches a server-created
     /// cable is closed (the server-created channel wins; the client falls
     /// back to it), while undeclared labels keep flowing on the default pair.
-    #[cfg(feature = "cable")]
     #[tokio::test]
     async fn client_channel_matching_a_server_cable_is_closed() -> crate::result::Result<()> {
         let (_dc_tx, mut dc_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<dyn DataChannel>>();

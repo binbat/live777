@@ -1,8 +1,7 @@
 # Cable（DataChannel 转发）
 
 **cable** 是 live777 流上一条命名的双向 datachannel 消息管道，以 channel
-的 `label` 为键。流通过 `[[stream.<name>.cables]]` 声明 cable，需要
-`cable` 构建 feature。
+的 `label` 为键。流通过 `[[stream.<name>.cables]]` 声明 cable。
 
 ## 架构
 

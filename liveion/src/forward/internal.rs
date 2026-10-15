@@ -2256,7 +2256,6 @@ impl PeerForwardInternal {
     /// `PeerConnectionState::Connected`) can drop the OPEN write as
     /// non-Established or pick the wrong stream-id parity (colliding with a
     /// client-created channel, which the client then silently swallows).
-    #[cfg(feature = "cable")]
     async fn create_server_cables(&self, peer: &Arc<dyn PeerConnection>, publisher: bool) {
         for cfg in self.cables.server_created().cloned().collect::<Vec<_>>() {
             let init = webrtc::data_channel::RTCDataChannelInit {
@@ -2290,7 +2289,6 @@ impl PeerForwardInternal {
     }
 
     /// Any declared cable the server creates channels for.
-    #[cfg(feature = "cable")]
     pub(crate) fn has_server_cables(&self) -> bool {
         self.cables.server_created().next().is_some()
     }
@@ -2305,13 +2303,7 @@ impl PeerForwardInternal {
             let publish = self.publish.read().await;
             match publish.as_ref() {
                 Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
-                    #[cfg(feature = "cable")]
                     let spawn = from_client && !p.cables_spawned.swap(true, Ordering::Relaxed);
-                    #[cfg(not(feature = "cable"))]
-                    let spawn = {
-                        let _ = from_client;
-                        false
-                    };
                     (Some(p.connection_state_rx()), p.dc_cancel_token(), spawn)
                 }
                 _ => {
@@ -2326,7 +2318,6 @@ impl PeerForwardInternal {
                 }
             }
         };
-        #[cfg(feature = "cable")]
         if _spawn_cables {
             // Boxed: create_server_cables wires its channels through this
             // very function (with from_client=false), and an unboxed async
@@ -2336,7 +2327,6 @@ impl PeerForwardInternal {
         // The publisher's channel: its messages go to all subscribers
         // (to_subscribers), it receives what subscribers send (to_publisher).
         let label = dc.label().await.unwrap_or_default();
-        #[cfg(feature = "cable")]
         if from_client
             && let Some(cfg) = self.cables.declared(&label)
             && cfg.create
@@ -2890,13 +2880,7 @@ impl PeerForwardInternal {
             let subscribe_group = self.subscribe_group.read().await;
             match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
                 Some(s) => {
-                    #[cfg(feature = "cable")]
                     let spawn = from_client && !s.cables_spawned.swap(true, Ordering::Relaxed);
-                    #[cfg(not(feature = "cable"))]
-                    let spawn = {
-                        let _ = from_client;
-                        false
-                    };
                     (Some(s.connection_state_rx()), s.dc_cancel_token(), spawn)
                 }
                 None => {
@@ -2911,7 +2895,6 @@ impl PeerForwardInternal {
                 }
             }
         };
-        #[cfg(feature = "cable")]
         if _spawn_cables {
             // Boxed: see publish_data_channel.
             Box::pin(self.create_server_cables(&peer, false)).await;
@@ -2920,7 +2903,6 @@ impl PeerForwardInternal {
         // (to_publisher), it receives what the publisher sends
         // (to_subscribers).
         let label = dc.label().await.unwrap_or_default();
-        #[cfg(feature = "cable")]
         if from_client
             && let Some(cfg) = self.cables.declared(&label)
             && cfg.create
@@ -3575,7 +3557,6 @@ mod dc_tests {
     /// forward: dropping the hub (stream deleted) cancels a bridge and
     /// releases its listen port; a forward reset leaves the hub — and the
     /// port — untouched.
-    #[cfg(feature = "cable")]
     #[tokio::test]
     async fn cable_bridge_dies_with_hub_not_forward() {
         let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();

@@ -43,11 +43,10 @@ impl CableBus {
     }
 }
 
-/// A declared cable: its buses plus, with the `cable` feature, the declaring
-/// config (channel parameters for server-side creation, UDP bridges).
+/// A declared cable: its buses plus the declaring config (channel parameters
+/// for server-side creation, UDP bridges).
 pub(crate) struct Cable {
     pub(crate) bus: CableBus,
-    #[cfg(feature = "cable")]
     pub(crate) config: crate::config::CableConfig,
 }
 
@@ -60,11 +59,13 @@ pub(crate) struct CableHub {
     /// bridges must not outlive the stream, but equally must not churn when
     /// the forward is reset underneath them.
     cancel: CancellationToken,
-    /// Running bridge tasks, kept so tests can await a deterministic stop.
-    /// tokio Mutex: the guard is held across bridge spawns (which await), so
-    /// it must stay Send to keep the HTTP handler futures Send.
-    #[cfg(feature = "cable")]
-    bridges: tokio::sync::Mutex<Vec<crate::forward::channel::ChannelHandle>>,
+    /// Running bridge tasks keyed by (cable label, udp index), so a
+    /// partially-failed start retries only the bridges that never came up on
+    /// a later `start_bridges` call (e.g. after a provisioned-stream reset
+    /// frees a held port) instead of re-spawning the healthy ones. tokio
+    /// Mutex: the guard is held across bridge spawns (which await), so it
+    /// must stay Send to keep the HTTP handler futures Send.
+    bridges: tokio::sync::Mutex<HashMap<(String, usize), crate::forward::channel::ChannelHandle>>,
 }
 
 impl CableHub {
@@ -74,13 +75,11 @@ impl CableHub {
             default: CableBus::new(DEFAULT_CABLE_BUS_CAPACITY),
             cables: HashMap::new(),
             cancel: CancellationToken::new(),
-            #[cfg(feature = "cable")]
-            bridges: tokio::sync::Mutex::new(Vec::new()),
+            bridges: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
     /// Anonymous pair plus one cable per declared config.
-    #[cfg(feature = "cable")]
     pub(crate) fn from_configs(configs: &[crate::config::CableConfig]) -> Self {
         let mut hub = Self::bare();
         hub.cables = configs
@@ -108,29 +107,29 @@ impl CableHub {
     }
 
     /// The declared config for `label`, if any.
-    #[cfg(feature = "cable")]
     pub(crate) fn declared(&self, label: &str) -> Option<&crate::config::CableConfig> {
         self.cables.get(label).map(|c| &c.config)
     }
 
     /// Declared cables whose channels the server creates on every session.
-    #[cfg(feature = "cable")]
     pub(crate) fn server_created(&self) -> impl Iterator<Item = &crate::config::CableConfig> + '_ {
         self.cables.values().map(|c| &c.config).filter(|c| c.create)
     }
 
-    /// Start every configured UDP bridge. Idempotent: a hub whose bridges
-    /// are already running (e.g. after a provisioned-stream reset reuses the
-    /// hub) is a no-op. Per-bridge failures are logged and skipped — one bad
-    /// bridge must not take the others down with it.
-    #[cfg(feature = "cable")]
+    /// Start every configured UDP bridge. Idempotent per bridge: a bridge
+    /// that already started successfully (e.g. after a provisioned-stream
+    /// reset reuses the hub) is left alone, while any bridge that failed to
+    /// start is retried on the next call. Per-bridge failures are logged and
+    /// skipped — one bad bridge must not take the others down with it.
     pub(crate) async fn start_bridges(&self, stream: &str) {
         let mut bridges = self.bridges.lock().await;
-        if !bridges.is_empty() {
-            return;
-        }
         for cable in self.cables.values() {
-            for udp in &cable.config.udp {
+            for (udp_index, udp) in cable.config.udp.iter().enumerate() {
+                let key = (cable.config.label.clone(), udp_index);
+                if bridges.contains_key(&key) {
+                    // This bridge already started successfully; leave it.
+                    continue;
+                }
                 let (dc_rx, dc_tx) = match udp.role {
                     crate::config::CableRole::Publisher => (
                         udp.target.map(|_| cable.bus.to_publisher.subscribe()),
@@ -150,7 +149,9 @@ impl CableHub {
                 )
                 .await
                 {
-                    Ok(handle) => bridges.push(handle),
+                    Ok(handle) => {
+                        bridges.insert(key, handle);
+                    }
                     Err(err) => {
                         tracing::warn!(
                             "cable bridge [{stream}/{}] failed to start: {err:?}",
@@ -173,9 +174,10 @@ impl Drop for CableHub {
     }
 }
 
-#[cfg(all(test, feature = "cable"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UdpSocket;
 
     fn cable(label: &str) -> crate::config::CableConfig {
         crate::config::CableConfig::new(label)
@@ -221,5 +223,52 @@ mod tests {
             small_bus.send(vec![i]).unwrap();
         }
         assert_eq!(rx.try_recv().unwrap(), vec![0]);
+    }
+
+    /// A bridge whose start failed must be retried on a later `start_bridges`
+    /// call, while the bridge that already started is left alone.
+    #[tokio::test]
+    async fn start_bridges_retries_only_the_failed_bridge() {
+        // Hold a port so the first bridge's bind fails on the first pass.
+        let blocker = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let blocked_addr = blocker.local_addr().unwrap();
+
+        // The second bridge gets a free port so it starts on the first pass.
+        let free_probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let free_addr = free_probe.local_addr().unwrap();
+        drop(free_probe);
+
+        let mut control = crate::config::CableConfig::new("control");
+        control.udp = vec![
+            crate::config::CableUdpConfig {
+                role: crate::config::CableRole::Publisher,
+                listen: Some(blocked_addr),
+                target: Some("127.0.0.1:9".parse().unwrap()),
+            },
+            crate::config::CableUdpConfig {
+                role: crate::config::CableRole::Publisher,
+                listen: Some(free_addr),
+                target: Some("127.0.0.1:9".parse().unwrap()),
+            },
+        ];
+
+        let hub = CableHub::from_configs(&[control]);
+
+        // First pass: the blocked bridge fails and is skipped; the free one
+        // starts and holds its port.
+        hub.start_bridges("test").await;
+        assert!(
+            UdpSocket::bind(free_addr).await.is_err(),
+            "the healthy bridge must hold its port"
+        );
+
+        // Free the blocked port, then start again: only the failed bridge is
+        // retried, and it now binds successfully.
+        drop(blocker);
+        hub.start_bridges("test").await;
+        assert!(
+            UdpSocket::bind(blocked_addr).await.is_err(),
+            "the previously failed bridge must hold its port after the retry"
+        );
     }
 }

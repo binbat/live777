@@ -167,15 +167,12 @@ impl Default for Log {
     }
 }
 
-#[cfg(feature = "cable")]
 pub const DEFAULT_CABLE_CAPACITY: usize = 1024;
 
-#[cfg(feature = "cable")]
 fn default_cable_create() -> bool {
     true
 }
 
-#[cfg(feature = "cable")]
 fn default_cable_capacity() -> usize {
     DEFAULT_CABLE_CAPACITY
 }
@@ -183,7 +180,6 @@ fn default_cable_capacity() -> usize {
 /// A declared datachannel cable of a stream: a named, bidirectional message
 /// pipe joining every peer channel created with the same label — the
 /// publisher's and any subscriber's alike.
-#[cfg(feature = "cable")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CableConfig {
     /// Cable identity: peer channels created with this label join this cable.
@@ -221,7 +217,6 @@ pub struct CableConfig {
     pub udp: Vec<CableUdpConfig>,
 }
 
-#[cfg(feature = "cable")]
 impl CableConfig {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -238,7 +233,6 @@ impl CableConfig {
 }
 
 /// Which seat a cable <-> UDP bridge takes on the cable.
-#[cfg(feature = "cable")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CableRole {
@@ -255,7 +249,6 @@ pub enum CableRole {
 /// One cable <-> UDP bridge. `listen` and `target` are independent: setting
 /// only `listen` makes an inject-only bridge (UDP -> cable), only `target`
 /// an export-only one (cable -> UDP). At least one must be set.
-#[cfg(feature = "cable")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CableUdpConfig {
     #[serde(default)]
@@ -285,7 +278,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cable")]
     fn test_cable_udp_config_ipv4() {
         let s: CableUdpConfig = toml::from_str(
             r#"
@@ -300,7 +292,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cable")]
     fn test_cable_udp_config_ipv6() {
         let s: CableUdpConfig = toml::from_str(
             r#"
@@ -315,7 +306,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cable")]
     fn test_cable_config_defaults() {
         let c: CableConfig = toml::from_str(r#"label = "control""#).unwrap();
         assert_eq!(c.label, "control");
@@ -575,7 +565,6 @@ impl Config {
             }
         }
 
-        #[cfg(feature = "cable")]
         for (stream_id, entry) in &self.stream.streams {
             let mut seen_labels = std::collections::HashSet::new();
             for cable in &entry.cables {
@@ -883,7 +872,6 @@ pub struct StreamEntry {
     /// pipes with optional channel parameters and cable <-> UDP bridges.
     /// Channels whose label matches no declared cable mix onto the anonymous
     /// default bus pair.
-    #[cfg(feature = "cable")]
     #[serde(default)]
     pub cables: Vec<CableConfig>,
     /// Optional per-stream strategy override.
@@ -918,7 +906,6 @@ impl Default for StreamEntry {
     fn default() -> Self {
         Self {
             sources: Vec::new(),
-            #[cfg(feature = "cable")]
             cables: Vec::new(),
             strategy: None,
             hooks: HookConfig::default(),

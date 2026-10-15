@@ -35,7 +35,6 @@ pub(crate) struct PublishRTCPeerConnection {
     /// the SCTP association is established and the DTLS role resolved, so
     /// the server's stream-id parity cannot collide with the client's
     /// channels and the OPEN write is not dropped as non-Established).
-    #[cfg(feature = "cable")]
     pub(crate) cables_spawned: std::sync::atomic::AtomicBool,
 }
 
@@ -71,7 +70,6 @@ impl PublishRTCPeerConnection {
             cascade,
             connection_state_rx,
             dc_cancel: CancellationToken::new(),
-            #[cfg(feature = "cable")]
             cables_spawned: std::sync::atomic::AtomicBool::new(false),
         })
     }

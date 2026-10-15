@@ -49,7 +49,6 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
     }
 }
 
-#[cfg(feature = "cable")]
 impl From<&crate::config::CableConfig> for api::response::Cable {
     fn from(value: &crate::config::CableConfig) -> Self {
         api::response::Cable {
