@@ -63,10 +63,10 @@ ice_udp_addrs = ["auto"]
 # Cable (datachannel) <-> UDP forwarding for the "dc-udp" stream.
 # [stream.dc-udp]
 # [[stream.dc-udp.cables]]
-# label = "default"
+# label = "control"
 # [[stream.dc-udp.sources]]
 # [[stream.dc-udp.sources.cables]]
-# label = "default"
+# label = "control"
 # url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 
 # Need enabled `--features=source`

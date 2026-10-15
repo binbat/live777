@@ -30,7 +30,7 @@ struct Args {
     #[arg(long)]
     cable_url: Option<String>,
     /// DataChannel label, joins the matching cable on the server
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "-")]
     cable_label: String,
     #[command(flatten)]
     ice: iceserver::IceServerArgs,

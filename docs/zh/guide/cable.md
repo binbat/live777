@@ -25,7 +25,7 @@ channel 经由这条流互相通信。
 ```toml
 [stream.fpv]
 [[stream.fpv.cables]]
-label = "default"          # cable 标识（channel label），必填
+label = "control"          # cable 标识（channel label），必填
 # ordered = false          # 缺省：WebRTC 默认（有序、可靠）
 # max_retransmits = 0      # 部分可靠（按重传次数）；与 max_packet_life_time 互斥
 # max_packet_life_time = 100
@@ -36,13 +36,13 @@ label = "default"          # cable 标识（channel label），必填
 # DC source 坐广播席位：入向 UDP 包广播给全体订阅者，订阅者的回话发到其 target。
 [[stream.fpv.sources]]
 [[stream.fpv.sources.cables]]
-label = "default"          # 该端点接入哪条 cable
+label = "control"          # 该端点接入哪条 cable
 url = "udp://0.0.0.0:8891?host=127.0.0.1&port=8890"
 
 # DC target 坐订阅者席位：发布者的消息发到其 target，入向包发给发布者。
 [[stream.fpv.targets]]
 [[stream.fpv.targets.cables]]
-label = "default"
+label = "control"
 url = "udp://?host=127.0.0.1&port=8892"  # 纯导出
 ```
 
@@ -112,7 +112,7 @@ channel（桥跟随当前打开的 channel）。浏览器客户端只需处理
 
 ```js
 pc.ondatachannel = (ev) => {
-  // ev.channel.label === "default"，参数即服务器配置
+  // ev.channel.label === "control"，参数即服务器配置
   ev.channel.onmessage = (m) => { /* ... */ };
 };
 ```
