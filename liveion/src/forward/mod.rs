@@ -94,8 +94,6 @@ pub(crate) mod subscribe_quality;
 pub(crate) mod track;
 
 const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(25);
 
 /// Session id reported for the synthesized publisher of a configured source
 /// (RTSP pull / SDP file / native capture). Used both when synthesizing the
@@ -930,29 +928,22 @@ async fn peer_complete(
     let answer = peer.create_answer(None).await?;
     peer.set_local_description(answer).await?;
 
+    // Wait for ICE gathering to complete so the answer carries srflx/relay
+    // candidates, not just the host candidates that win the race to appear
+    // first (live777#499).  Host-only gathering (ICE lite, no ICE servers)
+    // completes immediately, so the deadline only bites when a STUN/TURN
+    // server is unreachable — gathering can then stall indefinitely, and the
+    // partial description is the best available answer.
     let deadline = tokio::time::sleep(ANSWER_ICE_CANDIDATE_TIMEOUT);
     tokio::pin!(deadline);
-    let mut poll = tokio::time::interval(ANSWER_ICE_CANDIDATE_POLL_INTERVAL);
 
-    loop {
-        if let Some(description) = peer.local_description().await
-            && sdp_has_ice_candidate(&description.sdp)
-        {
-            return Ok(description);
-        }
-
-        tokio::select! {
-            _ = gather_complete.notified() => {
-                break;
-            }
-            _ = poll.tick() => {}
-            _ = &mut deadline => {
-                tracing::warn!(
-                    "ICE candidate gathering timed out after {}ms, using partial description",
-                    ANSWER_ICE_CANDIDATE_TIMEOUT.as_millis()
-                );
-                break;
-            }
+    tokio::select! {
+        _ = gather_complete.notified() => {}
+        _ = &mut deadline => {
+            tracing::warn!(
+                "ICE candidate gathering timed out after {}ms, using partial description",
+                ANSWER_ICE_CANDIDATE_TIMEOUT.as_millis()
+            );
         }
     }
 
@@ -964,6 +955,7 @@ async fn peer_complete(
     Ok(description)
 }
 
+#[cfg(test)]
 fn sdp_has_ice_candidate(sdp: &str) -> bool {
     sdp.lines().any(|line| line.starts_with("a=candidate:"))
 }
@@ -1264,6 +1256,22 @@ mod test {
 
     #[async_trait::async_trait]
     impl PeerConnectionEventHandler for TestPeerHandler {}
+
+    /// Mirrors the production handlers: notifies when ICE gathering completes.
+    #[derive(Clone)]
+    struct GatherCompleteHandler(Arc<tokio::sync::Notify>);
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for GatherCompleteHandler {
+        async fn on_ice_gathering_state_change(
+            &self,
+            state: webrtc::peer_connection::RTCIceGatheringState,
+        ) {
+            if state == webrtc::peer_connection::RTCIceGatheringState::Complete {
+                self.0.notify_one();
+            }
+        }
+    }
 
     /// Captures inbound (server-created) data channels.
     #[derive(Clone)]
@@ -1654,7 +1662,7 @@ a=end-of-candidates";
     }
 
     #[tokio::test]
-    async fn peer_complete_returns_after_answer_has_ice_candidate() -> crate::result::Result<()> {
+    async fn peer_complete_returns_once_ice_gathering_completes() -> crate::result::Result<()> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
 
@@ -1693,10 +1701,13 @@ a=end-of-candidates";
         let offer = offer_peer.create_offer(None).await?;
         offer_peer.set_local_description(offer).await?;
 
+        let gather_complete = std::sync::Arc::new(tokio::sync::Notify::new());
         let answer_peer: std::sync::Arc<dyn PeerConnection> = std::sync::Arc::new(
             PeerConnectionBuilder::<std::net::SocketAddr>::new()
                 .with_media_engine(MediaEngine::default())
-                .with_handler(std::sync::Arc::new(TestPeerHandler))
+                .with_handler(std::sync::Arc::new(GatherCompleteHandler(
+                    gather_complete.clone(),
+                )))
                 .with_configuration(RTCConfigurationBuilder::new().build())
                 .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
                 .build()
@@ -1707,13 +1718,14 @@ a=end-of-candidates";
         let answer = super::peer_complete(
             offer_peer.local_description().await.unwrap(),
             answer_peer.clone(),
-            std::sync::Arc::new(tokio::sync::Notify::new()),
+            gather_complete,
         )
         .await?;
 
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
-            "peer_complete waited for ICE gathering completion despite answer candidate:\n{}",
+            "host-only ICE gathering should complete near-instantly, peer_complete took {:?}:\n{}",
+            started.elapsed(),
             answer.sdp
         );
         assert!(
