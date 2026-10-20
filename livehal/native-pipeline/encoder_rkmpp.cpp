@@ -381,6 +381,37 @@ public:
             }
         }
 
+        // Black-fill every pool buffer once at init.  A pool buffer is only
+        // ever written by the CPU-copy path afterwards, which touches just
+        // the active width x height region (row copies write src_w bytes
+        // per row), so the stride-alignment padding — rows [height,
+        // ver_stride) and columns [width, hor_stride) — would otherwise
+        // keep whatever stale content the pool came with.  The boundary CU
+        // reads it, and decoders that ignore SPS conformance windows show
+        // it as a green band at the bottom (or right edge) of the frame —
+        // seen on RV1126B at 1080p/360p.  Filling the active region too is
+        // harmless: the first frame's copy overwrites it before the buffer
+        // ever reaches the encoder.  The zero-copy dmabuf path never
+        // touches the pool — its padding is whatever the capture driver
+        // wrote — so it is unaffected, for better or worse.
+        for (int i = 0; i < kInputPoolSize; i++) {
+            auto* y = static_cast<uint8_t*>(mpp_buffer_get_ptr(input_bufs_[i]));
+            if (!y) {
+                std::fprintf(stderr,
+                    "[RkMppEncoder] warn: pool buffer %d has no mapped ptr, "
+                    "padding fill skipped\n", i);
+                continue;
+            }
+            const size_t y_size = static_cast<size_t>(hor_stride_) * ver_stride_;
+            // Same DMA cache-sync bracket as the per-frame copy path, so
+            // the fill is visible to the DMA master (CACHABLE pool buffers
+            // are shared with the capture/encoder engines).
+            mpp_buffer_sync_begin(input_bufs_[i]);
+            std::memset(y, 0x10, y_size);                        // Y: black
+            std::memset(y + y_size, 0x80, frame_size_ - y_size); // UV: neutral
+            mpp_buffer_sync_end(input_bufs_[i]);
+        }
+
         std::fprintf(stderr,
             "[RkMppEncoder] Persistent input buffer pool: %zu bytes x %d\n",
             frame_size_, kInputPoolSize);
@@ -542,19 +573,37 @@ public:
         // --- Zero-copy path: import the capture dmabuf directly ---
         // The capture owns the memory; we import once per fd and reuse.
         // Frame layout must be NV12 contiguous (single fd, UV at offset).
+        // MPP locates the UV plane at hor_stride x ver_stride, so the
+        // capture's UV offset must match that layout exactly — a capture
+        // that packs UV right after the `height` active rows, or pads to a
+        // different alignment, would make the encoder read chroma from the
+        // wrong rows; fall back to the pool copy in that case.
         uint32_t frame_hor_stride = hor_stride_;
         uint32_t frame_ver_stride = ver_stride_;
+        const bool dmabuf_layout = frame.kind == BufferKind::DmaBuf
+            && frame.planes[0].dma_fd >= 0 && frame.planes[0].stride > 0
+            && frame.planes[1].offset
+                == static_cast<size_t>(frame.planes[0].stride) * ver_stride_;
         bool use_dmabuf = false;
         if (cfg_.prefer_dmabuf && frame.kind == BufferKind::DmaBuf
-            && frame.planes[0].dma_fd >= 0 && frame.planes[1].offset > 0) {
+            && !dmabuf_layout && !dmabuf_layout_warned_) {
+            dmabuf_layout_warned_ = true;
+            std::fprintf(stderr,
+                "[RkMppEncoder] warn: capture dmabuf layout mismatch "
+                "(uv_offset=%u, expected stride x ver_stride=%zu); "
+                "using the pool copy path\n",
+                frame.planes[1].offset,
+                static_cast<size_t>(frame.planes[0].stride) * ver_stride_);
+        }
+        if (cfg_.prefer_dmabuf && dmabuf_layout) {
             const int fd = frame.planes[0].dma_fd;
             auto it = dmabuf_cache_.find(fd);
             if (it == dmabuf_cache_.end()) {
                 MppBufferInfo info{};
                 info.type = MPP_BUFFER_TYPE_DRM;
                 info.fd = fd;
-                info.size = static_cast<size_t>(frame.planes[0].stride) * src_h
-                            + static_cast<size_t>(frame.planes[0].stride) * src_h / 2;
+                info.size = static_cast<size_t>(frame.planes[1].offset)
+                    + static_cast<size_t>(frame.planes[0].stride) * (src_h / 2);
                 MppBuffer imported = nullptr;
                 if (mpp_buffer_import(&imported, &info) == MPP_OK
                     && imported != nullptr) {
@@ -570,9 +619,6 @@ public:
                 // Use the capture's own stride (may exceed width due to ISP
                 // padding); the pool path normalises to configured strides.
                 frame_hor_stride = frame.planes[0].stride;
-                // ver_stride stays height-based: MPP expects UV at
-                // hor_stride x ver_stride, which matches the capture's
-                // planes[1].offset (= stride x height) exactly.
                 frame_ver_stride = ver_stride_;
             }
         }
@@ -1194,6 +1240,8 @@ private:
     // Zero-copy path: imported MppBuffer per capture dmabuf fd, imported once
     // and reused (the capture owns the memory; fds are stable per V4L2 slot).
     std::unordered_map<int, MppBuffer> dmabuf_cache_;
+    // One-shot log latch for the dmabuf layout fallback (see submit()).
+    bool dmabuf_layout_warned_ = false;
     int next_input_idx_ = 0;
 
     // Submitted-but-not-yet-completed frames in submission order: one entry
