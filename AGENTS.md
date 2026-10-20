@@ -51,7 +51,10 @@ libs/playwright-whep # Rust-callable Playwright WHEP test harness
 libs/rtsp            # RTSP client/server helpers
 libs/signal          # OS signal handling
 libs/storage         # OpenDAL-backed storage abstraction
-libs/version         # build-time version info (shadow-rs)
+libs/version         # build-time version info (shadow-rs; compile-time
+                     # LIVE777_VERSION env overrides git-derived values, which
+                     # fall back to the Cargo.toml version when .git is absent,
+                     # e.g. in Docker build contexts)
 liveion              # core SFU library
 liveman              # cluster manager / controller
 livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library

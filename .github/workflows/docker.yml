@@ -27,6 +27,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Full history so `git describe` can see tags; the Docker build
+          # context excludes .git, so the version is passed in as a build-arg.
+          fetch-depth: 0
+      - name: Version
+        id: version
+        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
@@ -56,6 +63,8 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            LIVE777_VERSION=${{ steps.version.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
