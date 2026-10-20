@@ -21,7 +21,7 @@ impl MediaInfo {
                 match kind {
                     RtpCodecKind::Video => mime.starts_with("video/"),
                     RtpCodecKind::Audio => mime.starts_with("audio/"),
-                    RtpCodecKind::Unspecified => false,
+                    _ => false,
                 }
             })
             .map(|codec| codec.rtp_codec.clone())

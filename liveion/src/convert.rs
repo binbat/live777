@@ -112,5 +112,8 @@ fn convert_connect_state(state: RTCPeerConnectionState) -> api::response::RTCPee
         RTCPeerConnectionState::Disconnected => api::response::RTCPeerConnectionState::Disconnected,
         RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
         RTCPeerConnectionState::Closed => api::response::RTCPeerConnectionState::Closed,
+        // States added upstream after this mapping (the enum is
+        // non-exhaustive) report as not-yet-connected.
+        _ => api::response::RTCPeerConnectionState::New,
     }
 }

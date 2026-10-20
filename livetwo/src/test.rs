@@ -20,7 +20,7 @@ mod tests {
 
         let mut peer = RTCPeerConnectionBuilder::new()
             .with_configuration(initial_config)
-            .build()
+            .build(std::time::Instant::now())
             .expect("Failed to create RTCPeerConnection");
 
         let new_config = RTCConfigurationBuilder::new()

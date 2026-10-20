@@ -506,12 +506,15 @@ async fn create_peer(
         .with_ice_servers(options.ice_servers.clone())
         .build();
 
-    // The default interceptor chain (bare NoopInterceptor terminal) drops all
-    // inbound RTCP, so TrackRemote would never surface OnRtcpPacket. Register
-    // the RTCP forwarder as the outermost layer so Sender Reports reach the
-    // track readers for one-way-delay measurement.
+    // The default interceptor chain terminates inbound RTCP unless an
+    // interceptor marks it `DeliverToApplication`, so TrackRemote would never
+    // surface OnRtcpPacket. Register the marker wire-most so Sender Reports
+    // reach the track readers for one-way-delay measurement.
     let registry = Registry::new();
-    let registry = registry.with(rtcp_forward::RtcpForwarder::new);
+    let registry = registry.with(
+        rtc::interceptor::Slot::from(500),
+        rtcp_forward::RtcpForwarder::new(),
+    );
 
     // Caller-provided UDP addrs win; otherwise fall back to the
     // LIVE777_WEBRTC_ICE_UDP_ADDRS resolution (env override or OS default).

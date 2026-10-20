@@ -419,6 +419,9 @@ impl H265RtpParser {
             H265Payload::H265PACIPacket(_) => {
                 // Not used for media payloads, ignore.
             }
+            // Kinds added upstream after this mapping (the enum is
+            // non-exhaustive) carry no recorder media either.
+            _ => {}
         }
 
         if pkt.header.marker {
