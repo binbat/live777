@@ -4,6 +4,9 @@ WORKDIR /app
 
 COPY . .
 
+# Stamped into the binaries by libs/version; the build context has no .git.
+ARG LIVE777_VERSION
+
 RUN cargo build --bin=whepfrom --release
 
 FROM debian:trixie-slim

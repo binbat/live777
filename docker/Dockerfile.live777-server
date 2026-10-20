@@ -18,6 +18,9 @@ COPY . .
 
 COPY --from=builder-node /app/assets/ assets
 
+# Stamped into the binaries by libs/version; the build context has no .git.
+ARG LIVE777_VERSION
+
 # Keep in sync with the release workflow feature set: rsmpeg and the native
 # capture/encoder features need system FFmpeg/libcamera dev libraries that are
 # not available in this slim builder image.

@@ -128,11 +128,12 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 );
                 match state {
                     RTCPeerConnectionState::Failed => {
-                        let _ = pc.close().await;
-                        // `close()` never emits the `Closed` event (the driver
-                        // is aborted first), so remove the session directly —
-                        // idempotent if the event path ever runs.
-                        let _ = internal.remove_publish(pc).await;
+                        spawn_failed_teardown(
+                            internal.stream.clone(),
+                            "publish",
+                            &pc,
+                            &self.internal,
+                        );
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -366,6 +367,48 @@ fn spawn_establish_watchdog(
     });
 }
 
+/// Teardown for a peer whose connection went `Failed`. Runs on a detached
+/// task because the connection-state callback executes on the webrtc driver
+/// task and `close()` aborts that very task: awaiting the session removal
+/// inline after `close()` would let the self-abort silently cancel it on the
+/// next yield (lock contention is enough), leaking a zombie session.
+/// Removal is direct because `close()` never emits the `Closed` event; both
+/// `remove_*` paths are idempotent no-ops if another path got there first.
+fn spawn_failed_teardown(
+    stream: String,
+    role: &'static str,
+    peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
+) {
+    let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
+    tokio::spawn(async move {
+        let Some(peer) = peer.upgrade() else {
+            return;
+        };
+        let _ = peer.close().await;
+        if let Some(internal) = internal.upgrade() {
+            let result = match role {
+                "publish" => internal.remove_publish(peer).await,
+                "subscribe" => internal.remove_subscribe(peer).await,
+                other => {
+                    warn!(
+                        "[{}] [{}] unknown teardown role, no session removed",
+                        stream, other
+                    );
+                    return;
+                }
+            };
+            if let Err(err) = result {
+                warn!(
+                    "[{}] [{}] failed-peer teardown error: {:?}",
+                    stream, role, err
+                );
+            }
+        }
+    });
+}
+
 #[derive(Clone)]
 struct SubscribePeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
@@ -407,11 +450,12 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                 );
                 match state {
                     RTCPeerConnectionState::Failed => {
-                        let _ = pc.close().await;
-                        // `close()` never emits the `Closed` event (the driver
-                        // is aborted first), so remove the session directly —
-                        // idempotent if the event path ever runs.
-                        let _ = internal.remove_subscribe(pc).await;
+                        spawn_failed_teardown(
+                            internal.stream.clone(),
+                            "subscribe",
+                            &pc,
+                            &self.internal,
+                        );
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot

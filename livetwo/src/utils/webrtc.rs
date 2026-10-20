@@ -11,7 +11,6 @@ use webrtc::peer_connection::{
 };
 
 const OFFER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-const OFFER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 pub fn ice_udp_addrs() -> Vec<SocketAddr> {
     api::webrtc::resolve_webrtc_ice_udp_addrs(None)
@@ -59,43 +58,41 @@ async fn wait_for_local_ice_candidate(
     peer: Arc<dyn PeerConnection>,
     gather_complete: Arc<Notify>,
 ) -> Result<RTCSessionDescription> {
+    // Wait for ICE gathering to complete so the offer carries srflx/relay
+    // candidates, not just the host candidates that win the race to appear
+    // first (live777#499).  The deadline bounds the wait when a STUN/TURN
+    // server is unreachable and gathering stalls; partial candidates are
+    // still better than none.
     let deadline = tokio::time::sleep(OFFER_ICE_CANDIDATE_TIMEOUT);
     tokio::pin!(deadline);
-    let mut poll = tokio::time::interval(OFFER_ICE_CANDIDATE_POLL_INTERVAL);
 
-    loop {
-        if let Some(desc) = peer.local_description().await
-            && sdp_has_ice_candidate(&desc.sdp)
-        {
-            return Ok(desc);
+    let description = tokio::select! {
+        _ = gather_complete.notified() => {
+            peer.local_description().await
         }
+        _ = &mut deadline => {
+            let description = peer.local_description().await;
+            if let Some(desc) = &description
+                && sdp_has_ice_candidate(&desc.sdp)
+            {
+                warn!(
+                    "ICE candidate gathering timed out after {}ms, using partial description",
+                    OFFER_ICE_CANDIDATE_TIMEOUT.as_millis()
+                );
+            }
+            description
+        }
+    };
 
-        tokio::select! {
-            _ = gather_complete.notified() => {
-                if let Some(desc) = peer.local_description().await {
-                    if sdp_has_ice_candidate(&desc.sdp) {
-                        return Ok(desc);
-                    }
-                    return Err(anyhow!(
-                        "WHIP local SDP offer has no ICE candidates after ICE gathering completed:\n{}",
-                        summarize_sdp(&desc.sdp)
-                    ));
-                }
-            }
-            _ = poll.tick() => {}
-            _ = &mut deadline => {
-                let summary = peer
-                    .local_description()
-                    .await
-                    .map(|desc| summarize_sdp(&desc.sdp))
-                    .unwrap_or_else(|| "<no local description>".to_string());
-                return Err(anyhow!(
-                    "WHIP local SDP offer has no ICE candidates within {}ms:\n{}",
-                    OFFER_ICE_CANDIDATE_TIMEOUT.as_millis(),
-                    summary
-                ));
-            }
-        }
+    match description {
+        Some(desc) if sdp_has_ice_candidate(&desc.sdp) => Ok(desc),
+        Some(desc) => Err(anyhow!(
+            "WHIP local SDP offer has no ICE candidates:\n{}",
+            summarize_sdp(&desc.sdp)
+        )),
+        None => Err(anyhow!(
+            "WHIP local SDP offer has no ICE candidates: no local description"
+        )),
     }
 }
 
