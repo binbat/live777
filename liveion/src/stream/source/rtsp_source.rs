@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use rtsp::RtspMode;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 
 #[cfg(feature = "source")]
@@ -191,6 +192,9 @@ impl RtspSource {
                 target_host,
                 RtspMode::Pull,
                 true,
+                // Source teardown stays drop-based: stopping the source
+                // closes the interleaved channels, which ends the session.
+                CancellationToken::new(),
             )
             .await
             {

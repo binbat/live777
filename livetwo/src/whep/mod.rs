@@ -1,4 +1,3 @@
-mod channel;
 mod output;
 mod rtcp_forward;
 mod webrtc;
@@ -37,7 +36,8 @@ pub async fn from(
     sdp_file: Option<String>,
     token: Option<String>,
     command: Option<String>,
-    channel_url: Option<String>,
+    cable_url: Option<String>,
+    cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
     from_with_state(
@@ -47,7 +47,8 @@ pub async fn from(
         sdp_file,
         token,
         command,
-        channel_url,
+        cable_url,
+        cable_label,
         None,
         ice_servers,
     )
@@ -62,7 +63,8 @@ pub async fn from_with_state(
     sdp_file: Option<String>,
     token: Option<String>,
     command: Option<String>,
-    channel_url: Option<String>,
+    cable_url: Option<String>,
+    cable_label: String,
     state_tx: Option<watch::Sender<RTCPeerConnectionState>>,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<()> {
@@ -92,6 +94,7 @@ pub async fn from_with_state(
         codec_info.clone(),
         webrtc::WhepPeerOptions {
             ice_servers,
+            cable_label,
             ..Default::default()
         },
         state_tx,
@@ -100,11 +103,23 @@ pub async fn from_with_state(
     .await?;
     info!("WebRTC peer connection established");
 
-    // Start DataChannel <-> UDP forwarding if channel_url is configured
-    if let Some(url) = channel_url {
+    // Start DataChannel <-> UDP forwarding if cable_url is configured. The
+    // bridge runs on a session-scoped token: it stops — releasing its UDP
+    // listen port — when this session ends (any exit path, see
+    // `_session_guard`), not only when the caller's token fires. Without
+    // that, an in-process reconnect finds the old bridge still holding the
+    // port and fails to bind.
+    let session_ct = ct.child_token();
+    let _session_guard = crate::datachannel::CancelOnDrop(session_ct.clone());
+    let channel_handle = if let Some(url) = cable_url {
         debug!("Starting DataChannel <-> UDP forwarding: {}", url);
-        channel::spawn_channel(url, dc_recv_rx, dc_send_tx).await?;
-    }
+        Some(
+            crate::datachannel::spawn_channel(url, dc_recv_rx, dc_send_tx, session_ct.clone())
+                .await?,
+        )
+    } else {
+        None
+    };
 
     start_stats_monitor(ct.clone(), peer.clone(), stats.clone()).await;
 
@@ -260,6 +275,13 @@ pub async fn from_with_state(
             Err(e) => Err(e.into()),
         },
     };
+
+    // Stop the channel bridge and wait for its listen socket to be released
+    // before returning, so a reconnect can rebind the same port immediately.
+    session_ct.cancel();
+    if let Some(handle) = channel_handle {
+        let _ = handle.await;
+    }
 
     graceful_shutdown("WHEP", &mut client, peer).await;
     transport_result

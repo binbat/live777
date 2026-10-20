@@ -93,6 +93,11 @@ password = "live777-2"
 
 ## 使用外部的 `IceServers` {#extra-ice}
 
+默认情况下 liveman 和 live777 都不会下发任何 ICE server：liveman 自身不添加，
+只透传上游 liveion 的 `Link` 头，而 liveion 的 `[[ice_servers]]` 默认也是空列表。
+因此不做任何配置的部署完全运行在内网（仅 host candidate）。
+只有面向公网的部署才需要配置本节。
+
 使用 `WHIP`/`WHEP` 时会合并全部的 `iceServers`
 
 ::: danger 注意:
@@ -176,6 +181,35 @@ Liveman 可以通过推送方式获取 Liveion 的流状态，而不只是依赖
 当启用 `net4mqtt` 时，每个 Liveion 节点会在流状态变化时通过 `xdata`（key 为 `streams`）推送流快照，媒体统计采样周期（2 秒）内计数有变化时也会推送（负载经过去重，空闲节点保持静默）。Liveman 解码后更新对应节点条目。
 
 当 Liveman 合并多个节点上的同名流时，合并后的 `stats` 会标记 `statsScope: "clusterNodeWork"`。它表示跨节点的节点工作量总和，而不是集群边缘流量；级联链路会在每个中继节点各计一次。
+
+## 节点容量策略 {#node-capacity}
+
+Liveman 依据每个节点的订阅容量进行 WHEP 路由与级联目标选择。这只是 liveman 侧的调度策略，liveion 并不强制执行。
+
+静态节点可配置可选的 `sub_max`（缺省 = 不限制）：
+
+```toml
+[[nodes]]
+alias = "edge-0"
+token = "live777"
+url = "http://127.0.0.1:7777"
+# 每条流的订阅容量，用于 WHEP 路由与级联目标选择（缺省 = 不限制）
+sub_max = 1
+```
+
+没有显式 `[[nodes]]` 条目的节点（主要是 net4mqtt 动态发现的节点）使用第一条命中的 `[[node_rules]]` glob 规则（无命中 = 不限制）。显式的 `[[nodes]] sub_max` 始终优先于规则：
+
+```toml
+[[node_rules]]
+pattern = "edge-*"
+sub_max = 1
+
+# 兜底规则：未知节点可以推流（作为源）但绝不直接服务观众，
+# 因此级联永远不会落到未识别的节点上
+[[node_rules]]
+pattern = "*"
+sub_max = 0
+```
 
 ## 集群模式
 

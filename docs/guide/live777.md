@@ -112,8 +112,9 @@ When this source is used with `on_demand = true`, live777 waits at least
 pulls that may spend the WHEP HTTP request timeout before delivering media.
 
 The outgoing WHEP peer gathers ICE candidates using the server's own
-`[[ice_servers]]` configuration and binds the UDP sockets from
-`[webrtc] ice_udp_addrs` (no hardcoded STUN server).
+`[[ice_servers]]` configuration (empty by default — host candidates only,
+no hardcoded STUN server) and binds the UDP sockets from
+`[webrtc] ice_udp_addrs`.
 
 Chained on-demand pulls work one hop deep by default: this source's WHEP
 HTTP request waits up to `40000ms` for the answer, covering an upstream
@@ -148,11 +149,37 @@ provisioned-stream reset) is re-established with exponential backoff
 (5s doubling, 60s cap) — the same pacing bounds the on-demand source
 restarts, at roughly one attempt per minute.
 
+### Static RTSP push (RTSP target)
+
+A stream can also be pushed to an RTSP server as a client
+(`ANNOUNCE`/`SETUP`/`RECORD`) — mediamtx, another live777's RTSP server
+(see below), or gst-rtsp-server. It is the mirror of the `rtsp://` source:
+build with the `target-rtsp` feature and add an `rtsp://` target to a
+provisioned stream:
+
+```toml
+[[stream.cam1.targets]]
+url = "rtsp://mediamtx:8554/cam1"
+# With Digest/Basic auth and TCP interleaved transport (UDP by default):
+# url = "rtsp://admin:secret@mediamtx:8554/cam1?transport=tcp"
+```
+
+The lifecycle matches the WHIP target: the session is established when the
+stream gains a publisher, torn down when the publisher goes away (TEARDOWN
+for UDP, connection close for TCP, so the server releases the published
+path immediately), and re-established with exponential backoff after a
+failure; a target on an `on_demand` stream acts as standing demand. Only
+the first video and the first audio track are announced; video is
+re-packetized with SPS/PPS inlined ahead of every IDR, and keyframe
+requests coming back from the server (e.g. a puller's PLI relayed by
+mediamtx) reach the publisher. `whip://`, `rtp://` and `rtsp://` targets
+mix freely on one stream.
+
 ## DataChannel Forward
 
-> NOTE: About `createDataChannel()`
-> 1. Live777 Don't support `label`, `createDataChannel(label)` this `label` is not used
-> 2. Live777 Don't support `negotiated`, `{ id: 42, negotiated: true }` this don't support
+See [Cable (DataChannel forwarding)](./cable) for the full reference:
+declared per-label message pipes (`[[stream.<name>.cables]]`), server-created
+channels with parameters, and cable <-> UDP bridges.
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 
@@ -257,3 +284,55 @@ Notes:
   already debounce via `on_demand_close_after_ms`.
 - No hooks fire on server shutdown (no `stream-deleted` events are emitted
   then).
+
+## Source change hooks
+
+`on_source_changed` hooks fire when a source's parameter set is changed
+through the admin tier API, `POST /api/sources/{stream}/tier` — a tier is
+a named preset of source parameters (see
+[Bitrate telemetry & quality tiers](./livehal#bitrate-telemetry--quality-tiers)),
+so applying one changes the source. Unlike the lifecycle hooks above,
+they run **synchronously inside the apply**, before the tier's
+capture+encoder re-provisioning — they never go through the FIFO hook
+queue.
+
+This is where hardware that must match the new rung *before* the pipeline
+rebuild belongs: on platforms where framerate is a sensor-mode property the
+capture node cannot change (e.g. Rockchip V4L2 pipelines, `VIDIOC_S_PARM`
+unsupported on rkisp1), the script pokes the sensor's mode gear, then the
+rebuild streams into the already-correct hardware state.
+
+Execution contract:
+
+- Global `[hooks]` scripts first, then per-stream, in configured order —
+  all awaited before the re-provisioning. Rapid tier applies are
+  serialized, so a script cannot interleave with another tier's rebuild.
+- A failing script aborts the tier apply when `on_error = "stop"`, before
+  the pipeline is touched (the API call fails).
+- When the apply does not reach the target state — aborted, or the
+  pipeline rebuild failed and rolled back — the scripts run **again** with
+  the source's *current* state, so hardware they switched is switched
+  back. This compensation run is best effort (failures are only logged).
+- Make scripts idempotent: "bring the hardware in line with the given
+  values" is the whole contract, and the same script serves both runs.
+
+Metadata (argv is `<stream> <tier>`; there is no `LIVE777_EVENT` — the
+hook only ever fires for this one event):
+
+| argv / env               | value                                                                       |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `$1` / `LIVE777_STREAM`  | stream name                                                                 |
+| `$2` / `LIVE777_SOURCE_TIER` | tier name (empty when the source runs its configured base profile)      |
+| `LIVE777_SOURCE_WIDTH`   | pre-apply run: declared tier capture width (empty when inheriting base); compensation run: the pipeline's actual current width |
+| `LIVE777_SOURCE_HEIGHT`  | declared tier capture height / actual current height                        |
+| `LIVE777_SOURCE_FPS`     | declared tier capture framerate / actual current framerate                  |
+| `LIVE777_SOURCE_BITRATE` | tier bitrate in bits/s / actual current bitrate                             |
+
+```toml
+[stream.cam.hooks]
+# Switch the sensor mode gear ahead of the pipeline rebuild; on a failed
+# apply the same script runs again with the restored state and switches
+# the gear back.
+on_source_changed = ["/etc/live777/hooks/sensor-gear.sh"]
+```
+

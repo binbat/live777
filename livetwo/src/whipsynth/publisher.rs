@@ -90,6 +90,7 @@ impl Publisher {
             PublishPeerOptions {
                 ice_servers: self.config.ice_servers.clone(),
                 extra_video_codecs,
+                cable: None,
             },
         )
         .await?;

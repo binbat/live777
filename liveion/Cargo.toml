@@ -78,14 +78,24 @@ recorder = [
 ]
 
 rtsp = ["dep:rtsp", "rtsp/server", "source", "dep:livetwo"]
+
 source = ["dep:rtsp", "dep:url", "dep:livetwo"]
-source-sdp = ["source"]
+source-sdp = ["source", "livetwo/multicast"]
 source-rtsp = ["source", "rtsp/client"]
 source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 
+# Static output targets: base feature shared by all target-* kinds (the
+# `targets` stream config, supervisor dispatch, virtual-subscriber ids).
+# Enables no target kind on its own — every configured scheme needs its
+# target-* feature, mirroring how `source` relates to the source-* kinds.
+target = []
 # Static WHIP push targets (declarative cascade-push)
-target-whip = ["cascade"]
+target-whip = ["target", "cascade"]
+# Static RTP/UDP multicast (or unicast) output targets
+target-rtp = ["target", "dep:livetwo", "livetwo/multicast"]
+# Static RTSP client-push output targets (ANNOUNCE/SETUP/RECORD)
+target-rtsp = ["target", "dep:livetwo", "rtsp/client", "dep:url"]
 
 native-source = ["source", "dep:livehal"]
 
@@ -109,3 +119,5 @@ native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
 [dev-dependencies]
 tempfile = "3.26"
 toml = "1.0"
+socket2 = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

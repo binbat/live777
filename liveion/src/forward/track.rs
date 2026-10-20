@@ -20,14 +20,6 @@ use tracing::{debug, info, trace, warn};
     feature = "rtsp",
     feature = "native-source"
 ))]
-use base64::Engine;
-#[cfg(any(
-    feature = "source-rtsp",
-    feature = "source-sdp",
-    feature = "source-whep",
-    feature = "rtsp",
-    feature = "native-source"
-))]
 use livetwo::payload::{Forward, RePayload, RePayloadCodec};
 #[cfg(any(
     feature = "source-rtsp",
@@ -54,7 +46,7 @@ use webrtc::media_stream::track_remote::TrackRemote;
 
 #[cfg(feature = "source")]
 use std::sync::atomic::AtomicU32;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "target-rtp"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::internal::{PUBLISH_CONNECTED_TIMEOUT, wait_for_peer_connected};
@@ -617,7 +609,7 @@ impl PublishTrackRemote {
         }
     }
 
-    #[cfg(feature = "rtsp")]
+    #[cfg(any(feature = "rtsp", feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) async fn source_ssrc(&self) -> u32 {
         match self {
             Self::Real { track, .. } => track.ssrcs().await.first().copied().unwrap_or(0),
@@ -847,37 +839,13 @@ impl VirtualPublishTrack {
                     return Box::<Forward>::default() as Box<dyn RePayload + Send>;
                 }
 
-                let mut rp = RePayloadCodec::new(mime.clone());
                 // Pre-load SPS/PPS (H264) or VPS/SPS/PPS (H265)
                 // from codec params so the repayloader can
                 // inject them before IDR frames.
-                use crate::forward::codec_compat::fmtp_param_case_preserving;
-                let fmtp = &self.codec_params.rtp_codec.sdp_fmtp_line;
-                let b64 = base64::engine::general_purpose::STANDARD;
-                if mime.eq_ignore_ascii_case("video/H264") {
-                    if let Some(sprop) = fmtp_param_case_preserving(fmtp, "sprop-parameter-sets") {
-                        let parts: Vec<&str> = sprop.split(',').collect();
-                        if parts.len() >= 2
-                            && let (Ok(sps), Ok(pps)) =
-                                (b64.decode(parts[0].trim()), b64.decode(parts[1].trim()))
-                        {
-                            rp.set_h264_params(sps, pps);
-                        }
-                    }
-                } else if mime.eq_ignore_ascii_case("video/H265") {
-                    let vps = fmtp_param_case_preserving(fmtp, "sprop-vps");
-                    let sps = fmtp_param_case_preserving(fmtp, "sprop-sps");
-                    let pps = fmtp_param_case_preserving(fmtp, "sprop-pps");
-                    if let (Some(vps), Some(sps), Some(pps)) = (vps, sps, pps)
-                        && let (Ok(vps), Ok(sps), Ok(pps)) = (
-                            b64.decode(vps.trim()),
-                            b64.decode(sps.trim()),
-                            b64.decode(pps.trim()),
-                        )
-                    {
-                        rp.set_h265_params(vps, sps, pps);
-                    }
-                }
+                let rp = RePayloadCodec::with_sprop_params(
+                    mime,
+                    &self.codec_params.rtp_codec.sdp_fmtp_line,
+                );
                 Box::new(rp) as Box<dyn RePayload + Send>
             });
             rp.payload(&packet_mut)
@@ -983,8 +951,8 @@ impl VirtualPublishTrack {
     }
 }
 
-#[cfg(feature = "source")]
-fn system_time_to_ntp(time: SystemTime) -> u64 {
+#[cfg(any(feature = "source", feature = "target-rtp"))]
+pub(crate) fn system_time_to_ntp(time: SystemTime) -> u64 {
     const UNIX_TO_NTP_EPOCH: u64 = 2_208_988_800;
 
     let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();

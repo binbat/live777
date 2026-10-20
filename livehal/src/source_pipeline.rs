@@ -358,6 +358,8 @@ fn build_ffi_config(
             fps: params.fps,
             pixel_format: params.capture_pixel_format,
             prefer_dmabuf: params.capture_prefer_dmabuf,
+            hflip: params.capture_hflip,
+            vflip: params.capture_vflip,
         },
         encoder: EncoderConfigFFI {
             backend: enc_backend.as_ptr(),
@@ -371,6 +373,7 @@ fn build_ffi_config(
             level_idc: params.level_idc,
             tier_flag: params.tier_flag,
             gop: params.gop,
+            bitrate_mode: params.bitrate_mode,
             prefer_dmabuf: params.encoder_prefer_dmabuf,
         },
         payload_type: params.payload_type,

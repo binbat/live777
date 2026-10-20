@@ -1,0 +1,77 @@
+# livenil sample: edge cameras + cloud SFU cascade topology.
+#
+#   camera-0 ──WHIP──▶ edge0 ─╮
+#   camera-1 ──WHIP──▶ edge1 ─┤        ┌── first viewer ──▶ edge (direct)
+#                             ├─liveman┤
+#   WHEP clients ◀────────────┘        └── viewer 2..N ───▶ cloud (cascade)
+#
+# Two edge liveion nodes simulate cameras (one provisioned stream each, at
+# most one WHEP subscriber per stream — the `[[node_rules]]` entry below
+# caps every `edge*` node at sub_max = 1). One cloud liveion node acts as
+# the central SFU. Clients only ever talk to liveman:
+#
+#   * First WHEP client of a stream -> proxied to the edge node directly.
+#   * Second and later WHEP clients -> the edge is full (sub_max = 1),
+#     so liveman cascades the stream to the cloud node (pull mode: the cloud
+#     WHEP-pulls from the edge) and proxies the new client there. Once the
+#     cascade is verified, close_other_sub kicks the direct subscriber off
+#     the edge; its player reconnects and lands on the cloud like everyone
+#     else.
+#   * The edge never carries more than one outbound copy of its stream,
+#     saving edge uplink bandwidth.
+#   * After the last cloud subscriber leaves, the reaper drops the cascade
+#     intent and the cloud destroys the leftover stream (auto_delete_whep),
+#     which ends the pull and returns the edge to zero outbound copies; the
+#     next client goes direct to the edge again.
+#
+# Run:
+#   just run-edge-cloud
+#   (or: cargo run --bin=livenil --features=webui,cascade,source-whep -- -c conf/livenil/edge-cloud)
+#
+# Publish a camera, pinned to its edge node so the stream can never land on
+# the cloud directly:
+#   whipinto ... http://127.0.0.1:8890/api/whip/edge0/cam0
+#   whipinto ... http://127.0.0.1:8890/api/whip/edge1/cam1
+# Watch (as many viewers as you like, same URL):
+#   http://127.0.0.1:8890/whep/cam0
+# Dashboard: http://127.0.0.1:8890/ (nodes edge0/edge1/cloud)
+#
+# Instead of the dynamic cascade, you can also pin a permanent WHEP source on
+# the cloud through liveman's source-management proxy:
+#   curl -X POST http://127.0.0.1:8890/api/sources/cloud/cam0 \
+#        -H 'Content-Type: application/json' \
+#        -d '{"url": "whep://127.0.0.1:7780/whep/cam0"}'
+#   curl http://127.0.0.1:8890/api/sources/cloud
+#   curl -X DELETE http://127.0.0.1:8890/api/sources/cloud/cam0
+
+[http]
+listen = "127.0.0.1:8890"
+
+# Subscriber capacity per stream per node, owned by liveman as a routing
+# policy (liveion itself does not enforce it). The glob rule below caps every
+# node whose alias starts with "edge" at one direct viewer; livenil resolves
+# it onto the in-process nodes by alias, so no per-node [[nodes]] entries are
+# needed. The cloud node matches nothing: unlimited subscribers.
+[[node_rules]]
+pattern = "edge*"
+sub_max = 1
+
+[cascade]
+# After the cascade session is verified on the cloud node, delete the
+# non-cascade subscribers on the edge node (the first direct viewer), so the
+# edge goes back to a single outbound copy of the stream. liveman spares the
+# hop itself: in push mode the edge marks its own outgoing push session, in
+# pull mode liveman learns the hop's edge-side session id from the cloud
+# node's cascade.session_url.
+close_other_sub = true
+# "pull": the cloud WHEP-pulls the stream from the edge directly — the
+# camera-facing semantics this sample demonstrates. "push" (the default)
+# instead has the edge WHIP-push to the cloud through liveman's node-pinned
+# endpoint, which is the better choice when the edge is behind NAT and the
+# cloud cannot reach it.
+mode = "pull"
+# How long a cascaded stream may sit without viewers before the cascade is
+# torn down, and how often liveman checks (defaults: 60s/60s). Shorter here
+# so the demo falls back to a direct edge connection sooner.
+maximum_idle_time = 30000
+check_tick_time = 10000

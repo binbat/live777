@@ -103,7 +103,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     // integrity gate in capture_loop()).
     ConsecutiveBadWindow bad_window_;
     std::vector<Buffer> buffers;
-    std::vector<uint8_t> yuv420_buf;
+    std::vector<uint8_t> nv12_buf;
     std::thread capture_thread;
 
     // [latency] "capture" stage: driver timestamp (SOF) → DQBUF in userspace.
@@ -131,7 +131,7 @@ struct V4L2CaptureImpl : public CaptureBackend {
     bool select_format(uint32_t caps, RawPixelFormat requested, std::string* err);
     bool supports_format(v4l2_buf_type type, uint32_t fourcc) const;
     bool queue_buffer(uint32_t index, std::string* err);
-    void yuyv_to_yuv420p(const uint8_t* src, uint32_t src_stride);
+    void yuyv_to_nv12(const uint8_t* src, uint32_t src_stride);
     bool make_frame(uint32_t index, const v4l2_buffer& buf,
                     const v4l2_plane* dequeued_planes, RawFrame* frame,
                     std::string* err);
@@ -157,12 +157,12 @@ bool V4L2CaptureImpl::supports_format(v4l2_buf_type type, uint32_t fourcc) const
 }
 
 // Maps the negotiated V4L2 fourcc to the RawPixelFormat that make_frame()
-// actually emits.  YUYV is converted to YUV420P; everything else keeps its
+// actually emits.  YUYV is converted to NV12; everything else keeps its
 // native layout.
 RawPixelFormat V4L2CaptureImpl::outputFormat() const {
     switch (pixel_format) {
     case V4L2_PIX_FMT_YUYV:
-        return RawPixelFormat::Yuv420p;
+        return RawPixelFormat::Nv12;
     case V4L2_PIX_FMT_NV12:
     case V4L2_PIX_FMT_NV12M:
         return RawPixelFormat::Nv12;
@@ -212,10 +212,9 @@ bool V4L2CaptureImpl::select_format(
     return false;
 }
 
-void V4L2CaptureImpl::yuyv_to_yuv420p(const uint8_t* src, uint32_t src_stride) {
-    uint8_t* y_plane = yuv420_buf.data();
-    uint8_t* u_plane = y_plane + static_cast<size_t>(width) * height;
-    uint8_t* v_plane = u_plane + static_cast<size_t>(width) * height / 4;
+void V4L2CaptureImpl::yuyv_to_nv12(const uint8_t* src, uint32_t src_stride) {
+    uint8_t* y_plane = nv12_buf.data();
+    uint8_t* uv_plane = y_plane + static_cast<size_t>(width) * height;
 
     for (uint32_t row = 0; row < height; ++row) {
         const uint8_t* row_src = src + static_cast<size_t>(row) * src_stride;
@@ -228,9 +227,9 @@ void V4L2CaptureImpl::yuyv_to_yuv420p(const uint8_t* src, uint32_t src_stride) {
             }
             if ((row & 1U) == 0 && col + 1 < width) {
                 const size_t chroma_offset =
-                    static_cast<size_t>(row / 2) * (width / 2) + col / 2;
-                u_plane[chroma_offset] = row_src[source_offset + 1];
-                v_plane[chroma_offset] = row_src[source_offset + 3];
+                    static_cast<size_t>(row / 2) * width + col;
+                uv_plane[chroma_offset] = row_src[source_offset + 1];
+                uv_plane[chroma_offset + 1] = row_src[source_offset + 3];
             }
         }
     }
@@ -295,12 +294,16 @@ bool V4L2CaptureImpl::make_frame(
         }
         const auto* source =
             static_cast<const uint8_t*>(mapped.planes[0].start) + data_offset(0);
-        yuyv_to_yuv420p(source, stride);
-        frame->format = RawPixelFormat::Yuv420p;
-        frame->plane_count = 1;
+        yuyv_to_nv12(source, stride);
+        const size_t y_bytes = static_cast<size_t>(width) * height;
+        frame->format = RawPixelFormat::Nv12;
+        frame->plane_count = 2;
         frame->planes[0] = {
-            yuv420_buf.data(), width,
-            static_cast<uint32_t>(yuv420_buf.size()), -1, 0};
+            nv12_buf.data(), width, static_cast<uint32_t>(y_bytes), -1, 0};
+        frame->planes[1] = {
+            nv12_buf.data() + y_bytes, width,
+            static_cast<uint32_t>(y_bytes / 2), -1,
+            static_cast<uint32_t>(y_bytes)};
         return true;
     }
 
@@ -723,7 +726,7 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
             memory_plane_count);
 
     if (pixel_format == V4L2_PIX_FMT_YUYV) {
-        yuv420_buf.resize(static_cast<size_t>(width) * height * 3 / 2);
+        nv12_buf.resize(static_cast<size_t>(width) * height * 3 / 2);
     }
 
     v4l2_requestbuffers req{};

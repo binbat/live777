@@ -159,6 +159,11 @@ impl StreamSource for NativeSource {
     }
 
     #[cfg(feature = "source")]
+    fn active_tier_state(&self) -> Option<super::tier::ActiveTierState> {
+        Some(self.inner.active_tier_state())
+    }
+
+    #[cfg(feature = "source")]
     async fn apply_tier(&mut self, tier: &super::tier::QualityTier) -> bool {
         // Bitrate-only rung: seamless in-place retune, no rebuild.
         if !tier.needs_rebuild() {

@@ -157,8 +157,14 @@ export function getSources() {
     return w.url('/api/sources').get().json<{ sources: SourceListEntry[] }>();
 }
 
-const sourceBitrateUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/bitrate`;
-const sourceTierUrl = (streamId: string) => `/api/sources/${encodeURIComponent(streamId)}/tier`;
+// On liveman the same source routes are proxied one level deeper, pinned
+// to a node: /api/sources/{alias}/{stream}/...
+const sourceBaseUrl = (streamId: string, nodeAlias?: string) =>
+    nodeAlias
+        ? `/api/sources/${encodeURIComponent(nodeAlias)}/${encodeURIComponent(streamId)}`
+        : `/api/sources/${encodeURIComponent(streamId)}`;
+const sourceBitrateUrl = (streamId: string, nodeAlias?: string) => `${sourceBaseUrl(streamId, nodeAlias)}/bitrate`;
+const sourceTierUrl = (streamId: string, nodeAlias?: string) => `${sourceBaseUrl(streamId, nodeAlias)}/tier`;
 
 export type SourceBitrateMode = 'adaptive' | 'fixed';
 
@@ -169,8 +175,8 @@ export interface SourceBitrateStatus {
     adaptive: boolean;
 }
 
-export function getSourceBitrate(streamId: string) {
-    return w.url(sourceBitrateUrl(streamId)).get().json<SourceBitrateStatus>();
+export function getSourceBitrate(streamId: string, nodeAlias?: string) {
+    return w.url(sourceBitrateUrl(streamId, nodeAlias)).get().json<SourceBitrateStatus>();
 }
 
 export interface SourceTier {
@@ -194,12 +200,12 @@ export interface ApplySourceTierResult {
     rebuilt: boolean;
 }
 
-export function getSourceTier(streamId: string) {
-    return w.url(sourceTierUrl(streamId)).get().json<SourceTierStatus>();
+export function getSourceTier(streamId: string, nodeAlias?: string) {
+    return w.url(sourceTierUrl(streamId, nodeAlias)).get().json<SourceTierStatus>();
 }
 
-export function applySourceTier(streamId: string, tier: string) {
-    return w.url(sourceTierUrl(streamId)).post({ tier }).json<ApplySourceTierResult>();
+export function applySourceTier(streamId: string, tier: string, nodeAlias?: string) {
+    return w.url(sourceTierUrl(streamId, nodeAlias)).post({ tier }).json<ApplySourceTierResult>();
 }
 
 export interface ServerInfo {

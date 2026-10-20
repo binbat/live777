@@ -293,6 +293,7 @@ impl WhepSource {
                 ice_udp_addrs: ctx.net.ice_udp_addrs.clone(),
                 // Pure pull: no need to join the upstream's WHEP control group.
                 control_channel: false,
+                cable_label: String::new(),
             },
             None,
             None,
@@ -875,6 +876,8 @@ mod tests {
             config: InternalSourceConfig {
                 stream_id: "test".to_string(),
                 url: String::new(),
+                #[cfg(feature = "source-sdp")]
+                multicast_interface: None,
             },
             net: SourceNetConfig::default(),
             rtp_tx,

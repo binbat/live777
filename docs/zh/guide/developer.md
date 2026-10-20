@@ -53,7 +53,10 @@ Live777 支持以下 Cargo feature 来定制构建：
 | `source-sdp` | liveion   | 通过 SDP 拉取源                          |
 | `source-rtsp`| liveion   | 通过 RTSP 拉取源                         |
 | `source-whep`| liveion   | 通过 WHEP 拉取源（静态 cascade-pull）    |
+| `target`     | liveion   | 所有 `target-*` 共用的基础 feature（自身不启用任何目标类型） |
 | `target-whip`| liveion   | 通过 WHIP 推送目标（静态 cascade-push）  |
+| `target-rtp` | liveion   | 以纯 RTP/UDP 发送目标（组播发送端）      |
+| `target-rtsp`| liveion   | 通过 RTSP 推送目标（ANNOUNCE/RECORD 客户端） |
 | `net4mqtt`   | liveion   | 启用 MQTT 隧道代理                       |
 
 构建时启用特性：
@@ -129,6 +132,25 @@ cargo run --bin=liveman -- -c conf/liveman.toml
 ```bash
 cargo run --bin=livenil -- -c conf/livenil
 ```
+
+#### 边缘-云端级联演示 {#livenil-edge-cloud}
+
+`conf/livenil/edge-cloud/` 是一个预制拓扑：两个边缘节点模拟摄像头
+（各预置一路流，通过 liveman 的 `[[node_rules]]` glob 规则——
+`pattern = "edge*"`、`sub_max = 1`——限制只允许一个直连观众），
+一个云端节点作为中心 SFU，全部由一个 liveman 管理：
+
+```bash
+just run-edge-cloud
+```
+
+摄像头推流时钉到各自的边缘节点，观众都连接 liveman
+（`http://127.0.0.1:8890/whep/cam0`）。每路流的第一个观众会被直接代理到
+边缘节点；第二个观众到来时边缘已满，liveman 会把流级联到云端节点
+（pull 模式：云端主动向边缘 WHEP 拉流），并踢掉边缘上的直连观众
+（`close_other_sub = true`），其播放器重连后落到云端。边缘始终只向外
+发送一路流，节省边缘上行带宽。完整流程见 `conf/livenil/edge-cloud/`
+里的注释。
 
 ### whipinto && whepfrom
 

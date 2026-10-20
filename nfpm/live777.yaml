@@ -1,4 +1,4 @@
-name: "live777"
+name: "${NFPM_NAME}"
 arch: "${NFPM_ARCH}"
 platform: "linux"
 version: "${NFPM_VERSION}"

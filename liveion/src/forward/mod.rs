@@ -37,8 +37,6 @@ use webrtc::peer_connection::{
 #[cfg(feature = "cascade")]
 use libwish::Client;
 
-#[cfg(feature = "source")]
-use crate::config::ChannelConfig;
 use crate::forward::internal::PeerForwardInternal;
 use crate::forward::message::{ForwardInfo, Layer};
 use crate::result::Result;
@@ -80,7 +78,7 @@ pub(crate) mod av1_assembler;
     feature = "source-whep"
 ))]
 pub(crate) mod av1_repacketizer;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "target"))]
 pub(crate) mod channel;
 pub(crate) mod codec_compat;
 mod internal;
@@ -93,8 +91,7 @@ mod subscribe;
 #[cfg(feature = "source")]
 pub(crate) mod subscribe_quality;
 
-#[cfg(not(feature = "source"))]
-mod track;
+pub(crate) mod track;
 
 const ANSWER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const ANSWER_ICE_CANDIDATE_POLL_INTERVAL: std::time::Duration =
@@ -108,9 +105,6 @@ pub(crate) const VIRTUAL_SOURCE_SESSION: &str = "virtual-source";
 
 #[cfg(feature = "source")]
 pub mod bridge;
-
-#[cfg(feature = "source")]
-pub mod track;
 
 #[derive(Clone)]
 pub struct PeerForward {
@@ -166,12 +160,12 @@ pub struct VideoTrackInfo {
 }
 
 impl PeerForward {
-    pub fn new(
+    pub(crate) fn new(
         stream: impl ToString,
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
         ice_lite: bool,
-        #[cfg(feature = "source")] channel: Option<ChannelConfig>,
+        cables: Arc<crate::stream::cable::CableHub>,
         strategy: api::strategy::Strategy,
         lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
@@ -183,16 +177,16 @@ impl PeerForward {
                 ice_server,
                 ice_udp_addrs,
                 ice_lite,
-                #[cfg(feature = "source")]
-                channel,
+                cables,
                 strategy,
                 lifecycle_sender,
             )),
         }
     }
-    #[cfg(feature = "source")]
-    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
-        self.internal.try_init_udp_channel().await
+
+    /// This stream's cable hub (buses, declared cables, UDP bridges).
+    pub(crate) fn cables(&self) -> Arc<crate::stream::cable::CableHub> {
+        self.internal.cables.clone()
     }
 
     pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
@@ -255,9 +249,34 @@ impl PeerForward {
 
     /// Sample this stream's media counters; see
     /// [`PeerForwardInternal::sample_stats`]. Returns the byte deltas since
-    /// the previous sample.
-    pub(crate) async fn sample_stats(&self) -> stats::ByteDeltas {
+    /// the previous sample plus the live session counts.
+    pub(crate) async fn sample_stats(&self) -> stats::StreamSample {
         self.internal.sample_stats().await
+    }
+
+    /// Register a direct-tap consumer's media counter (its virtual
+    /// subscriber id); see [`PeerForwardInternal::add_tap_stats`].
+    #[cfg_attr(
+        not(any(feature = "target-rtp", feature = "target-rtsp")),
+        allow(dead_code)
+    )]
+    pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<stats::MediaStats>) {
+        self.internal.add_tap_stats(id, stats);
+    }
+
+    /// Detach a direct-tap consumer, folding its un-sampled tail; see
+    /// [`PeerForwardInternal::remove_tap_stats`].
+    #[cfg_attr(
+        not(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn remove_tap_stats(&self, id: &str) {
+        self.internal.remove_tap_stats(id).await;
     }
 
     pub(crate) fn strategy(&self) -> &api::strategy::Strategy {
@@ -328,7 +347,9 @@ impl PeerForward {
 
         // mediamtx-style override: the new publish displaces the incumbent
         // (`strategy.override_publisher`), unless the incumbent is a cascade
-        // pull or the stream opted out — those still conflict.
+        // pull — that always conflicts. An incumbent that is already
+        // disconnecting/failing is displaced even when the stream opted out,
+        // so a fast reconnect does not bounce off the zombie with a 409.
         self.internal.replace_publish().await?;
 
         offer.sdp = strip_unusable_remote_ice_candidates(&offer.sdp);
@@ -346,7 +367,7 @@ impl PeerForward {
         self.internal.set_twcc_ext_id(twcc_ext_id);
 
         let (peer, gather_complete, connection_state_rx) =
-            self.new_publish_peer(media_info).await?;
+            self.new_publish_peer(media_info.clone()).await?;
 
         // From here on the peer is not yet registered as a session, so any
         // failure must close it explicitly — nothing else will clean it up.
@@ -362,6 +383,17 @@ impl PeerForward {
                 .set_publish(peer.clone(), None, connection_state_rx)
                 .await?;
 
+            // Server-side cable channels are created on the session's first
+            // inbound channel (see create_server_cables). A peer without an
+            // m=application section can never carry them — surface that.
+            if !media_info.has_data_channel && self.internal.has_server_cables() {
+                tracing::warn!(
+                    "[{}] cables are declared but the peer offered no datachannel section; \
+                     server-created cables skipped",
+                    self.stream
+                );
+            }
+
             Ok((description, session))
         }
         .await;
@@ -371,24 +403,35 @@ impl PeerForward {
         result
     }
 
+    /// Ensure the publish slot is free for a cascade pull: a dead
+    /// cascade-pull incumbent (its hop lost the network) is replaced instead
+    /// of fought — liveman's supervisor re-issues the pull, and replacing
+    /// keeps subscribers attached via the media-generation machinery. A live
+    /// incumbent is supervised and would fight its way back, so anything
+    /// else publishing is a hard conflict.
+    #[cfg(feature = "cascade")]
+    async fn ensure_publish_slot_for_pull(&self) -> Result<()> {
+        self.internal.replace_dead_cascade_pull_incumbent().await?;
+        if self.internal.publish_is_some().await {
+            return Err(AppError::stream_already_exists(
+                "A connection has already been established",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "cascade")]
     pub async fn publish_pull(&self, src: String, token: Option<String>) -> Result<()> {
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        // Fast path before taking the lock.
+        self.ensure_publish_slot_for_pull().await?;
 
-        // Held for the whole handshake, as in `set_publish`. A cascade pull
-        // never displaces an incumbent: it is supervised and would fight its
-        // way back, so any existing publisher is a hard conflict.
+        // Held for the whole handshake, as in `set_publish`. The only
+        // displacement a cascade pull performs is replacing a *dead*
+        // cascade-pull incumbent (see above); anything else publishing is a
+        // hard conflict.
         let _publish_guard = self.publish_lock.lock().await;
 
-        if self.internal.publish_is_some().await {
-            return Err(AppError::stream_already_exists(
-                "A connection has already been established",
-            ));
-        }
+        self.ensure_publish_slot_for_pull().await?;
 
         let media_info = MediaInfo {
             _codec: vec![],
@@ -550,9 +593,72 @@ impl PeerForward {
         None
     }
 
-    #[cfg(any(feature = "recorder", feature = "rtsp"))]
+    #[cfg(any(
+        feature = "recorder",
+        feature = "rtsp",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub fn subscribe_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.internal.subscribe_publish_tracks_change()
+    }
+
+    /// Snapshot of the current publish tracks (clone), for media taps that
+    /// need per-track codec/subscribe handles (e.g. the RTP multicast
+    /// target).
+    #[cfg(any(feature = "target-rtp", feature = "target-rtsp"))]
+    pub(crate) async fn publish_tracks(&self) -> Vec<track::PublishTrackRemote> {
+        self.internal.publish_tracks.read().await.clone()
+    }
+
+    /// Wait until the forward has every publish track the current publisher
+    /// negotiated, then return the full set. `PublishStarted` fires when the
+    /// session is negotiated; the tracks arrive afterwards, one `on_track`
+    /// each, so snapshotting the first non-empty set would race an AV
+    /// publisher into a partial send (video-only when the video track lands
+    /// first). The expected counts come from the publish session's
+    /// negotiated media info. Virtual publishers (source bridges, RTSP
+    /// pushes) carry no session media info — their tracks are added before
+    /// a media tap can observe them — so a non-empty snapshot is accepted
+    /// for them.
+    ///
+    /// The change notification is subscribed before the first snapshot so a
+    /// track added in between is still observed. The bus does not replay:
+    /// media that became available before the caller started is only
+    /// visible through the snapshot.
+    #[cfg(any(feature = "target-rtp", feature = "target-rtsp"))]
+    pub(crate) async fn wait_for_publish_tracks(
+        &self,
+    ) -> anyhow::Result<Vec<track::PublishTrackRemote>> {
+        let mut rx = self.subscribe_tracks_change();
+
+        loop {
+            let (expected_video, expected_audio) = self
+                .internal
+                .negotiated_publish_track_counts()
+                .await
+                .unwrap_or((0, 0));
+
+            let tracks = self.publish_tracks().await;
+            let video = tracks
+                .iter()
+                .filter(|t| t.kind() == RtpCodecKind::Video)
+                .count();
+            let audio = tracks
+                .iter()
+                .filter(|t| t.kind() == RtpCodecKind::Audio)
+                .count();
+            if !tracks.is_empty() && video >= expected_video && audio >= expected_audio {
+                return Ok(tracks);
+            }
+
+            tokio::select! {
+                _ = rx.recv() => continue,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                    anyhow::bail!("Timeout waiting for publish tracks");
+                }
+            }
+        }
     }
 
     #[cfg(feature = "recorder")]
@@ -562,7 +668,7 @@ impl PeerForward {
         self.internal.first_video_track().await
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "recorder", feature = "target-rtp", feature = "target-rtsp"))]
     pub async fn send_rtcp_to_publish(&self, message: rtcp::RtcpMessage, ssrc: u32) -> Result<()> {
         self.internal.send_rtcp_to_publish(message, ssrc).await
     }
@@ -656,6 +762,7 @@ impl PeerForward {
             let mut sdp = sdp;
             sdp.sdp = self.inject_publisher_sprop(&sdp.sdp).await;
 
+            let has_data_channel = media_info.has_data_channel;
             let session = self
                 .internal
                 .add_subscribe(
@@ -666,6 +773,18 @@ impl PeerForward {
                     session_id,
                 )
                 .await?;
+
+            // Server-side cable channels are created on the session's first
+            // inbound channel (see create_server_cables). A peer without an
+            // m=application section can never carry them — surface that.
+            if !has_data_channel && self.internal.has_server_cables() {
+                tracing::warn!(
+                    "[{}] cables are declared but the peer offered no datachannel section; \
+                     server-created cables skipped",
+                    self.stream
+                );
+            }
+
             Ok((sdp, session))
         }
         .await;
@@ -724,13 +843,19 @@ impl PeerForward {
                 .await?;
             // Propagate a bad answer instead of reporting an established
             // session that cannot carry media: the error path closes the
-            // peer, and the session cleanup above removes it again.
+            // peer and removes the registered session directly.
             peer.set_remote_description(target_sdp).await?;
             Ok(session_id)
         }
         .await;
         if result.is_err() {
             let _ = peer.close().await;
+            // close() does not reliably surface the Closed event (the driver
+            // task is aborted first), so a session registered above would
+            // linger as a New-state zombie, leaking REFORWARD capacity and
+            // pinning the stream. Remove it directly; idempotent when
+            // registration never happened or cleanup already ran.
+            let _ = self.internal.remove_subscribe(peer.clone()).await;
         }
         result
     }
@@ -1126,6 +1251,8 @@ mod test {
         RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
     };
     use sdp::extmap::TRANSPORT_CC_URI;
+    use std::sync::Arc;
+    use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
     use webrtc::peer_connection::{
         MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -1137,6 +1264,19 @@ mod test {
 
     #[async_trait::async_trait]
     impl PeerConnectionEventHandler for TestPeerHandler {}
+
+    /// Captures inbound (server-created) data channels.
+    #[derive(Clone)]
+    struct ChannelCapturingHandler {
+        tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn DataChannel>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeerConnectionEventHandler for ChannelCapturingHandler {
+        async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+            let _ = self.tx.send(dc);
+        }
+    }
 
     #[test]
     fn test_parse_ice_candidate() -> crate::result::Result<()> {
@@ -1198,6 +1338,138 @@ a=end-of-candidates";
         assert!(!sdp_has_ice_candidate("v=0\na=end-of-candidates\n"));
     }
 
+    /// A declared cable with `create = true` makes the server create the
+    /// channel on the session's peer with the configured parameters: the
+    /// client receives it via `ondatachannel` and reads the parameters off
+    /// it. The client's own (carrier) channel negotiates the m=application
+    /// section, and its OPEN is what triggers the server-side creation.
+    #[tokio::test]
+    async fn server_created_cable_uses_configured_params() -> crate::result::Result<()> {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("rtc=debug,webrtc=debug,liveion=debug")
+            .with_test_writer()
+            .try_init();
+        let (dc_tx, mut dc_rx) = tokio::sync::mpsc::unbounded_channel();
+        let offer_peer: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(MediaEngine::default())
+                .with_handler(Arc::new(ChannelCapturingHandler { tx: dc_tx }))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        // The carrier channel: puts m=application into the offer, and its
+        // OPEN triggers the server-side cable creation. Keep it bound: a
+        // dropped channel's closed event slot gets re-announced to the
+        // handler on open (rtc facade quirk), polluting the capture below.
+        let _carrier = offer_peer.create_data_channel("carrier", None).await?;
+        let offer = offer_peer.create_offer(None).await?;
+        offer_peer.set_local_description(offer.clone()).await?;
+
+        let cable = crate::config::CableConfig {
+            ordered: Some(false),
+            max_retransmits: Some(0),
+            ..crate::config::CableConfig::new("control")
+        };
+        let forward = PeerForward::new(
+            "server-cable-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            std::sync::Arc::new(crate::stream::cable::CableHub::from_configs(&[cable])),
+            api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
+        );
+        let (answer, session) = forward.set_publish(offer).await?;
+        offer_peer.set_remote_description(answer).await?;
+
+        // Skip anything that is not the server-created cable (e.g. a
+        // re-announced local channel).
+        let dc = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let dc = dc_rx.recv().await.expect("channel capture closed");
+                if dc.label().await.unwrap_or_default() == "control" {
+                    break dc;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the server-created cable channel");
+        assert!(
+            !dc.ordered().await.unwrap(),
+            "configured ordered=false lost"
+        );
+        // Known limitation of the rtc accept path: the reliability parameter
+        // is not surfaced on the accepted side, even though it applies to the
+        // wire. Pinned here so an upstream fix turns this into a failure to
+        // revisit.
+        assert_eq!(dc.max_retransmits().await.unwrap(), None);
+
+        forward.remove_peer(session).await?;
+        offer_peer.close().await?;
+        Ok(())
+    }
+
+    /// The client's self-created channel whose label matches a server-created
+    /// cable is closed (the server-created channel wins; the client falls
+    /// back to it), while undeclared labels keep flowing on the default pair.
+    #[tokio::test]
+    async fn client_channel_matching_a_server_cable_is_closed() -> crate::result::Result<()> {
+        let (_dc_tx, mut dc_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<dyn DataChannel>>();
+        let offer_peer: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::<std::net::SocketAddr>::new()
+                .with_media_engine(MediaEngine::default())
+                .with_handler(Arc::new(ChannelCapturingHandler { tx: _dc_tx }))
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+                .build()
+                .await?,
+        );
+        // Same label as the declared server-created cable.
+        let client_dc = offer_peer.create_data_channel("control", None).await?;
+        let offer = offer_peer.create_offer(None).await?;
+        offer_peer.set_local_description(offer.clone()).await?;
+
+        let forward = PeerForward::new(
+            "cable-dedupe-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            std::sync::Arc::new(crate::stream::cable::CableHub::from_configs(&[
+                crate::config::CableConfig::new("control"),
+            ])),
+            api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
+        );
+        let (answer, session) = forward.set_publish(offer).await?;
+        offer_peer.set_remote_description(answer).await?;
+        let server_dc = tokio::time::timeout(std::time::Duration::from_secs(10), dc_rx.recv())
+            .await
+            .expect("timed out waiting for the server-created cable channel")
+            .expect("channel capture closed");
+        assert_eq!(server_dc.label().await.unwrap(), "control");
+
+        // ...and the client's own "control" channel gets closed by the server.
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match client_dc.poll().await {
+                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => break,
+                    _ => continue,
+                }
+            }
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "client's duplicate cable channel was not closed"
+        );
+
+        forward.remove_peer(session).await?;
+        offer_peer.close().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn whip_publish_answer_advertises_bwe_feedback_contract() -> crate::result::Result<()> {
         let mut media_engine = MediaEngine::default();
@@ -1248,8 +1520,7 @@ a=end-of-candidates";
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,
         );
@@ -1334,8 +1605,7 @@ a=end-of-candidates";
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             event_tx,
         );
@@ -1475,8 +1745,7 @@ a=end-of-candidates";
             vec![],
             vec![],
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,
         );
@@ -1495,7 +1764,7 @@ a=end-of-candidates";
             vec![],
             vec![],
             true,
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,
         );
@@ -1576,8 +1845,7 @@ a=end-of-candidates";
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             event_tx,
         );
@@ -1654,8 +1922,7 @@ a=end-of-candidates";
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             strategy,
             tokio::sync::broadcast::channel(4).0,
         );
@@ -1692,8 +1959,7 @@ a=end-of-candidates";
             vec![],
             api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,
         );
@@ -1733,6 +1999,65 @@ a=end-of-candidates";
 
         peer_a.close().await?;
         peer_b.close().await?;
+        Ok(())
+    }
+
+    /// Incumbents that are still establishing (New/Connecting) are never
+    /// replaced by a re-issued cascade pull — only Disconnected/Failed
+    /// cascade-pull incumbents are (the hop-death path is covered end-to-end
+    /// by tests/cascade_cluster.rs, where real peers reach Disconnected).
+    #[cfg(feature = "cascade")]
+    #[tokio::test]
+    async fn connecting_incumbents_are_not_replaced() -> crate::result::Result<()> {
+        let forward = PeerForward::new(
+            "cascade-connecting-incumbent-test",
+            vec![],
+            api::webrtc::resolve_webrtc_ice_udp_addrs(Some(vec!["127.0.0.1:0".to_owned()])),
+            true,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
+            api::strategy::Strategy::default(),
+            tokio::sync::broadcast::channel(4).0,
+        );
+
+        async fn register_incumbent(
+            forward: &PeerForward,
+            name: &str,
+            cascade: bool,
+        ) -> crate::result::Result<String> {
+            let (peer_a, offer_a) = new_offer_peer(name).await?;
+            let media_info =
+                super::media::MediaInfo::try_from(super::unmarshal_sdp(&offer_a.sdp)?)?;
+            let (peer, gather_complete, connection_state_rx) =
+                forward.new_publish_peer(media_info).await?;
+            let _description = super::peer_complete(offer_a, peer.clone(), gather_complete).await?;
+            let session = forward
+                .internal
+                .set_publish(
+                    peer.clone(),
+                    cascade.then_some(super::message::CascadeInfo {
+                        source_url: None,
+                        target_url: None,
+                        token: None,
+                        session_url: None,
+                    }),
+                    connection_state_rx,
+                )
+                .await;
+            peer_a.close().await?;
+            session
+        }
+
+        // The hand-registered pairs never get past establishing, so the
+        // incumbent is in New/Connecting — not a dead hop.
+        let _session_a = register_incumbent(&forward, "cascade-pull", true).await?;
+        assert!(
+            forward
+                .internal
+                .replace_dead_cascade_pull_incumbent()
+                .await?
+                .is_none()
+        );
+        assert!(forward.internal.publish_is_some().await);
         Ok(())
     }
 }

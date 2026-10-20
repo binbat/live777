@@ -53,7 +53,10 @@ Live777 supports the following Cargo feature flags to customize the build:
 | `source-sdp` | liveion   | Source pulling via SDP                         |
 | `source-rtsp`| liveion   | Source pulling via RTSP                        |
 | `source-whep`| liveion   | Source pulling via WHEP (static cascade-pull)  |
+| `target`     | liveion   | Base shared by all `target-*` kinds (enables no kind on its own) |
 | `target-whip`| liveion   | Target pushing via WHIP (static cascade-push)  |
+| `target-rtp` | liveion   | Target sending as plain RTP/UDP (multicast sender) |
+| `target-rtsp`| liveion   | Target pushing via RTSP (ANNOUNCE/RECORD client)   |
 | `net4mqtt`   | liveion   | Enable MQTT tunnel proxy                       |
 
 Enable features at build time:
@@ -129,6 +132,27 @@ up one `liveman` and N `live777`
 ```bash
 cargo run --bin=livenil -- -c conf/livenil
 ```
+
+#### Edge-cloud cascade demo {#livenil-edge-cloud}
+
+`conf/livenil/edge-cloud/` is a pre-made topology: two edge nodes simulate
+cameras (one provisioned stream each, capped at one direct viewer via a
+liveman `[[node_rules]]` glob — `pattern = "edge*"`, `sub_max = 1`) and one
+cloud node acts as the central SFU, all managed by one liveman:
+
+```bash
+just run-edge-cloud
+```
+
+Publish a camera pinned to its edge node, then open any number of viewers on
+liveman (`http://127.0.0.1:8890/whep/cam0`). The first viewer of a stream is
+proxied to the edge node directly; when a second viewer arrives the edge is
+full, so liveman cascades the stream to the cloud node (pull mode: the
+cloud WHEP-pulls the stream from the edge), kicks the direct viewer
+(`close_other_sub = true`), and its player reconnects onto the cloud. The
+edge never sends more than one copy of the stream upstream, saving edge
+bandwidth. See the comments in `conf/livenil/edge-cloud/` for the full
+flow.
 
 ### whipinto && whepfrom
 

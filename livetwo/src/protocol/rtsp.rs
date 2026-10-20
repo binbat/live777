@@ -29,6 +29,9 @@ pub async fn setup_client_for_pull(
         target_host,
         rtsp::RtspMode::Pull,
         use_tcp,
+        // livetwo's teardown stays drop-based: closing the channel halves
+        // ends the session.
+        tokio_util::sync::CancellationToken::new(),
     )
     .await?;
     info!(
@@ -69,6 +72,9 @@ pub async fn setup_client_for_push(
         target_host,
         rtsp::RtspMode::Push,
         use_tcp,
+        // livetwo's teardown stays drop-based: closing the channel halves
+        // ends the session.
+        tokio_util::sync::CancellationToken::new(),
     )
     .await?;
     info!(

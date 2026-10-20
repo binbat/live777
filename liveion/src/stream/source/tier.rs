@@ -36,3 +36,20 @@ impl QualityTier {
         self.width.is_some() || self.height.is_some() || self.fps.is_some()
     }
 }
+
+/// The state a source is actually running with (native sources only):
+/// the last applied tier's name plus the pipeline's current capture
+/// geometry and encoder bitrate.  Unlike [`QualityTier`] these are
+/// *effective* values — always fully resolved, never "inherit the base
+/// config".  Used to rebuild hook state after a failed tier apply rolls
+/// the pipeline back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTierState {
+    /// The tier last applied through the admin API; `None` = the
+    /// configured base profile.
+    pub name: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u32,
+}

@@ -199,10 +199,13 @@ impl NativeEncodedSource {
             while let Some(data) = rtcp_rx.recv().await {
                 if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
                     for packet in packets {
-                        if packet
-                            .as_any()
+                        let any = packet.as_any();
+                        if any
                             .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                             .is_some()
+                            || any
+                                .downcast_ref::<rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                                .is_some()
                         {
                             kh.request_keyframe();
                         }
@@ -455,6 +458,20 @@ impl NativeEncodedSource {
 
     pub fn set_active_tier(&mut self, name: Option<String>) {
         self.active_tier = name;
+    }
+
+    /// The state the pipeline is actually running with: the last applied
+    /// tier's name plus the current params (post-rollback these are the
+    /// restored previous params).
+    #[cfg(feature = "source")]
+    pub fn active_tier_state(&self) -> super::tier::ActiveTierState {
+        super::tier::ActiveTierState {
+            name: self.active_tier.clone(),
+            width: self.params.width,
+            height: self.params.height,
+            fps: self.params.fps,
+            bitrate: self.params.bitrate,
+        }
     }
 
     /// Retune the running encoder (adaptive bitrate control, issue #409).

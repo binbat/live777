@@ -61,7 +61,6 @@ fn liveion_test_environment_pins_webrtc_ice_to_loopback() {
 #[tokio::test]
 async fn test_liveion_simple() {
     let cfg = liveion::config::Config::default();
-    let strategy = cfg.strategy.clone();
     let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let port = 0;
 
@@ -70,15 +69,15 @@ async fn test_liveion_simple() {
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
+    let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
         .await
         .unwrap();
 
     assert_eq!(http::StatusCode::OK, res.status());
 
-    let body = res.json::<api::strategy::Strategy>().await.unwrap();
+    let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-    assert_eq!(strategy, body);
+    assert!(body.is_empty());
 }
 
 #[tokio::test]
@@ -101,7 +100,13 @@ async fn test_liveion_info() {
     let body = res.json::<api::response::ServerInfo>().await.unwrap();
 
     assert!(!body.version.is_empty());
-    assert!(body.version.contains(&body.git_hash));
+    // Non-tag builds are git-describe style and embed the hash
+    // ("v0.10.1-3-gb789a64"); at a tag checkout the version is exactly the
+    // tag and the hash only appears in the separate git_hash field.
+    assert!(
+        body.version.contains(&body.git_hash)
+            || body.version == format!("v{}", env!("CARGO_PKG_VERSION"))
+    );
     assert!(!body.git_hash.is_empty());
     assert!(!body.build_time.is_empty());
     assert!(body.features.iter().all(|f| !f.is_empty()));
@@ -118,9 +123,215 @@ async fn test_liveion_info() {
 }
 
 #[tokio::test]
+async fn test_liveman_nodes_carry_node_build_info() {
+    // A liveion node behind a poll-mode liveman: the nodes API must carry
+    // the node's own `GET /api/info` (version/git hash/build time) once
+    // liveman's node-info pass has fetched it.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    // The node-info pass runs at startup and is woken whenever a node comes
+    // online without a fresh fetch; the nodes-API request itself drives the
+    // first streams poll that marks the node online, so the info shows up
+    // within a poll round.
+    let nodes_url = format!("http://{liveman_addr}/api/nodes/");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let info = loop {
+        let nodes = reqwest::get(&nodes_url)
+            .await
+            .unwrap()
+            .json::<Vec<serde_json::Value>>()
+            .await
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["alias"], "node0");
+        if let Some(info) = nodes[0].get("info") {
+            break info.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node build info did not show up in /api/nodes/"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+
+    let info: api::response::ServerInfo = serde_json::from_value(info).unwrap();
+    assert!(!info.version.is_empty());
+    assert!(!info.git_hash.is_empty());
+    assert!(!info.build_time.is_empty());
+}
+
+#[tokio::test]
+async fn test_liveman_nodes_sse_delay() {
+    // SSE-mode nodes have no streams poll to measure an RTT from; the SSE
+    // connect handshake (and the periodic build-info fetch) must feed the
+    // Delay column instead of leaving it at "-" forever.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        mode: liveman::config::UpdateMode::Sse,
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    // The SSE connect runs at liveman startup, so the RTT sample lands
+    // within the first contact.
+    let nodes_url = format!("http://{liveman_addr}/api/nodes/");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let nodes = reqwest::get(&nodes_url)
+            .await
+            .unwrap()
+            .json::<Vec<serde_json::Value>>()
+            .await
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        let duration = nodes[0]["duration"].as_str().unwrap_or_default();
+        if duration
+            .strip_suffix("ms")
+            .and_then(|ms| ms.parse::<u64>().ok())
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SSE node delay stayed at \"{duration}\" instead of an RTT sample"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_liveman_streams_sse() {
+    // liveman's dashboard SSE endpoint (`GET /api/sse/streams`, the
+    // counterpart of liveion's): it must push the merged cluster view as
+    // SSE data events — an initial snapshot immediately, then an updated
+    // snapshot when the node's stream set changes. The node is poll-mode,
+    // so the update arrives through the SSE loop's idle cadence, which
+    // drives liveman's throttled lazy poll.
+    let cfg = liveion::config::Config::default();
+    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let node_addr = listener.local_addr().unwrap();
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let mut cfg = liveman::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(ip, 0)).await.unwrap();
+    let liveman_addr = listener.local_addr().unwrap();
+    cfg.http.listen = liveman_addr;
+    cfg.database.url = "sqlite::memory:".to_string();
+    cfg.nodes = vec![liveman::config::Node {
+        alias: "node0".to_string(),
+        url: format!("http://{node_addr}"),
+        ..Default::default()
+    }];
+    cfg.validate().unwrap();
+    tokio::spawn(liveman::serve(cfg, listener, shutdown_signal()));
+
+    let mut resp = reqwest::Client::new()
+        .get(format!("http://{liveman_addr}{}", api::path::streams_sse()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::OK, resp.status());
+
+    // Accumulate body chunks and pop complete `data:` events ("\n\n"
+    // terminated); keep-alive comment lines are ignored.
+    async fn next_sse_data(resp: &mut reqwest::Response, buffer: &mut String) -> String {
+        loop {
+            if let Some((event, rest)) = buffer.split_once("\n\n") {
+                let event = event.to_string();
+                *buffer = rest.to_string();
+                let data: String = event
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(|line| line.trim_start())
+                    .collect();
+                if !data.is_empty() {
+                    return data;
+                }
+                continue;
+            }
+            let chunk = resp.chunk().await.unwrap().expect("SSE stream ended");
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    }
+
+    let mut buffer = String::new();
+
+    // The initial snapshot is sent immediately: no streams yet.
+    let initial: Vec<serde_json::Value> = serde_json::from_str(
+        &tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            next_sse_data(&mut resp, &mut buffer),
+        )
+        .await
+        .expect("liveman SSE did not send the initial snapshot"),
+    )
+    .expect("initial SSE snapshot");
+    assert!(initial.is_empty());
+
+    // A stream appears on the node: a later snapshot must carry it (the
+    // idle-cadence poll makes this a couple of seconds at worst; allow
+    // generous slack for CI).
+    reqwest::Client::new()
+        .post(format!("http://{node_addr}{}", api::path::streams("-")))
+        .send()
+        .await
+        .unwrap();
+
+    let found = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
+        loop {
+            let streams: Vec<serde_json::Value> =
+                serde_json::from_str(&next_sse_data(&mut resp, &mut buffer).await)
+                    .expect("SSE snapshot");
+            if streams.iter().any(|s| s["id"] == "-") {
+                return streams;
+            }
+        }
+    })
+    .await
+    .expect("liveman SSE did not push the new stream in time");
+
+    let stream = found.iter().find(|s| s["id"] == "-").unwrap();
+    assert_eq!(stream["statsScope"], "node");
+}
+
+#[tokio::test]
 async fn test_liveion_ipv6() {
     let cfg = liveion::config::Config::default();
-    let strategy = cfg.strategy.clone();
     let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
     let port = 0;
 
@@ -129,15 +340,15 @@ async fn test_liveion_ipv6() {
 
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
 
-    let res = reqwest::get(format!("http://{addr}{}", api::path::strategy()))
+    let res = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
         .await
         .unwrap();
 
     assert_eq!(http::StatusCode::OK, res.status());
 
-    let body = res.json::<api::strategy::Strategy>().await.unwrap();
+    let body = res.json::<Vec<api::response::Stream>>().await.unwrap();
 
-    assert_eq!(strategy, body);
+    assert!(body.is_empty());
 }
 
 #[tokio::test]
@@ -245,6 +456,8 @@ async fn test_livetwo_whipinto_synth_input() {
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         None,
+        None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -336,6 +549,8 @@ async fn test_liveion_stream_stats() {
         format!("http://{addr}{}", api::path::whip("-")),
         None,
         None,
+        None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -350,6 +565,7 @@ async fn test_liveion_stream_stats() {
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -524,6 +740,7 @@ impl RawPublisher {
             livetwo::whip::core::PublishPeerOptions {
                 ice_servers: Vec::new(),
                 extra_video_codecs: Vec::new(),
+                cable: None,
             },
         )
         .await
@@ -692,6 +909,7 @@ async fn test_liveion_stream_stats_churn() {
             None,
             None,
             None,
+            "control".to_string(),
             Vec::new(),
         ))
     };

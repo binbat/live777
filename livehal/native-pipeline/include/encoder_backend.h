@@ -42,7 +42,11 @@ struct EncoderConfig {
     uint32_t profile_idc = 0;  // 66=baseline,77=main,100=high (H.264); 1=main (H.265)
     uint32_t level_idc = 0;    // 40=H.264 4.0, 120=H.265 4.0
     uint32_t tier_flag = 0;    // 0=main tier (H.265 only)
-    uint32_t gop = 60;
+    uint32_t gop = 60;  // keyframe interval in frames; 0 = IDR only on
+                        // request (FORCE_KEY_FRAME) — v4l2-m2m only
+    // Rate-control mode: 0 = leave the driver default, 1 = VBR, 2 = CBR.
+    // Only the v4l2-m2m backend honours this today.
+    uint32_t bitrate_mode = 0;
     bool prefer_dmabuf = false;
 };
 

@@ -1,3 +1,4 @@
+pub mod cors;
 pub mod path;
 pub mod recorder;
 pub mod request;

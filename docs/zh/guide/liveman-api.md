@@ -80,9 +80,9 @@ Response: [200]
 
 - `alias`: String, 别名必须唯一
 - `url`: String, 节点 API 的 URL 地址
-- `pub_max`: Int16, 最大支持推流数
-- `sub_max`: Int16, 最大支持订阅数
-- `status`: StringEnum("running" | "stopped"), 节点状态
+- `status`: StringEnum("running" | "stopped"), 节点连通状态：`poll` 节点反映最近一次轮询结果（任何 HTTP 响应都视为可达），`sse` 节点反映 SSE 连接状态，net4mqtt 节点反映发现（presence）状态
+- `duration`: String, 最近一次节点接触的往返耗时（如 `"12ms"`）：`poll` 节点为轮询 RTT，`sse` 节点为连接握手 RTT，或者 liveman 刷新节点构建信息时 `/api/info` 请求的 RTT；首次成功接触前为 `"-"`
+- `info`: Object, 可选 — 节点自身 `GET /api/info` 的构建信息（`version`、`gitHash`、`buildTime`、`features`），由 liveman 缓存并在节点重连时刷新；首次拉取成功前不出现该字段
 
 例如:
 
@@ -91,26 +91,65 @@ Response: [200]
   {
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "3ms",
+    "info": {
+      "version": "v0.10.2",
+      "gitHash": "b789a64",
+      "buildTime": "2026-09-28T10:00:00+00:00",
+      "features": ["webui", "cascade", "recorder", "source-all"]
+    }
   },
   {
     "alias": "buildin-1",
     "url": "http://127.0.0.1:55582",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "5ms"
   },
   {
     "alias": "buildin-2",
     "url": "http://127.0.0.1:55583",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "stopped",
+    "duration": "-"
   }
 ]
 ```
+
+## Source
+
+源管理接口按节点代理（`{alias}`）：liveman 将请求改写为对应节点上的相同路径，并注入该节点的 bearer token 转发，因此集群客户端只需通过 liveman 管理各节点的源。请求/响应体即为节点的 liveion 源 API —— 参见 [live777 API / 媒体源](/zh/guide/live777-api)。别名不存在时返回 [503]。
+
+`GET` `/api/sources/{alias}`
+
+列出该节点的源。
+
+`POST` `/api/sources/{alias}/{stream}`
+
+创建源。创建成功后 liveman 会立即登记 stream→node 映射，使 WHEP 路由在下一次节点快照之前即可生效。
+
+`GET` `/api/sources/{alias}/{stream}`
+
+获取源信息。
+
+`DELETE` `/api/sources/{alias}/{stream}`
+
+删除源。
+
+`GET` `/api/sources/{alias}/{stream}/state`
+
+获取源的运行状态。
+
+`GET` `/api/sources/{alias}/{stream}/bitrate`
+
+获取编码器码率遥测。
+
+`GET` `/api/sources/{alias}/{stream}/tier`
+
+获取源的质量档位。
+
+`POST` `/api/sources/{alias}/{stream}/tier`
+
+应用源的质量档位。
 
 ## Stream
 
@@ -272,4 +311,16 @@ Response: [200]
   }
 }
 ```
+
+### 流状态 SSE
+
+**此API推送与 `GET /api/streams/` 相同的合并视图**
+
+`GET` `/api/sse/streams`
+
+Server-Sent Events 端点，和管理接口使用同样的鉴权。
+
+当存储的集群状态发生变化时，推送所有流的全量合并快照（按流 ID 合并各节点的快照）。每条 SSE 消息都是一个流对象的 JSON 数组，格式与 `GET /api/streams/` 一致（包括 `statsScope` 标记）。可选的 `?nodes=<alias>` 查询参数（可重复）将视图限制在指定节点，语义与 `GET /api/streams/` 相同。
+
+连接建立时立即发送第一条消息；之后每次状态变化都会发送，内容相同的连续负载会被去重。对于轮询模式（`poll`）的节点，只要至少有一个客户端保持连接，快照就按轮询周期刷新。
 

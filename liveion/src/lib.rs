@@ -7,7 +7,7 @@ use axum::{Router, extract::Request, middleware, response::IntoResponse, routing
 use http::{StatusCode, Uri};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{Level, error, info_span};
 
 use crate::config::Config;
@@ -33,11 +33,7 @@ mod forward;
 mod hook;
 mod r#macro;
 mod metrics;
-#[cfg(any(
-    feature = "source-rtsp",
-    feature = "source-whep",
-    feature = "target-whip"
-))]
+#[cfg(any(feature = "source-rtsp", feature = "source-whep", feature = "target"))]
 mod reconnect;
 mod result;
 mod route;
@@ -46,8 +42,12 @@ mod rtsp_codec;
 #[cfg(feature = "rtsp")]
 mod rtsp_server;
 mod stream;
-#[cfg(feature = "target-whip")]
+#[cfg(feature = "target")]
 mod target;
+#[cfg(feature = "target-rtp")]
+mod target_rtp;
+#[cfg(feature = "target-rtsp")]
+mod target_rtsp;
 
 #[cfg(feature = "recorder")]
 pub mod recorder;
@@ -99,9 +99,10 @@ where
         }
     }
 
-    // Static WHIP push targets (declarative cascade-push). Must run after
-    // provision_streams: the first push attempt needs the stream to exist.
-    #[cfg(feature = "target-whip")]
+    // Static output targets (declarative cascade-push / RTP multicast
+    // sender). Must run after provision_streams: the first attempt needs
+    // the stream to exist.
+    #[cfg(feature = "target")]
     crate::target::init(app_state.stream_manager.clone());
     let app = Router::new().merge(
         whip::route()
@@ -110,7 +111,6 @@ where
             .merge(admin::route())
             .merge(crate::route::stream::route())
             .merge(crate::route::recorder::route())
-            .merge(crate::route::strategy::route())
             .merge({
                 #[cfg(feature = "source")]
                 {
@@ -132,11 +132,7 @@ where
         .route(path::METRICS, get(metrics))
         .merge(info::route())
         .with_state(app_state.clone())
-        .layer(if cfg.http.cors {
-            CorsLayer::permissive()
-        } else {
-            CorsLayer::new()
-        })
+        .layer(cfg.http.cors.layer())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<_>| {
@@ -397,6 +393,27 @@ pub fn metrics_register() {
         .unwrap();
     metrics::REGISTRY
         .register(Box::new(metrics::RTP_BYTES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::RTCP_PACKETS_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_RTP_BYTES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_SESSIONS.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_MESSAGES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_BYTES_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::DATACHANNEL_DROPPED_TOTAL.clone()))
+        .unwrap();
+    metrics::REGISTRY
+        .register(Box::new(metrics::STREAM_DATACHANNEL_BYTES_TOTAL.clone()))
         .unwrap();
 }
 

@@ -23,6 +23,12 @@ use rtsp::{ServerConfig, udp_route};
 
 const DEFAULT_STREAM: &str = "rtsp";
 
+/// Sequence for the virtual-subscriber ids of RTSP pull clients
+/// (`virtual-rtsp-pull-N`): each PLAYing pull taps tracks directly, so it
+/// registers on the manager to stay visible and counted as on-demand
+/// demand.
+static PULL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub async fn start_rtsp_server(
     manager: Arc<Manager>,
     config: RtspConfig,
@@ -290,26 +296,36 @@ impl rtsp::server::SessionHandler for RtspHandler {
                     }
                 });
 
-                // On-demand accounting: a pull client keeps the stream's
-                // sources alive even though it taps tracks directly (no
-                // subscribe session).
+                // A pull client taps tracks directly (no subscribe
+                // session): register it as a virtual subscriber so it shows
+                // up in the API and keeps the on-demand sources alive.
                 #[cfg(feature = "source")]
                 {
                     let manager = self.manager.clone();
                     let stream_id = stream_id.clone();
                     let detach_cancel = pull_cancel.clone();
-                    manager.rtsp_pull_attach(&stream_id).await;
+                    let pull_id = format!(
+                        "virtual-rtsp-pull-{}",
+                        PULL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    manager
+                        .add_virtual_subscriber(&stream_id, pull_id.clone())
+                        .await;
                     // The safety-net timer may have stopped the source
                     // between DESCRIBE and PLAY (or this client never sent
                     // DESCRIBE): make sure the on-demand source is running
                     // before tapping its tracks.
                     if let Err(e) = manager.ensure_on_demand_source(&stream_id).await {
-                        manager.rtsp_pull_detach(&stream_id).await;
+                        manager
+                            .remove_virtual_subscriber(&stream_id, &pull_id)
+                            .await;
                         return Err(anyhow!("on-demand source not ready: {e:?}"));
                     }
                     tokio::spawn(async move {
                         detach_cancel.cancelled().await;
-                        manager.rtsp_pull_detach(&stream_id).await;
+                        manager
+                            .remove_virtual_subscriber(&stream_id, &pull_id)
+                            .await;
                     });
                 }
 
@@ -353,7 +369,7 @@ impl rtsp::server::SessionHandler for RtspHandler {
                         // the payload type the pull SDP advertises for this
                         // track — the publisher's own PT (e.g. the static 9
                         // of G722) does not necessarily match it.
-                        let payload_type = sdp_payload_type(&track.codec());
+                        let payload_type = track.codec().sdp_payload_type();
                         let tx_clone = tx.clone();
                         let mut packet_rx = track.subscribe();
                         let task_cancel = pull_cancel.child_token();
@@ -637,26 +653,6 @@ async fn wait_for_tracks(forward: &crate::forward::PeerForward) -> Result<Vec<Pu
     }
 }
 
-/// Payload type advertised in the pull SDP (and stamped into forwarded
-/// packets) for a track.
-///
-/// When a WHIP-published stream is described before the first RTP packet
-/// arrives, the negotiated payload type is still 0 (not yet detected).
-/// Default to 96 (dynamic PT range) for video and use the static PT defined
-/// in RFC 3551 for well-known audio codecs so the SDP remains valid.
-fn sdp_payload_type(codec: &crate::forward::message::Codec) -> u8 {
-    if codec.payload_type != 0 {
-        codec.payload_type
-    } else {
-        match codec.codec.as_str() {
-            "pcma" => 8,
-            "pcmu" => 0,
-            "g722" => 9,
-            _ => 96,
-        }
-    }
-}
-
 fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
     let mut lines = vec![
         "v=0".to_string(),
@@ -667,11 +663,18 @@ fn build_sdp_from_tracks(tracks: &[PublishTrackRemote]) -> Result<String> {
 
     for track in tracks {
         let codec = track.codec();
-        let pt = sdp_payload_type(&codec);
+        let pt = codec.sdp_payload_type();
         let (media, clock_rate, channels) = match codec.codec.as_str() {
             "h264" | "h265" | "hevc" | "vp8" | "vp9" | "av1" => ("video", codec.clock_rate, None),
             "opus" | "g722" | "pcma" | "pcmu" => {
-                ("audio", codec.clock_rate, Some(codec.channels as u8))
+                // 0 means the negotiated rtpmap carried no channel count
+                // (conventional for G.711/G.722): omit the parameter rather
+                // than emit an invalid `/0`.
+                (
+                    "audio",
+                    codec.clock_rate,
+                    Some(codec.channels as u8).filter(|ch| *ch > 0),
+                )
             }
             _ => continue,
         };

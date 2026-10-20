@@ -31,6 +31,24 @@ whepfrom -o rtp://{target_ip}?video={video_port}&audio={audio_port} -w http://lo
 whepfrom -o rtp://localhost?video=9000&audio=9002 -w http://localhost:7777/whep/777 --sdp-file output.sdp
 ```
 
+URL 自带的端口同样可用：视频发往该端口，音频发往端口 + 2
+（RTP/AVP 惯例）；`?video=`/`?audio=` 仍可逐轨道覆盖：
+
+```bash
+whepfrom -o rtp://localhost:9000 -w http://localhost:7777/whep/777 --sdp-file output.sdp
+```
+
+主机填组播地址时，whepfrom 就是一个独立的 WHEP → 组播桥——与
+live777 的 `rtp://` 输出 target 对应的工具侧形态：
+
+```bash
+whepfrom -o rtp://230.1.1.1:1720 -w http://localhost:7777/whep/777 --sdp-file output.sdp
+```
+
+组播选项通过 query 参数携带：`?ttl=16`（IPv4 TTL / IPv6 hops，默认
+1）和 `?interface=...`（IPv4 组填 IPv4 网卡地址，IPv6 组填网卡序号
+或名称）。单播目标配置这两项会被拒绝。
+
 使用 [`ffplay`](/guide/ffmpeg) 来播放
 
 ```bash

@@ -16,6 +16,9 @@ mod profile;
 mod runner;
 mod source;
 
+#[cfg(target_os = "linux")]
+use player::livetwo::LivetwoWhepMulticastPlayer;
+use player::livetwo::LivetwoWhepRtpUrlPlayer;
 use player::{Player, livetwo::LivetwoWhepPlayer};
 use profile::{AudioCodec, MediaProfile, VideoCodec};
 #[cfg(feature = "source-whep")]
@@ -31,10 +34,14 @@ use player::playwright::PlaywrightWhepPlayer;
 use player::rsmpeg_receiver::RsmpegWhepReceiver;
 #[cfg(not(target_os = "windows"))]
 use player::{gst_rtp::GstRtpPlayer, gst_whep::GstWhepPlayer};
+#[cfg(feature = "target-rtp")]
+use runner::run_rtp_target;
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use runner::run_rtsp_roundtrip_gst;
 #[cfg(feature = "rtsp")]
 use runner::{RtspTransport, run_rtsp_cycle, run_rtsp_push_mediamtx, run_rtsp_roundtrip};
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+use runner::{run_rtsp_target_live777, run_rtsp_target_mediamtx};
 #[cfg(all(feature = "rtsp", not(target_os = "windows")))]
 use source::gst_rtsp_server::GstRtspServerSource;
 #[cfg(feature = "rtsp")]
@@ -69,6 +76,53 @@ use source::{gst_rtp::GstRtpSource, gst_whip::GstWhipSource};
 )]
 #[tokio::test]
 async fn whep_ffmpeg_livetwo_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// whepfrom's `rtp://host:port` output (live777#475): the URL's own port
+/// addresses the tracks (video on P, audio on P + 2), validated end to end
+/// by ffprobe reading the output SDP.
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepRtpUrlPlayer]
+)]
+#[tokio::test]
+async fn whep_ffmpeg_livetwo_rtp_url_matrix_test<S, P>(source: S, player: P)
+where
+    S: Source,
+    P: Player,
+{
+    // Windows CI: ffmpeg's SDP reader binds four consecutive UDP ports for
+    // an AV stream (RTP/RTCP per track) and flakes with WSAEADDRINUSE there;
+    // the video-only case still runs.
+    let profile = source.profile();
+    if profile.video.is_some() && profile.audio.is_some() && runner::windows_ci() {
+        tracing::warn!("skipping: AV rtp-url probing is flaky on Windows CI runners");
+        return;
+    }
+    run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
+}
+
+/// whepfrom as a WHEP → multicast bridge (live777#475): `rtp://group:port`
+/// output, ffprobe joins the group on loopback and validates the media.
+/// Linux-only: multicast loopback needs a working group route.
+#[cfg(target_os = "linux")]
+#[test_matrix(
+    [
+        FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::H264, AudioCodec::Opus)),
+    ],
+    [LivetwoWhepMulticastPlayer]
+)]
+#[tokio::test]
+async fn whep_ffmpeg_livetwo_rtp_multicast_matrix_test<S, P>(source: S, player: P)
 where
     S: Source,
     P: Player,
@@ -548,6 +602,81 @@ async fn rtsp_push_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTr
         return;
     }
     run_rtsp_push_mediamtx(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTSP target interop: liveion's static `rtsp://` target pushes its stream
+/// into mediamtx (ANNOUNCE/RECORD from a config entry, no livetwo bridge —
+/// the target-side counterpart of rtsp_push_mediamtx_matrix_test). ffprobe
+/// validates by pulling from mediamtx; stopping the publisher must retract
+/// the mediamtx path (TEARDOWN for UDP, connection close for TCP).
+///
+/// Runtime-skipped on Windows CI: see whep_mediamtx_pull_matrix_test.
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::H264, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::Vp8),
+        MediaProfile::video_only(VideoCodec::H265),
+        MediaProfile::audio_only(AudioCodec::Opus),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_target_mediamtx_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    if !mediamtx::available() {
+        tracing::warn!("skipping: mediamtx not available on this host");
+        return;
+    }
+    run_rtsp_target_mediamtx(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTSP target into live777's own RTSP server: liveion A pushes to liveion
+/// B's `[rtsp]` listener from a static `rtsp://` target; ffprobe validates
+/// by pulling from B. No third-party binary involved.
+#[cfg(all(feature = "target-rtsp", feature = "rtsp"))]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::H264),
+        MediaProfile::audio_only(AudioCodec::G722),
+    ],
+    [RtspTransport::Udp, RtspTransport::Tcp]
+)]
+#[tokio::test]
+async fn rtsp_target_live777_matrix_test(profile: MediaProfile, transport: RtspTransport) {
+    if mediamtx::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    run_rtsp_target_live777(profile, transport, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+}
+
+/// RTP target end to end: liveion sends the stream as plain RTP/UDP to a
+/// loopback unicast `rtp://` target; ffprobe validates by reading the
+/// receiver SDP the target writes (`sdp_file`), joining mid-GOP. Covers the
+/// H264 parameter-set injection, the audio port + 2 split, and an
+/// audio-only stream.
+///
+/// Runtime-skipped on Windows CI: see whep_mediamtx_pull_matrix_test.
+#[cfg(feature = "target-rtp")]
+#[test_matrix(
+    [
+        MediaProfile::av(VideoCodec::H264, AudioCodec::Opus),
+        MediaProfile::video_only(VideoCodec::H264),
+        MediaProfile::audio_only(AudioCodec::Opus),
+    ]
+)]
+#[tokio::test]
+async fn rtp_target_matrix_test(profile: MediaProfile) {
+    if runner::windows_ci() {
+        tracing::warn!("skipping: media-heavy interop cases are too slow for Windows CI runners");
+        return;
+    }
+    run_rtp_target(profile, IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
 }
 
 // ============================================================

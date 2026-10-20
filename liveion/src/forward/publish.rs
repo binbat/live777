@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow};
 use chrono::Utc;
 use sdp::SessionDescription;
 use tokio::sync::{broadcast, watch};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use webrtc::peer_connection::PeerConnection;
 use webrtc::peer_connection::RTCPeerConnectionState;
@@ -23,6 +24,18 @@ pub(crate) struct PublishRTCPeerConnection {
     pub(crate) create_at: i64,
     pub(crate) cascade: Option<CascadeInfo>,
     connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    /// Cancelled on drop — every session-removal path drops the session —
+    /// killing this session's data-channel forwarding tasks. The webrtc
+    /// driver never delivers `OnClose` for a server-side
+    /// `PeerConnection::close` (it aborts first), so without this those
+    /// tasks parked on `poll()` forever.
+    dc_cancel: CancellationToken,
+    /// Set once this session's server-side cable channels were created (on
+    /// the first inbound channel announce — an incoming DCEP OPEN proves
+    /// the SCTP association is established and the DTLS role resolved, so
+    /// the server's stream-id parity cannot collide with the client's
+    /// channels and the OPEN write is not dropped as non-Established).
+    pub(crate) cables_spawned: std::sync::atomic::AtomicBool,
 }
 
 impl PublishRTCPeerConnection {
@@ -56,7 +69,26 @@ impl PublishRTCPeerConnection {
             create_at: Utc::now().timestamp_millis(),
             cascade,
             connection_state_rx,
+            dc_cancel: CancellationToken::new(),
+            cables_spawned: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Current peer connection state, mirrored from the driver's state
+    /// channel.
+    pub(crate) fn connection_state(&self) -> RTCPeerConnectionState {
+        *self.connection_state_rx.borrow()
+    }
+
+    /// This session's own connection-state channel, used to gate data-channel
+    /// sends until the peer is Connected.
+    pub(crate) fn connection_state_rx(&self) -> watch::Receiver<RTCPeerConnectionState> {
+        self.connection_state_rx.clone()
+    }
+
+    /// Token that stops this session's data-channel forwarding tasks.
+    pub(crate) fn dc_cancel_token(&self) -> CancellationToken {
+        self.dc_cancel.clone()
     }
 
     /// `stats` carries this publisher's aggregated inbound counters. The
@@ -156,5 +188,11 @@ impl PublishRTCPeerConnection {
                 );
             }
         }
+    }
+}
+
+impl Drop for PublishRTCPeerConnection {
+    fn drop(&mut self) {
+        self.dc_cancel.cancel();
     }
 }

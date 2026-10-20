@@ -12,7 +12,8 @@ struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
-    /// rtp://[ip]:[port] / rtsp://[username]:[password]@[ip]:[port]/[stream] / <stream.sdp>
+    /// rtp://[ip]:[port][?ttl=N&interface=I] (video to port, audio to port+2; ?video=P&audio=P override)
+    /// rtsp://[username]:[password]@[ip]:[port]/[stream] / <stream.sdp>
     #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8555", livetwo::SCHEME_RTP_SDP))]
     output: String,
     /// The WHEP server endpoint to POST SDP offer to. e.g.: https://example.com/whep/777
@@ -27,11 +28,14 @@ struct Args {
     /// Run a command as childprocess
     #[arg(long)]
     command: Option<String>,
-    /// Channel URL for DataChannel <-> UDP forwarding
+    /// Cable UDP bridge URL for DataChannel <-> UDP forwarding
     /// Format: udp://<listen_host>:<listen_port>?host=<target_host>&port=<target_port>
     /// Example: udp://0.0.0.0:9001?host=127.0.0.1&port=9000
     #[arg(long)]
-    channel: Option<String>,
+    cable_url: Option<String>,
+    /// DataChannel label, joins the matching cable on the server
+    #[arg(long, default_value = "-")]
+    cable_label: String,
     #[command(flatten)]
     ice: iceserver::IceServerArgs,
 }
@@ -60,7 +64,8 @@ async fn main() -> Result<()> {
         args.sdp_file.clone(),
         args.token.clone(),
         args.command.clone(),
-        args.channel.clone(),
+        args.cable_url.clone(),
+        args.cable_label.clone(),
         args.ice.to_rtc_ice_servers(),
     ));
 

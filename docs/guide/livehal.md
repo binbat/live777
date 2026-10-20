@@ -122,6 +122,46 @@ marked `config`.
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
+An SDP file source whose connection address is a multicast group (for
+example `c=IN IP4 230.1.1.1`) joins that group on each media port instead
+of only binding it, so always-on multicast senders (drone/robot cameras,
+encoders) can feed live777 directly — combined with `on_demand = true`
+the group membership only exists while someone is watching:
+
+```toml
+[stream.robot-cam]
+on_demand = true
+
+[[stream.robot-cam.sources]]
+url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
+# Interface used to join the group: an IPv4 address for IPv4 groups, an
+# interface index or name for IPv6 groups (a `%zone` on the SDP address,
+# e.g. `c=IN IP6 ff12::1%eth0`, is honored when this is unset). Unset
+# lets the kernel choose, which only receives traffic arriving on the
+# default-route interface — link-local IPv6 groups (ff02::/16, ff12::/16)
+# always need an explicit interface.
+multicast_interface = "192.168.123.11"
+```
+
+RFC 4566 suffixes on the connection address (`c=IN IP4 230.1.1.1/64`,
+`c=IN IP6 ff15::1/3`) are accepted. The receiver sockets set
+`SO_REUSEADDR`, so several receivers of the same group:port (another
+stream, a monitoring tool) can coexist on one host. A failed bind/join is
+retried with backoff before the source start fails — for always-on
+(non-`on_demand`) multicast streams, still make sure live777 starts after
+the interface address is assigned (systemd: `After=network-online.target`),
+since a long DHCP delay outlasts the retries.
+
+::: warning
+Multicast senders keep the kernel's default loopback (`IP_MULTICAST_LOOP`),
+so this source also receives whatever a same-host sender — including
+live777's own `rtp://` output target — sends to the joined group:port.
+Pointing a source and a target at the same group:port on one host
+(directly, or via a liveman cascade looping back) makes live777 ingest its
+own output in a feedback loop; use distinct groups or ports for same-host
+demos.
+:::
+
 ### Structured native (libcamera / V4L2 / RDK)
 
 ```toml
@@ -135,6 +175,8 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "yuv420"
+# hflip = true           # mirror left-right; libcamera only (ISP, zero cost)
+# vflip = true           # flip top-bottom; hflip + vflip = 180° rotation
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
@@ -142,7 +184,10 @@ codec = "h264"
 bitrate = 1_000_000
 profile = "baseline"     # or a 6-digit hex profile-level-id such as "42001f"
 level = "3.1"            # required when profile is a profile name
-gop = 60
+gop = 60                 # keyframe interval in frames; 0 = IDR only on
+                         # request (PLI/FIR, subscriber join) — v4l2-m2m only
+# bitrate_mode = "vbr"   # v4l2-m2m only: "vbr" (driver default) or "cbr";
+                         # note the bcm2835-codec firmware rejects CBR
 
 [stream.pi-cam.sources.output]
 payload_type = 96
@@ -150,6 +195,15 @@ clock_rate = 90000
 ```
 
 `pixel_format` and `codec` values are validated at startup (unknown values error early).  `capture` + `encoder` are mutually exclusive with `url`; the source type is derived from `capture.backend` (`device` is a camera ID for libcamera or a path for v4l2).
+
+`capture.hflip` / `capture.vflip` (both default `false`) flip the image —
+mirror left-right and top-bottom respectively; setting both gives a 180°
+rotation.  They are **libcamera-only**: the flip is done by the ISP, so it
+costs no CPU.  The `v4l2` backend rejects them at startup — its video node
+(unicam) only DMA-moves frames with no image-processing capability, and the
+flip controls on the sensor sub-device cannot be used safely outside
+libcamera (they would desync the ISP's Bayer order).  90°/270° rotation is
+not offered: the Raspberry Pi ISP cannot transpose an image in hardware.
 
 `conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.
 
@@ -328,7 +382,7 @@ cargo build --bin live777 --release \
 ## Build
 
 ::: tip Prebuilt binaries
-You usually do not need to compile anything: releases after `v0.9.0`
+You usually do not need to compile anything: releases from `v0.10.0` onward
 publish native builds (`live777-<version>-aarch64-unknown-linux-gnu-rpi.tar.gz`
 for Raspberry Pi, `-rkmpp.tar.gz` for RK3588/RV1126B). See
 [Installation](./installation.md#arm-boards-raspberry-pi-rk3588-rdk-x5) and

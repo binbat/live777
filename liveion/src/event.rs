@@ -74,9 +74,11 @@ pub enum Event {
         session: String,
         reason: SessionStopReason,
     },
-    /// A WHIP/cascade subscriber session was established.
+    /// A subscriber attached: a WHIP/cascade session was established, or an
+    /// internal direct-tap consumer (static target, RTSP pull client)
+    /// registered as a virtual subscriber.
     SubscribeStarted { stream: String, session: String },
-    /// A subscriber session ended.
+    /// A subscriber session ended (real or virtual).
     SubscribeStopped {
         stream: String,
         session: String,

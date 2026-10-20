@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -6,14 +7,13 @@ use chrono::Utc;
 #[cfg(feature = "cascade")]
 use libwish::Client;
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
+use tokio_util::sync::CancellationToken;
 #[cfg(feature = "cascade")]
 use tracing::error;
 use tracing::trace;
 use tracing::{debug, info, warn};
 
 use crate::AppError;
-#[cfg(feature = "source")]
-use crate::config::ChannelConfig;
 use crate::event::{Event, SessionStopReason};
 use crate::forward::codec_compat::{is_av1_codec, is_h264_codec, is_h265_codec};
 use crate::forward::message::{ForwardInfo, SessionInfo};
@@ -42,7 +42,7 @@ use super::RemovePeerOutcome;
 use super::media::{MediaGenerationDecision, MediaInfo, MediaProfile};
 use super::message::CascadeInfo;
 use super::publish::PublishRTCPeerConnection;
-use super::stats::{ByteDeltas, MediaStats};
+use super::stats::{MediaStats, StreamSample};
 use super::subscribe::SubscribeRTCPeerConnection;
 #[cfg(feature = "source")]
 use super::subscribe_quality::{self, SubscribeQualityInterceptor};
@@ -92,32 +92,36 @@ fn format_codec_for_log(codec: &RTCRtpCodec) -> String {
 }
 
 #[derive(Clone)]
-struct DataChannelForward {
-    publish: broadcast::Sender<Vec<u8>>,
-    subscribe: broadcast::Sender<Vec<u8>>,
-}
-
-#[derive(Clone)]
 struct PublishPeerHandler {
     internal: std::sync::Weak<PeerForwardInternal>,
+    /// The handler's own publish peer, filled by `set_peer` once the peer is
+    /// built. Events are attributed to *this* peer rather than whatever
+    /// publisher is current: after an override replace, the incumbent's late
+    /// events must not tear down — or register data channels onto — the new
+    /// session.
+    peer: Arc<Mutex<Option<std::sync::Weak<dyn PeerConnection>>>>,
     gather_complete: Arc<Notify>,
     connection_state_tx: watch::Sender<RTCPeerConnectionState>,
+}
+
+impl PublishPeerHandler {
+    async fn set_peer(&self, peer: std::sync::Weak<dyn PeerConnection>) {
+        *self.peer.lock().await = Some(peer);
+    }
+
+    async fn own_peer(&self) -> Option<Arc<dyn PeerConnection>> {
+        self.peer.lock().await.clone().and_then(|w| w.upgrade())
+    }
 }
 
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for PublishPeerHandler {
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        let _ = self.connection_state_tx.send(state);
         if let Some(internal) = self.internal.upgrade() {
-            let pc = internal
-                .publish_peer_ref
-                .lock()
-                .await
-                .clone()
-                .and_then(|w| w.upgrade());
-            let _ = self.connection_state_tx.send(state);
             internal.send_event();
 
-            if let Some(pc) = pc {
+            if let Some(pc) = self.own_peer().await {
                 info!(
                     "[{}] [publish] connection state changed: {}",
                     internal.stream, state
@@ -125,6 +129,10 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_publish(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -139,6 +147,7 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
                             "publish",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
@@ -170,16 +179,9 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
     }
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
-        if let Some(internal) = self.internal.upgrade() {
-            let pc = internal
-                .publish_peer_ref
-                .lock()
-                .await
-                .clone()
-                .and_then(|w| w.upgrade());
-            if let Some(pc) = pc {
-                let _ = internal.publish_data_channel(pc, dc).await;
-            }
+        let pc = self.own_peer().await;
+        if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
+            let _ = internal.publish_data_channel(pc, dc, true).await;
         }
     }
 
@@ -231,21 +233,28 @@ pub(crate) async fn wait_for_peer_connected(
 }
 
 /// How long a peer may stay `Disconnected` before we stop waiting for ICE
-/// recovery and close it (teardown then follows the normal `Closed` path).
+/// recovery and close it. Teardown does NOT follow a `Closed` event —
+/// `close()` aborts the webrtc driver, so the watchdog removes the session
+/// directly after closing.
 const DISCONNECTED_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Give a `Disconnected` peer time to recover (transient network blip, ICE
-/// restart); if it is still disconnected when the grace expires, close it so
-/// teardown follows the normal `Closed` path instead of lingering as a
-/// zombie session with dead forwarding loops.
+/// restart); if it is still disconnected when the grace expires, close it and
+/// remove the session directly. The direct removal is load-bearing: webrtc's
+/// `close()` aborts the driver task, so the `Closed` state event that would
+/// normally drive session removal is never emitted, and without this the
+/// session lingers as a zombie in `Disconnected` forever. Both `remove_*`
+/// paths are idempotent no-ops if the `Closed` event did get delivered first.
 fn spawn_disconnected_watchdog(
     stream: String,
     role: &'static str,
     connection_state_tx: &watch::Sender<RTCPeerConnectionState>,
     peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
 ) {
     let mut state_rx = connection_state_tx.subscribe();
     let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
     tokio::spawn(async move {
         let wait = async {
             while matches!(*state_rx.borrow(), RTCPeerConnectionState::Disconnected) {
@@ -267,6 +276,91 @@ fn spawn_disconnected_watchdog(
             );
             if let Some(peer) = peer.upgrade() {
                 let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Backstop for sessions that never reach `Connected` at all: the `Failed`
+/// and `Disconnected` paths only fire once ICE actually ran, so a client
+/// that dies after the answer but before connectivity checks would
+/// otherwise sit in `New`/`Connecting` forever — pinning the stream against
+/// both auto-delete reapers and, for a publisher, rejecting every later
+/// publisher with 409. Once the state leaves New/Connecting in any
+/// direction (`Connected`, `Failed`, `Closed`, or `Disconnected`, which its
+/// own watchdog bounds), this task exits quietly.
+fn spawn_establish_watchdog(
+    stream: String,
+    role: &'static str,
+    mut connection_state_rx: watch::Receiver<RTCPeerConnectionState>,
+    peer: &Arc<dyn PeerConnection>,
+    internal: &std::sync::Weak<PeerForwardInternal>,
+) {
+    let peer = Arc::downgrade(peer);
+    let internal = internal.clone();
+    tokio::spawn(async move {
+        let established = async {
+            while matches!(
+                *connection_state_rx.borrow(),
+                RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting
+            ) {
+                if connection_state_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        if tokio::time::timeout(PUBLISH_CONNECTED_TIMEOUT, established)
+            .await
+            .is_err()
+        {
+            warn!(
+                "[{}] [{}] connection not established after {}s, closing",
+                stream,
+                role,
+                PUBLISH_CONNECTED_TIMEOUT.as_secs()
+            );
+            if let Some(peer) = peer.upgrade() {
+                let _ = peer.close().await;
+                if let Some(internal) = internal.upgrade() {
+                    // Idempotent no-op when another path already removed (or,
+                    // for publish, replaced) the session.
+                    let result = match role {
+                        "publish" => internal.remove_publish(peer).await,
+                        "subscribe" => internal.remove_subscribe(peer).await,
+                        other => {
+                            warn!(
+                                "[{}] [{}] unknown watchdog role, no session removed",
+                                stream, other
+                            );
+                            return;
+                        }
+                    };
+                    if let Err(err) = result {
+                        warn!(
+                            "[{}] [{}] establish watchdog session removal error: {:?}",
+                            stream, role, err
+                        );
+                    }
+                }
             }
         }
     });
@@ -314,6 +408,10 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                 match state {
                     RTCPeerConnectionState::Failed => {
                         let _ = pc.close().await;
+                        // `close()` never emits the `Closed` event (the driver
+                        // is aborted first), so remove the session directly —
+                        // idempotent if the event path ever runs.
+                        let _ = internal.remove_subscribe(pc).await;
                     }
                     RTCPeerConnectionState::Disconnected => {
                         // ICE may recover on its own; surface the blind spot
@@ -328,6 +426,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
                             "subscribe",
                             &self.connection_state_tx,
                             &pc,
+                            &self.internal,
                         );
                     }
                     RTCPeerConnectionState::Closed => {
@@ -359,7 +458,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let pc = self.peer.lock().await.clone().and_then(|w| w.upgrade());
         if let (Some(internal), Some(pc)) = (self.internal.upgrade(), pc) {
-            let _ = internal.subscribe_data_channel(pc, dc).await;
+            let _ = internal.subscribe_data_channel(pc, dc, true).await;
         }
     }
 
@@ -378,6 +477,7 @@ impl PeerConnectionEventHandler for SubscribePeerHandler {
 // layer in the publish peer chain so it sees every RTCP packet before it hits
 // the wire (ICE/DTLS/SRTP).
 mod rtcp_egress_probe {
+    use crate::metrics;
     use rtc::interceptor::StreamInfo;
     use rtc::interceptor::{Packet, TaggedPacket};
     use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
@@ -456,9 +556,15 @@ mod rtcp_egress_probe {
         }
 
         pub fn tally(&self, pkts: &[Box<dyn rtc::rtcp::packet::Packet>], stream: &str) {
+            // Mirror every packet into the server-wide Prometheus counter
+            // (`direction="to_publisher"`); the per-stream atomics below stay
+            // for the trace-level debug snapshot.
             for pkt in pkts {
                 match Self::classify(pkt.as_ref()) {
                     Some(RtcpType::Twcc(info)) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "twcc"])
+                            .inc();
                         let cnt = self
                             .transport_layer_cc
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -475,26 +581,47 @@ mod rtcp_egress_probe {
                         );
                     }
                     Some(RtcpType::ReceiverReport) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "rr"])
+                            .inc();
                         self.receiver_report
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::SenderReport) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "sr"])
+                            .inc();
                         self.sender_report
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Pli) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "pli"])
+                            .inc();
                         self.pli.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Fir) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "fir"])
+                            .inc();
                         self.fir.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Nack) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "nack"])
+                            .inc();
                         self.nack.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Some(RtcpType::Remb) => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "remb"])
+                            .inc();
                         self.remb.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     None => {
+                        metrics::RTCP_PACKETS_TOTAL
+                            .with_label_values(&["to_publisher", "other"])
+                            .inc();
                         self.other
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -727,6 +854,45 @@ mod rtcp_egress_probe {
             self.inner.unbind_remote_stream(info);
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use rtc::rtcp::goodbye::Goodbye;
+
+        #[test]
+        fn tally_counts_every_kind() {
+            let counters = Counters::new();
+            let pkts: Vec<Box<dyn rtc::rtcp::packet::Packet>> = vec![
+                Box::new(TransportLayerCc::default()),
+                Box::new(ReceiverReport::default()),
+                Box::new(SenderReport::default()),
+                Box::new(PictureLossIndication {
+                    sender_ssrc: 0,
+                    media_ssrc: 1,
+                }),
+                Box::new(FullIntraRequest {
+                    sender_ssrc: 0,
+                    media_ssrc: 1,
+                    fir: vec![],
+                }),
+                Box::new(TransportLayerNack::default()),
+                Box::new(ReceiverEstimatedMaximumBitrate::default()),
+                // Unclassified by the probe: lands in the "other" bucket.
+                Box::new(Goodbye::default()),
+            ];
+            counters.tally(&pkts, "test");
+            let snap = counters.snapshot();
+            assert_eq!(snap.twcc, 1);
+            assert_eq!(snap.rr, 1);
+            assert_eq!(snap.sr, 1);
+            assert_eq!(snap.pli, 1);
+            assert_eq!(snap.fir, 1);
+            assert_eq!(snap.nack, 1);
+            assert_eq!(snap.remb, 1);
+            assert_eq!(snap.other, 1);
+        }
+    }
 }
 
 pub(crate) struct PeerForwardInternal {
@@ -741,7 +907,10 @@ pub(crate) struct PeerForwardInternal {
     pub(crate) subscribe_group: RwLock<Vec<SubscribeRTCPeerConnection>>,
     closed_publish_sessions: RwLock<Vec<SessionInfo>>,
     closed_subscribe_sessions: RwLock<Vec<SessionInfo>>,
-    data_channel_forward: DataChannelForward,
+    /// The stream-level cable hub: datachannel buses (anonymous default pair
+    /// plus one per declared cable) and the cable <-> UDP bridges. Owned by
+    /// the stream (Manager), so it survives a forward reset untouched.
+    pub(crate) cables: Arc<crate::stream::cable::CableHub>,
     ice_server: Vec<RTCIceServer>,
     ice_udp_addrs: Vec<SocketAddr>,
     /// Server-side sessions run as an ICE Lite agent (RFC 8445 section 2.7):
@@ -780,8 +949,11 @@ pub(crate) struct PeerForwardInternal {
     /// stay monotonic across republishes and subscriber churn.
     stats_publish: MediaStats,
     stats_subscribe: MediaStats,
-    #[cfg(feature = "source")]
-    channel: Option<ChannelConfig>,
+    /// Media counters of direct-tap consumers (output targets, RTSP pull
+    /// clients) that bypass subscribe sessions (live777#474), keyed by their
+    /// virtual-subscriber id so detach folds the un-sampled tail exactly
+    /// once. std Mutex: every op is O(1) and never held across an await.
+    tap_stats: std::sync::Mutex<HashMap<String, Arc<MediaStats>>>,
     /// Effective strategy for this stream (global strategy merged with any
     /// per-stream override).
     pub(crate) strategy: api::strategy::Strategy,
@@ -793,7 +965,7 @@ impl PeerForwardInternal {
         ice_server: Vec<RTCIceServer>,
         ice_udp_addrs: Vec<SocketAddr>,
         ice_lite: bool,
-        #[cfg(feature = "source")] channel: Option<ChannelConfig>,
+        cables: Arc<crate::stream::cable::CableHub>,
         strategy: api::strategy::Strategy,
         lifecycle_sender: broadcast::Sender<Event>,
     ) -> Self {
@@ -809,10 +981,7 @@ impl PeerForwardInternal {
             subscribe_group: RwLock::new(Vec::new()),
             closed_publish_sessions: RwLock::new(Vec::new()),
             closed_subscribe_sessions: RwLock::new(Vec::new()),
-            data_channel_forward: DataChannelForward {
-                publish: new_broadcast_channel!(1024),
-                subscribe: new_broadcast_channel!(1024),
-            },
+            cables,
             ice_server,
             ice_udp_addrs,
             ice_lite,
@@ -829,8 +998,7 @@ impl PeerForwardInternal {
             last_publish_profile: RwLock::new(None),
             stats_publish: MediaStats::new(),
             stats_subscribe: MediaStats::new(),
-            #[cfg(feature = "source")]
-            channel,
+            tap_stats: std::sync::Mutex::new(HashMap::new()),
             strategy,
         }
     }
@@ -938,6 +1106,16 @@ impl PeerForwardInternal {
             subscribe.bytes += bytes;
             subscribe.packets += packets;
         }
+        for stats in self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .values()
+        {
+            let (bytes, packets) = stats.unsampled();
+            subscribe.bytes += bytes;
+            subscribe.packets += packets;
+        }
         api::response::StreamStats { publish, subscribe }
     }
 
@@ -978,41 +1156,60 @@ impl PeerForwardInternal {
         Self::aggregate_publish_stats(&publish_tracks)
     }
 
-    /// Sample all per-track/per-session counters: refresh their bitrates and
-    /// fold the byte/packet deltas into the stream-level totals, which stay
-    /// monotonic across republishes and subscriber churn. Returns the byte
-    /// deltas for server-wide metrics.
-    pub(crate) async fn sample_stats(&self) -> ByteDeltas {
-        let mut deltas = ByteDeltas::default();
+    /// Sample all per-track/per-session counters: refresh their bitrates,
+    /// fold the byte/packet deltas into the stream-level totals (which stay
+    /// monotonic across republishes and subscriber churn), and report the
+    /// live session counts. The returned [`StreamSample`] feeds both the
+    /// server-wide and the per-stream Prometheus series.
+    pub(crate) async fn sample_stats(&self) -> StreamSample {
+        let mut result = StreamSample::default();
         let mut in_packets = 0u64;
         let mut in_bitrate = 0u64;
         {
             let publish_tracks = self.publish_tracks.read().await;
             for track in publish_tracks.iter() {
                 let sample = track.stats().sample();
-                deltas.inbound += sample.bytes;
+                result.deltas.inbound += sample.bytes;
                 in_packets += sample.packets;
                 in_bitrate += sample.bitrate;
             }
+            // Virtual (source) publishers own tracks but no publish peer.
+            let publisher_attached =
+                !publish_tracks.is_empty() || self.publish.read().await.is_some();
+            result.publishers = publisher_attached as u64;
         }
-        self.stats_publish.add_delta(deltas.inbound, in_packets);
+        self.stats_publish
+            .add_delta(result.deltas.inbound, in_packets);
         self.stats_publish.set_bitrate(in_bitrate);
 
         let mut out_packets = 0u64;
         let mut out_bitrate = 0u64;
         {
             let subscribe_group = self.subscribe_group.read().await;
+            result.subscribers = subscribe_group.len() as u64;
             for subscribe in subscribe_group.iter() {
                 let sample = subscribe.stats.sample();
-                deltas.outbound += sample.bytes;
+                result.deltas.outbound += sample.bytes;
                 out_packets += sample.packets;
                 out_bitrate += sample.bitrate;
             }
         }
-        self.stats_subscribe.add_delta(deltas.outbound, out_packets);
+        // Direct-tap consumers (targets, RTSP pulls) bypass subscribe
+        // sessions; their counters ride the same outbound totals.
+        {
+            let taps = self.tap_stats.lock().expect("tap stats lock poisoned");
+            for stats in taps.values() {
+                let sample = stats.sample();
+                result.deltas.outbound += sample.bytes;
+                out_packets += sample.packets;
+                out_bitrate += sample.bitrate;
+            }
+        }
+        self.stats_subscribe
+            .add_delta(result.deltas.outbound, out_packets);
         self.stats_subscribe.set_bitrate(out_bitrate);
 
-        deltas
+        result
     }
 
     /// Fold the un-sampled tail of departing publish tracks into the stream
@@ -1031,13 +1228,23 @@ impl PeerForwardInternal {
             metrics::RTP_BYTES_TOTAL
                 .with_label_values(&["in"])
                 .inc_by(bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "in"])
+                .inc_by(bytes);
         }
     }
 
     async fn refresh_subscribe_bitrate(&self) {
         let subscribe_group = self.subscribe_group.read().await;
+        let tap_bitrate: u64 = self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .values()
+            .map(|stats| stats.snapshot().bitrate)
+            .sum();
         self.stats_subscribe
-            .set_bitrate(Self::aggregate_subscribe_bitrate(&subscribe_group));
+            .set_bitrate(Self::aggregate_subscribe_bitrate(&subscribe_group) + tap_bitrate);
     }
 
     /// Fold a departing subscriber's un-sampled tail into the stream total
@@ -1048,6 +1255,61 @@ impl PeerForwardInternal {
         if sample.bytes > 0 {
             metrics::RTP_BYTES_TOTAL
                 .with_label_values(&["out"])
+                .inc_by(sample.bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "out"])
+                .inc_by(sample.bytes);
+        }
+    }
+
+    /// Register a direct-tap consumer's counter (keyed by its virtual
+    /// subscriber id). The tick's `sample_stats` folds its deltas into the
+    /// stream's outbound totals like any subscriber's.
+    #[cfg_attr(
+        not(any(feature = "target-rtp", feature = "target-rtsp")),
+        allow(dead_code)
+    )]
+    pub(crate) fn add_tap_stats(&self, id: String, stats: Arc<MediaStats>) {
+        self.tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .insert(id, stats);
+    }
+
+    /// Detach a direct-tap consumer: fold its un-sampled tail (exactly once)
+    /// and refresh the aggregate subscribe bitrate.
+    #[cfg_attr(
+        not(any(
+            feature = "rtsp",
+            feature = "recorder",
+            feature = "target-rtp",
+            feature = "target-rtsp"
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) async fn remove_tap_stats(&self, id: &str) {
+        let stats = self
+            .tap_stats
+            .lock()
+            .expect("tap stats lock poisoned")
+            .remove(id);
+        if let Some(stats) = stats {
+            self.fold_tap_final(&stats);
+            self.refresh_subscribe_bitrate().await;
+        }
+    }
+
+    /// Fold one tap counter's un-sampled tail into the stream total and the
+    /// server-wide metric; see [`Self::fold_subscribe_final`].
+    fn fold_tap_final(&self, stats: &MediaStats) {
+        let sample = stats.sample();
+        self.stats_subscribe.add_delta(sample.bytes, sample.packets);
+        if sample.bytes > 0 {
+            metrics::RTP_BYTES_TOTAL
+                .with_label_values(&["out"])
+                .inc_by(sample.bytes);
+            metrics::STREAM_RTP_BYTES_TOTAL
+                .with_label_values(&[self.stream.as_str(), "out"])
                 .inc_by(sample.bytes);
         }
     }
@@ -1207,88 +1469,191 @@ impl PeerForwardInternal {
                 .await;
         }
 
+        // Fold any direct-tap consumers still attached (their supervisors
+        // react to StreamDeleted asynchronously — the counters must not be
+        // lost, nor folded twice when they finally detach).
+        let taps = std::mem::take(&mut *self.tap_stats.lock().expect("tap stats lock poisoned"));
+        for stats in taps.into_values() {
+            self.fold_tap_final(&stats);
+        }
+
         info!("{} close", self.stream);
         Ok(())
     }
 
-    /// Initialize the UDP <-> DataChannel bridge for this stream, if configured.
-    #[cfg(feature = "source")]
-    pub(crate) async fn try_init_udp_channel(&self) -> Result<()> {
-        if let Some(stream_cfg) = self.channel.clone() {
-            let dc_rx = self.data_channel_forward.publish.subscribe();
-            let dc_tx = self.data_channel_forward.subscribe.clone();
-            super::channel::spawn_channel(self.stream.clone(), dc_rx, dc_tx, stream_cfg).await?;
-        }
-        Ok(())
-    }
-
     fn data_channel_forward(
+        stream: &str,
         dc: Arc<dyn DataChannel>,
         sender: broadcast::Sender<Vec<u8>>,
         receiver: broadcast::Receiver<Vec<u8>>,
         connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
+        cancel: CancellationToken,
     ) {
         let dc_rx = dc.clone();
         let dc_tx = dc.clone();
 
-        tokio::spawn(async move {
-            loop {
-                match dc_rx.poll().await {
-                    Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
-                        if let Err(err) = sender.send(data.data.to_vec()) {
-                            debug!("send data channel err: {}", err);
+        tokio::spawn(dc_read_loop(
+            stream.to_string(),
+            move || {
+                let dc = dc_rx.clone();
+                async move { dc.poll().await }
+            },
+            sender,
+            cancel.clone(),
+        ));
+
+        tokio::spawn(dc_write_loop(
+            stream.to_string(),
+            receiver,
+            move |data| {
+                let dc = dc_tx.clone();
+                async move { dc.send(data).await }
+            },
+            connected_gate,
+            PUBLISH_CONNECTED_TIMEOUT,
+            cancel,
+        ));
+    }
+}
+
+/// Read loop of one data channel: forward incoming messages onto the stream
+/// bus until the channel closes or the owning session is cancelled. `poll` is
+/// a factory so the cancellation check wraps every await — the webrtc driver
+/// stops delivering events (and never drops the event sender) once the peer
+/// is closed server-side, so `OnClose`/`None` alone could never be observed
+/// and the task would leak, keeping the bus — and anything keyed on its
+/// closure, like the UDP channel bridge — alive forever. Every received
+/// message counts into the `in` DataChannel metrics on receipt.
+///
+/// A bus send fails only when the bus has no active receivers (e.g. a
+/// publisher messaging before any subscriber attaches): the message is
+/// dropped with a warn log and the loop keeps running, so receivers that
+/// attach later still get new messages.
+async fn dc_read_loop<P, Fut>(
+    stream: String,
+    mut poll: P,
+    sender: broadcast::Sender<Vec<u8>>,
+    cancel: CancellationToken,
+) where
+    P: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<webrtc::data_channel::DataChannelEvent>>,
+{
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                debug!("data channel read loop cancelled");
+                return;
+            }
+            event = poll() => match event {
+                Some(webrtc::data_channel::DataChannelEvent::OnMessage(data)) => {
+                    metrics::DATACHANNEL_MESSAGES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc();
+                    metrics::DATACHANNEL_BYTES_TOTAL
+                        .with_label_values(&["in"])
+                        .inc_by(data.data.len() as u64);
+                    metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                        .with_label_values(&[stream.as_str(), "in"])
+                        .inc_by(data.data.len() as u64);
+                    // A bus send fails only when the bus has no active
+                    // receivers: drop the message (logged) and keep the loop
+                    // alive, so later receivers still get new messages.
+                    if sender.send(data.data.to_vec()).is_err() {
+                        warn!("[{}] data channel bus has no receivers; dropping message", stream);
+                    }
+                }
+                Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
+                    debug!("Data channel opened");
+                }
+                Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
+                    info!("Datachannel closed; Exit the read_loop");
+                    return;
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Write loop of one data channel: forward bus messages into the channel.
+/// Exits when the bus closes, the channel errors, the Connected gate fails,
+/// or the owning session is cancelled (including while parked on `recv()` or
+/// waiting out the gate). Messages count into the `out` DataChannel metrics
+/// only after a successful channel write; messages dropped on bus lag count
+/// into `datachannel_dropped_total`.
+async fn dc_write_loop<S, Fut, E>(
+    stream: String,
+    mut receiver: broadcast::Receiver<Vec<u8>>,
+    send: S,
+    connected_gate: Option<watch::Receiver<RTCPeerConnectionState>>,
+    gate_timeout: std::time::Duration,
+    cancel: CancellationToken,
+) where
+    S: Fn(bytes::BytesMut) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<(), E>>,
+    E: std::fmt::Display,
+{
+    let mut connected = connected_gate.is_none();
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                debug!("data channel write loop cancelled");
+                return;
+            }
+            msg = receiver.recv() => match msg {
+                Ok(msg) => msg,
+                // Data-channel messages must not silently stop
+                // forwarding on a lag burst.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    metrics::DATACHANNEL_DROPPED_TOTAL
+                        .with_label_values(&["out"])
+                        .inc_by(n);
+                    warn!(
+                        "[{}] data channel receiver lagged, dropped {} messages",
+                        stream, n
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+        };
+        if !connected {
+            if let Some(gate) = connected_gate.clone() {
+                let wait = wait_for_peer_connected(gate, gate_timeout, "data channel send");
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        debug!("data channel write loop cancelled");
+                        return;
+                    }
+                    result = wait => {
+                        if let Err(err) = result {
+                            info!(
+                                "data channel send stopped before Connected: {:?}",
+                                err
+                            );
                             return;
                         }
                     }
-                    Some(webrtc::data_channel::DataChannelEvent::OnOpen) => {
-                        debug!("Data channel opened");
-                    }
-                    Some(webrtc::data_channel::DataChannelEvent::OnClose) | None => {
-                        info!("Datachannel closed; Exit the read_loop");
-                        return;
-                    }
-                    _ => {}
                 }
             }
-        });
-
-        tokio::spawn(async move {
-            let mut receiver = receiver;
-            let mut connected = connected_gate.is_none();
-            loop {
-                let msg = match receiver.recv().await {
-                    Ok(msg) => msg,
-                    // Data-channel messages must not silently stop
-                    // forwarding on a lag burst.
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("data channel receiver lagged, dropped {} messages", n);
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-                if !connected {
-                    if let Some(gate) = connected_gate.clone()
-                        && let Err(err) = wait_for_peer_connected(
-                            gate,
-                            PUBLISH_CONNECTED_TIMEOUT,
-                            "publish data channel send",
-                        )
-                        .await
-                    {
-                        info!(
-                            "publish data channel send stopped before Connected: {:?}",
-                            err
-                        );
-                        return;
-                    }
-                    connected = true;
-                }
-                if let Err(err) = dc_tx.send(bytes::BytesMut::from(&msg[..])).await {
-                    info!("write data channel err: {}", err);
-                    return;
-                }
-            }
-        });
+            connected = true;
+        }
+        if let Err(err) = send(bytes::BytesMut::from(&msg[..])).await {
+            info!("write data channel err: {}", err);
+            return;
+        }
+        metrics::DATACHANNEL_MESSAGES_TOTAL
+            .with_label_values(&["out"])
+            .inc();
+        metrics::DATACHANNEL_BYTES_TOTAL
+            .with_label_values(&["out"])
+            .inc_by(msg.len() as u64);
+        metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+            .with_label_values(&[stream.as_str(), "out"])
+            .inc_by(msg.len() as u64);
     }
 }
 
@@ -1296,9 +1661,29 @@ impl PeerForwardInternal {
 /// Whether a new WHIP publish may displace the incumbent publisher:
 /// override must be enabled for the stream and the incumbent must be a
 /// plain WHIP session — a cascade pull is supervised and would fight the
-/// displacer by reconnecting, so it always conflicts instead.
-fn override_allowed(strategy: &api::strategy::Strategy, incumbent_is_cascade: bool) -> bool {
-    strategy.override_publisher && !incumbent_is_cascade
+/// displacer by reconnecting, so it always conflicts instead. One
+/// exception: a plain WHIP incumbent that is already disconnecting or
+/// failing is on its way out (the disconnected-watchdog bounds the wait), so
+/// a fresh publish — overwhelmingly the same client reconnecting after a
+/// network blip — may displace it even when the stream opted out of
+/// override, instead of failing with a 409 until the reaper catches up.
+fn override_allowed(
+    strategy: &api::strategy::Strategy,
+    incumbent_is_cascade: bool,
+    incumbent_state: RTCPeerConnectionState,
+) -> bool {
+    // A cascade pull is supervised and would fight the displacer by
+    // reconnecting, so it always conflicts here, whatever its state.
+    if incumbent_is_cascade {
+        return false;
+    }
+    strategy.override_publisher
+        || matches!(
+            incumbent_state,
+            RTCPeerConnectionState::Disconnected
+                | RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+        )
 }
 
 impl PeerForwardInternal {
@@ -1383,7 +1768,9 @@ impl PeerForwardInternal {
     /// (mediamtx-style override, `strategy.override_publisher`). Returns
     /// `Ok(None)` when no publisher is attached. A cascade-pull incumbent
     /// is never displaced, and a stream can opt out of override entirely;
-    /// both surface as the same conflict a duplicate publish got before.
+    /// both surface as the same conflict a duplicate publish got before —
+    /// unless the incumbent is already disconnecting/failing, in which case
+    /// the fresh publish always wins (see `override_allowed`).
     pub(crate) async fn replace_publish(&self) -> Result<Option<String>> {
         // Fast path for the common first-publish case: skip the stats
         // aggregation entirely when no publisher is attached.
@@ -1398,7 +1785,11 @@ impl PeerForwardInternal {
             let Some(current) = publish.as_ref() else {
                 return Ok(None);
             };
-            if !override_allowed(&self.strategy, current.cascade.is_some()) {
+            if !override_allowed(
+                &self.strategy,
+                current.cascade.is_some(),
+                current.connection_state(),
+            ) {
                 return Err(AppError::stream_already_exists(
                     "A connection has already been established",
                 ));
@@ -1407,7 +1798,7 @@ impl PeerForwardInternal {
             session_info.state = RTCPeerConnectionState::Closed;
             session_info.leave_at = Utc::now().timestamp_millis();
             let old = publish.take().unwrap();
-            (old.peer, session_info)
+            (old.peer.clone(), session_info)
         };
         let session_id = session_info.id.clone();
         info!(
@@ -1419,6 +1810,68 @@ impl PeerForwardInternal {
         // exact. The close re-enters `remove_publish` via the state
         // handler, which is a no-op because the session is already out of
         // `publish`.
+        let _ = old_peer.close().await;
+        self.do_remove_publish_cleanup(session_info, SessionStopReason::Replaced)
+            .await;
+        Ok(Some(session_id))
+    }
+
+    /// Displace the incumbent publisher when it is a cascade pull whose peer
+    /// is no longer connected: the hop's supervisor (liveman) re-issues the
+    /// pull, and replacing here — like `replace_publish` — keeps subscribers
+    /// attached through the media-generation machinery instead of dropping
+    /// them with a publisher-leave teardown. A still-connected cascade-pull
+    /// incumbent and any plain WHIP publisher keep their hard conflict.
+    #[cfg(feature = "cascade")]
+    pub(crate) async fn replace_dead_cascade_pull_incumbent(&self) -> Result<Option<String>> {
+        let dead = {
+            let publish = self.publish.read().await;
+            match publish.as_ref() {
+                Some(p) => {
+                    p.cascade.is_some()
+                        && matches!(
+                            p.connection_state(),
+                            RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                        )
+                }
+                None => false,
+            }
+        };
+        if !dead {
+            return Ok(None);
+        }
+        // Aggregated before the `publish` write lock, mirroring
+        // `replace_publish` (lock order: `publish_tracks` before `publish`).
+        let stats = self.current_publish_stats().await;
+        let (old_peer, session_info) = {
+            let mut publish = self.publish.write().await;
+            let Some(current) = publish.as_ref() else {
+                return Ok(None);
+            };
+            // Recheck under the write lock: a re-issued pull may have
+            // attached since the read pass.
+            if current.cascade.is_none()
+                || !matches!(
+                    current.connection_state(),
+                    RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+                )
+            {
+                return Ok(None);
+            }
+            let mut session_info = current.info(stats).await;
+            session_info.state = RTCPeerConnectionState::Closed;
+            session_info.leave_at = Utc::now().timestamp_millis();
+            let old = publish.take().unwrap();
+            (old.peer.clone(), session_info)
+        };
+        let session_id = session_info.id.clone();
+        info!(
+            "[{}] [publish] {} replaced: dead cascade-pull incumbent",
+            self.stream, session_id
+        );
+        // Close before cleanup, mirroring `replace_publish`: the close
+        // re-enters `remove_publish` via the state handler, which is a no-op
+        // because the session is already out of `publish`.
         let _ = old_peer.close().await;
         self.do_remove_publish_cleanup(session_info, SessionStopReason::Replaced)
             .await;
@@ -1561,6 +2014,21 @@ impl PeerForwardInternal {
         publish.as_ref().unwrap().media_info.video_transceiver.2
     }
 
+    /// The current publish session's negotiated send-track counts
+    /// `(video, audio)` from its media info, or `None` when the publisher is
+    /// virtual (source bridge / RTSP push carries no session media info).
+    /// Lets media taps wait for the full track set instead of racing the
+    /// first `on_track`.
+    #[cfg(any(feature = "target-rtsp", feature = "target-rtp"))]
+    pub(crate) async fn negotiated_publish_track_counts(&self) -> Option<(usize, usize)> {
+        self.publish.read().await.as_ref().map(|p| {
+            (
+                p.media_info.video_transceiver.0 as usize,
+                p.media_info.audio_transceiver.0 as usize,
+            )
+        })
+    }
+
     pub async fn publish_svc_rids(&self) -> Result<Vec<String>> {
         let publish_tracks = self.publish_tracks.read().await;
         let rids = publish_tracks
@@ -1671,6 +2139,7 @@ impl PeerForwardInternal {
         *self.publish_peer_state_rx.lock().await = Some(connection_state_rx.clone());
         let handler = PublishPeerHandler {
             internal: internal_weak,
+            peer: Arc::new(Mutex::new(None)),
             gather_complete: gather_complete.clone(),
             connection_state_tx,
         };
@@ -1679,14 +2148,22 @@ impl PeerForwardInternal {
                 .with_media_engine(m)
                 .with_interceptor_registry(registry)
                 .with_setting_engine(s)
-                .with_handler(Arc::new(handler))
+                .with_handler(Arc::new(handler.clone()))
                 .with_udp_addrs(self.ice_udp_addrs.clone())
                 .with_configuration(config)
                 .build()
                 .await?,
         );
+        handler.set_peer(Arc::downgrade(&peer)).await;
         // Store weak ref so the handler can find the peer during events
         *self.publish_peer_ref.lock().await = Some(Arc::downgrade(&peer));
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "publish",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         let mut transceiver_kinds = vec![];
         if media_info.video_transceiver.0 > 0 {
@@ -1771,19 +2248,118 @@ impl PeerForwardInternal {
         Ok(())
     }
 
+    /// Create the stream's server-side cable channels (cables with
+    /// `create = true`) on this session's peer and wire them onto the cable
+    /// buses. Called on the session's first inbound channel announce: an
+    /// incoming DCEP OPEN proves the SCTP association is established and the
+    /// DTLS role is resolved — creating earlier (e.g. at
+    /// `PeerConnectionState::Connected`) can drop the OPEN write as
+    /// non-Established or pick the wrong stream-id parity (colliding with a
+    /// client-created channel, which the client then silently swallows).
+    async fn create_server_cables(&self, peer: &Arc<dyn PeerConnection>, publisher: bool) {
+        for cfg in self.cables.server_created().cloned().collect::<Vec<_>>() {
+            let init = webrtc::data_channel::RTCDataChannelInit {
+                // Unset means the WebRTC default: ordered and reliable.
+                ordered: cfg.ordered.unwrap_or(true),
+                max_packet_life_time: cfg.max_packet_life_time,
+                max_retransmits: cfg.max_retransmits,
+                protocol: cfg.protocol.clone(),
+                negotiated: None,
+            };
+            match peer.create_data_channel(&cfg.label, Some(init)).await {
+                Ok(dc) => {
+                    debug!(
+                        "[{}] created server cable channel '{}'",
+                        self.stream, cfg.label
+                    );
+                    let _ = if publisher {
+                        self.publish_data_channel(peer.clone(), dc, false).await
+                    } else {
+                        self.subscribe_data_channel(peer.clone(), dc, false).await
+                    };
+                }
+                Err(err) => {
+                    warn!(
+                        "[{}] failed to create cable channel '{}': {:?}",
+                        self.stream, cfg.label, err
+                    );
+                }
+            }
+        }
+    }
+
+    /// Any declared cable the server creates channels for.
+    pub(crate) fn has_server_cables(&self) -> bool {
+        self.cables.server_created().next().is_some()
+    }
+
     pub(crate) async fn publish_data_channel(
         &self,
-        _peer: Arc<dyn PeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
+        from_client: bool,
     ) -> Result<()> {
-        let sender = self.data_channel_forward.subscribe.clone();
-        let receiver = self.data_channel_forward.publish.subscribe();
-        let connection_state_rx = self.publish_peer_state_rx.lock().await.clone();
-        Self::data_channel_forward(dc, sender, receiver, connection_state_rx);
+        let (gate, cancel, _spawn_cables) = {
+            let publish = self.publish.read().await;
+            match publish.as_ref() {
+                Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
+                    let spawn = from_client && !p.cables_spawned.swap(true, Ordering::Relaxed);
+                    (Some(p.connection_state_rx()), p.dc_cancel_token(), spawn)
+                }
+                _ => {
+                    // A late `on_data_channel` from a publisher that was
+                    // replaced or torn down must not register forwarding
+                    // tasks on the stream bus.
+                    warn!(
+                        "[{}] [publish] ignoring data channel of a stale session",
+                        self.stream
+                    );
+                    return Ok(());
+                }
+            }
+        };
+        if _spawn_cables {
+            // Boxed: create_server_cables wires its channels through this
+            // very function (with from_client=false), and an unboxed async
+            // cycle is an infinitely sized future.
+            Box::pin(self.create_server_cables(&peer, true)).await;
+        }
+        // The publisher's channel: its messages go to all subscribers
+        // (to_subscribers), it receives what subscribers send (to_publisher).
+        let label = dc.label().await.unwrap_or_default();
+        if from_client
+            && let Some(cfg) = self.cables.declared(&label)
+            && cfg.create
+        {
+            // This cable's channel is created by the server on every
+            // session; wiring the client's same-label channel too would
+            // double-deliver every message. Close it: the client falls back
+            // to the server-created channel it receives via ondatachannel.
+            warn!(
+                "[{}] [publish] closing client channel '{}': the cable is server-created",
+                self.stream, label
+            );
+            let _ = dc.close().await;
+            return Ok(());
+        }
+        let bus = self.cables.route(&label);
+        Self::data_channel_forward(
+            &self.stream,
+            dc,
+            bus.to_subscribers.clone(),
+            bus.to_publisher.subscribe(),
+            gate,
+            cancel,
+        );
         Ok(())
     }
 
-    #[cfg(any(feature = "recorder", feature = "rtsp"))]
+    #[cfg(any(
+        feature = "recorder",
+        feature = "rtsp",
+        feature = "target-rtp",
+        feature = "target-rtsp"
+    ))]
     pub(crate) fn subscribe_publish_tracks_change(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.publish_tracks_change.subscribe()
     }
@@ -1799,7 +2375,7 @@ impl PeerForwardInternal {
         })
     }
 
-    #[cfg(feature = "recorder")]
+    #[cfg(any(feature = "recorder", feature = "target-rtp", feature = "target-rtsp"))]
     pub(crate) async fn send_rtcp_to_publish(
         &self,
         message: crate::forward::rtcp::RtcpMessage,
@@ -1839,8 +2415,11 @@ impl PeerForwardInternal {
 
         // Outermost layer: tap inbound subscriber feedback (NACK / RR /
         // TWCC / PLI) into per-subscriber quality counters for the
-        // adaptive-bitrate controller (issue #409).  Pure observer — the
-        // packets continue down the chain untouched.
+        // adaptive-bitrate controller (issue #409), also mirrored into the
+        // server-wide `from_subscriber` RTCP Prometheus counters.  Pure
+        // observer — the packets continue down the chain untouched.  Only
+        // built with the `source` feature, so that counter direction is
+        // absent in builds without it.
         #[cfg(feature = "source")]
         let registry = {
             let stats = subscribe_quality::SubscribeRtcpStats::new();
@@ -1897,6 +2476,13 @@ impl PeerForwardInternal {
                 .await?,
         );
         handler.set_peer(Arc::downgrade(&peer)).await;
+        spawn_establish_watchdog(
+            self.stream.clone(),
+            "subscribe",
+            connection_state_rx.clone(),
+            &peer,
+            &handler.internal,
+        );
 
         // The session ID is allocated up front (not in `add_subscribe`) so
         // the sender-setup logs below can already be attributed to it.
@@ -2286,12 +2872,59 @@ impl PeerForwardInternal {
 
     pub(crate) async fn subscribe_data_channel(
         &self,
-        _peer: Arc<dyn PeerConnection>,
+        peer: Arc<dyn PeerConnection>,
         dc: Arc<dyn DataChannel>,
+        from_client: bool,
     ) -> Result<()> {
-        let sender = self.data_channel_forward.publish.clone();
-        let receiver = self.data_channel_forward.subscribe.subscribe();
-        Self::data_channel_forward(dc, sender, receiver, None);
+        let (gate, cancel, _spawn_cables) = {
+            let subscribe_group = self.subscribe_group.read().await;
+            match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
+                Some(s) => {
+                    let spawn = from_client && !s.cables_spawned.swap(true, Ordering::Relaxed);
+                    (Some(s.connection_state_rx()), s.dc_cancel_token(), spawn)
+                }
+                None => {
+                    // A late `on_data_channel` from a session that was already
+                    // removed must not register forwarding tasks on the
+                    // stream bus.
+                    warn!(
+                        "[{}] [subscribe] ignoring data channel of a stale session",
+                        self.stream
+                    );
+                    return Ok(());
+                }
+            }
+        };
+        if _spawn_cables {
+            // Boxed: see publish_data_channel.
+            Box::pin(self.create_server_cables(&peer, false)).await;
+        }
+        // A subscriber's channel: its messages go to the publisher
+        // (to_publisher), it receives what the publisher sends
+        // (to_subscribers).
+        let label = dc.label().await.unwrap_or_default();
+        if from_client
+            && let Some(cfg) = self.cables.declared(&label)
+            && cfg.create
+        {
+            // See publish_data_channel: server-created cable channels win;
+            // the client's same-label duplicate is closed.
+            warn!(
+                "[{}] [subscribe] closing client channel '{}': the cable is server-created",
+                self.stream, label
+            );
+            let _ = dc.close().await;
+            return Ok(());
+        }
+        let bus = self.cables.route(&label);
+        Self::data_channel_forward(
+            &self.stream,
+            dc,
+            bus.to_publisher.clone(),
+            bus.to_subscribers.subscribe(),
+            gate,
+            cancel,
+        );
         Ok(())
     }
 
@@ -2366,5 +2999,617 @@ mod tests {
 
         assert!(error.contains("manual twcc"));
         assert!(error.contains("timed out"));
+    }
+}
+
+#[cfg(test)]
+mod dc_tests {
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    use tokio::sync::{broadcast, mpsc, watch};
+    use webrtc::data_channel::{DataChannelEvent, RTCDataChannelMessage};
+
+    use super::*;
+
+    fn on_message(data: &[u8]) -> Option<DataChannelEvent> {
+        Some(DataChannelEvent::OnMessage(RTCDataChannelMessage {
+            is_string: false,
+            data: bytes::BytesMut::from(data),
+        }))
+    }
+
+    /// Canned event source: yields the queued events, then pends forever —
+    /// mirroring a data channel whose peer died without `OnClose` (the
+    /// webrtc driver is aborted on close, so `poll()` never returns again).
+    fn canned_poll(
+        mut events: VecDeque<Option<DataChannelEvent>>,
+    ) -> impl FnMut() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<DataChannelEvent>> + Send>,
+    > {
+        move || {
+            let event = events.pop_front();
+            Box::pin(async move {
+                match event {
+                    Some(event) => event,
+                    None => std::future::pending().await,
+                }
+            })
+        }
+    }
+
+    /// Sink for the write loop: collects everything `send` is asked to send.
+    type TestSend =
+        Box<dyn Fn(bytes::BytesMut) -> std::future::Ready<std::result::Result<(), String>> + Send>;
+    fn collect_sends() -> (mpsc::UnboundedReceiver<Vec<u8>>, TestSend) {
+        let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let send = Box::new(move |data: bytes::BytesMut| {
+            std::future::ready(tx.send(data.to_vec()).map_err(|e| e.to_string()))
+        });
+        (rx, send)
+    }
+
+    // ── read loop ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_loop_forwards_messages_until_close() {
+        let events = VecDeque::from([
+            on_message(b"a"),
+            on_message(b"b"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"a");
+        assert_eq!(rx.recv().await.unwrap(), b"b");
+        task.await.unwrap();
+        // The bus sender left with the task.
+        assert!(rx.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_loop_ignores_non_message_events() {
+        let events = VecDeque::from([
+            Some(DataChannelEvent::OnOpen),
+            Some(DataChannelEvent::OnError),
+            Some(DataChannelEvent::OnClosing),
+            Some(DataChannelEvent::OnBufferedAmountLow),
+            Some(DataChannelEvent::OnBufferedAmountHigh),
+            on_message(b"x"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"x");
+        task.await.unwrap();
+        assert!(rx.recv().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_loop_exits_on_poll_none() {
+        let events = VecDeque::from([on_message(b"a"), None]);
+        let (tx, mut rx) = broadcast::channel::<Vec<u8>>(4);
+        let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ));
+
+        assert_eq!(rx.recv().await.unwrap(), b"a");
+        task.await.unwrap();
+    }
+
+    /// A bus send fails when the bus has no active receivers. The read loop
+    /// must drop the message and survive: receivers that attach later still
+    /// get new messages, and the loop only ends with the session's cancel.
+    #[tokio::test]
+    async fn read_loop_survives_bus_without_receivers() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        drop(bus_rx);
+        let cancel = CancellationToken::new();
+
+        // A live event source (the canned poll exhausts; this one stays
+        // open, so a message can still be delivered after a receiver
+        // attaches).
+        let (events_tx, events_rx) = mpsc::unbounded_channel::<DataChannelEvent>();
+        let events_rx = std::sync::Arc::new(tokio::sync::Mutex::new(events_rx));
+        let poll = move || {
+            let events_rx = events_rx.clone();
+            async move { events_rx.lock().await.recv().await }
+        };
+        let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
+            poll,
+            bus_tx.clone(),
+            cancel.clone(),
+        ));
+
+        // Dropped (no receivers), but the loop must survive.
+        events_tx.send(on_message(b"a").unwrap()).unwrap();
+        events_tx.send(on_message(b"b").unwrap()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!task.is_finished());
+
+        // A receiver attaching later still gets new messages.
+        let mut bus_rx = bus_tx.subscribe();
+        events_tx.send(on_message(b"c").unwrap()).unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(1), bus_rx.recv())
+            .await
+            .expect("read loop died after send without receivers")
+            .unwrap();
+        assert_eq!(got, b"c");
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("read loop leaked")
+            .unwrap();
+    }
+
+    /// Regression: a dead peer never yields `OnClose`, so a poll that pends
+    /// forever must still be interruptible by session teardown.
+    #[tokio::test]
+    async fn read_loop_cancel_breaks_pending_poll() {
+        let (tx, _rx) = broadcast::channel::<Vec<u8>>(1);
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_read_loop(
+            "test".to_string(),
+            canned_poll(VecDeque::new()),
+            tx,
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!task.is_finished());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("read loop leaked on a pending poll")
+            .unwrap();
+    }
+
+    // ── write loop ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_loop_delivers_messages() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m1".to_vec()).unwrap();
+        bus_tx.send(b"m2".to_vec()).unwrap();
+        assert_eq!(sent.recv().await.unwrap(), b"m1");
+        assert_eq!(sent.recv().await.unwrap(), b"m2");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_continues_after_lag() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        // Overflow the ring before the loop starts: the first recv lags.
+        bus_tx.send(b"old".to_vec()).unwrap();
+        bus_tx.send(b"new".to_vec()).unwrap();
+
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        assert_eq!(sent.recv().await.unwrap(), b"new");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_exits_when_bus_closes() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let (_sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        ));
+
+        drop(bus_tx);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after bus closed")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_exits_on_send_error() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let send = |_| async { Err::<(), _>("boom".to_string()) };
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after send error")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_waits_for_connected() {
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(5),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            sent.try_recv().is_err(),
+            "message sent before the peer Connected"
+        );
+
+        state_tx.send(RTCPeerConnectionState::Connected).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), sent.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            b"m"
+        );
+
+        // After the gate opens once, later messages flow without waiting.
+        bus_tx.send(b"m2".to_vec()).unwrap();
+        assert_eq!(sent.recv().await.unwrap(), b"m2");
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_timeout_exits() {
+        let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (mut sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_millis(20),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after gate timeout")
+            .unwrap();
+        assert!(sent.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_terminal_state_exits() {
+        for state in [
+            RTCPeerConnectionState::Failed,
+            RTCPeerConnectionState::Closed,
+            RTCPeerConnectionState::Disconnected,
+        ] {
+            let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+            state_tx.send(state).unwrap();
+            let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+            let (mut sent, send) = collect_sends();
+            let task = tokio::spawn(dc_write_loop(
+                "test".to_string(),
+                bus_rx,
+                send,
+                Some(state_rx),
+                Duration::from_secs(5),
+                CancellationToken::new(),
+            ));
+
+            bus_tx.send(b"m".to_vec()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("write loop stuck on terminal gate state")
+                .unwrap();
+            assert!(sent.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn write_loop_gate_dropped_state_channel_exits() {
+        let (state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        drop(state_tx);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (_sent, send) = collect_sends();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck after state channel closed")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_cancel_during_gate_wait() {
+        let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (_sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            Some(state_rx),
+            Duration::from_secs(60),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(b"m".to_vec()).unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop stuck in gate wait after cancel")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_loop_cancel_while_parked() {
+        let (_bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        let (_sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!task.is_finished());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("write loop leaked on a parked recv")
+            .unwrap();
+    }
+
+    // ── DataChannel metrics ───────────────────────────────────────────────
+
+    /// The read loop counts every received message into the `in` series
+    /// (server-wide and per-stream), the write loop counts a message only
+    /// after it is actually written (`out`), and a lagged bus receiver lands
+    /// in the dropped counter. Per-stream assertions use dedicated stream
+    /// names so parallel tests cannot interfere; the server-wide dropped
+    /// counter is asserted as a delta.
+    #[tokio::test]
+    async fn dc_loops_count_prometheus_metrics() {
+        // Read side: two received messages, 2 + 3 payload bytes.
+        let events = VecDeque::from([
+            on_message(b"ab"),
+            on_message(b"cde"),
+            Some(DataChannelEvent::OnClose),
+        ]);
+        let (tx, _rx) = broadcast::channel::<Vec<u8>>(4);
+        tokio::spawn(dc_read_loop(
+            "dc-metrics-read".to_string(),
+            canned_poll(events),
+            tx,
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(
+            metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                .with_label_values(&["dc-metrics-read", "in"])
+                .get(),
+            5
+        );
+        assert!(
+            metrics::DATACHANNEL_MESSAGES_TOTAL
+                .with_label_values(&["in"])
+                .get()
+                >= 2
+        );
+
+        // Write side: the ring holds one message, so the first recv lags by
+        // one and only the newer message is written and counted.
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(1);
+        bus_tx.send(b"old".to_vec()).unwrap();
+        bus_tx.send(b"new3".to_vec()).unwrap();
+        let dropped_before = metrics::DATACHANNEL_DROPPED_TOTAL
+            .with_label_values(&["out"])
+            .get();
+
+        let (mut sent, send) = collect_sends();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "dc-metrics-write".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        assert_eq!(sent.recv().await.unwrap(), b"new3");
+        cancel.cancel();
+        task.await.unwrap();
+
+        assert_eq!(
+            metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                .with_label_values(&["dc-metrics-write", "out"])
+                .get(),
+            4,
+            "only the written message counts"
+        );
+        assert!(
+            metrics::DATACHANNEL_MESSAGES_TOTAL
+                .with_label_values(&["out"])
+                .get()
+                >= 1
+        );
+        assert!(
+            metrics::DATACHANNEL_DROPPED_TOTAL
+                .with_label_values(&["out"])
+                .get()
+                > dropped_before,
+            "the lagged message lands in the dropped counter"
+        );
+    }
+
+    // ── publish override decisions ────────────────────────────────────────
+
+    #[test]
+    fn override_allowed_decisions() {
+        use RTCPeerConnectionState as S;
+        let permissive = api::strategy::Strategy {
+            override_publisher: true,
+            ..Default::default()
+        };
+        let strict = api::strategy::Strategy {
+            override_publisher: false,
+            ..Default::default()
+        };
+
+        // Override on: a plain-WHIP incumbent always yields.
+        assert!(override_allowed(&permissive, false, S::Connected));
+        assert!(override_allowed(&permissive, false, S::New));
+
+        // A cascade-pull incumbent never yields, whatever the strategy or
+        // its state — its supervisor would reconnect and fight the
+        // displacer.
+        for state in [S::Connected, S::Disconnected, S::Failed, S::Closed] {
+            assert!(!override_allowed(&permissive, true, state));
+            assert!(!override_allowed(&strict, true, state));
+        }
+
+        // Override off + healthy incumbent: hard conflict (409).
+        for state in [S::New, S::Connecting, S::Connected] {
+            assert!(!override_allowed(&strict, false, state));
+        }
+        // Override off + dying plain-WHIP incumbent: replaceable, so a fast
+        // reconnect does not bounce off the zombie with a 409.
+        for state in [S::Disconnected, S::Failed, S::Closed] {
+            assert!(override_allowed(&strict, false, state));
+        }
+    }
+
+    // ── cable bridge lifecycle (stream-level hub) ─────────────────────────
+
+    /// Cable UDP bridges are owned by the stream-level cable hub, not by the
+    /// forward: dropping the hub (stream deleted) cancels a bridge and
+    /// releases its listen port; a forward reset leaves the hub — and the
+    /// port — untouched.
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn cable_bridge_dies_with_hub_not_forward() {
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let listen = probe.local_addr().unwrap();
+        drop(probe);
+
+        let entry = crate::config::StreamEntry {
+            cables: vec![crate::config::CableConfig::new("control")],
+            sources: vec![crate::config::SourceConfig {
+                url: None,
+                cables: vec![crate::config::CableEndpoint {
+                    label: "control".to_string(),
+                    url: format!("udp://0.0.0.0:{}?host=127.0.0.1&port=9", listen.port()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&entry.cables));
+        hub.attach_static_endpoints("test", &entry).await;
+        assert!(
+            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            "bridge must hold its configured port"
+        );
+
+        // A forward reset swaps the forward but the hub is untouched.
+        let (lifecycle_tx, _rx) = broadcast::channel(1);
+        let forward = PeerForwardInternal::new(
+            "test",
+            vec![],
+            vec![],
+            false,
+            hub.clone(),
+            api::strategy::Strategy::default(),
+            lifecycle_tx,
+        );
+        forward.close().await.unwrap();
+        drop(forward);
+        assert!(
+            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            "forward close must not release the stream-level bridge's port"
+        );
+
+        // Deleting the stream drops the hub, which cancels the bridge.
+        drop(hub);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while tokio::net::UdpSocket::bind(listen).await.is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bridge port still held after the hub was dropped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }

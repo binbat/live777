@@ -22,6 +22,8 @@ pub(crate) struct CaptureConfigFFI {
     pub fps: u32,
     pub pixel_format: u32,
     pub prefer_dmabuf: u8,
+    pub hflip: u8,
+    pub vflip: u8,
 }
 
 #[repr(C)]
@@ -37,6 +39,7 @@ pub(crate) struct EncoderConfigFFI {
     pub level_idc: u32,
     pub tier_flag: u32,
     pub gop: u32,
+    pub bitrate_mode: u32,
     pub prefer_dmabuf: u8,
 }
 

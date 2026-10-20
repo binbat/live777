@@ -31,6 +31,7 @@ export const en: LocaleConfig = {
                         items: [
                             { text: 'Live777', link: 'live777' },
                             { text: 'livehal', link: 'livehal' },
+                            { text: 'Cable', link: 'cable' },
                             { text: 'Web UI', link: 'webui' },
                             { text: 'Recorder', link: 'recorder' },
                             { text: 'LiveMan', link: 'liveman' },
@@ -52,6 +53,7 @@ export const en: LocaleConfig = {
                             { text: 'FFmpeg', link: 'ffmpeg' },
                             { text: 'Gstreamer', link: 'gstreamer' },
                             { text: 'VLC', link: 'vlc' },
+                            { text: 'Unitree Go2', link: 'unitree' },
                         ]
                     },
                     {
@@ -60,6 +62,7 @@ export const en: LocaleConfig = {
                         items: [
                             { text: 'Live777 API', link: 'live777-api' },
                             { text: 'LiveMan API', link: 'liveman-api' },
+                            { text: 'Monitoring', link: 'monitoring' },
                         ]
                     }
                 ]

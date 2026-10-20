@@ -189,6 +189,9 @@ pub struct InternalSourceConfig {
     /// file source never reconnects.
     #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
     pub url: String,
+    /// Only the SDP file source joins multicast groups.
+    #[cfg(feature = "source-sdp")]
+    pub multicast_interface: Option<String>,
 }
 
 #[cfg(any(
@@ -198,13 +201,12 @@ pub struct InternalSourceConfig {
 ))]
 impl InternalSourceConfig {
     pub fn from_config(stream_id: &str, config: &crate::config::SourceConfig) -> Self {
-        #[cfg(not(any(feature = "source-rtsp", feature = "source-whep")))]
-        let _ = config;
-
         Self {
             stream_id: stream_id.to_string(),
             #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]
             url: config.url.clone().unwrap_or_default(),
+            #[cfg(feature = "source-sdp")]
+            multicast_interface: config.multicast_interface.clone(),
         }
     }
 }
@@ -299,6 +301,16 @@ pub trait StreamSource: Send + Sync {
     /// profile.
     #[cfg(feature = "source")]
     fn active_tier(&self) -> Option<String> {
+        None
+    }
+
+    /// The state the source's pipeline is actually running with (native
+    /// sources only): the last applied tier's name plus the current
+    /// capture geometry and encoder bitrate.  Read after a failed tier
+    /// apply rolled the pipeline back, to re-align hook-driven hardware
+    /// with the restored state.
+    #[cfg(feature = "source")]
+    fn active_tier_state(&self) -> Option<tier::ActiveTierState> {
         None
     }
 
@@ -463,6 +475,8 @@ mod tests {
             InternalSourceConfig {
                 stream_id: "test".to_string(),
                 url: url.to_string(),
+                #[cfg(feature = "source-sdp")]
+                multicast_interface: None,
             }
         }
 

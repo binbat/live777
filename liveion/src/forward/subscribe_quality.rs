@@ -21,9 +21,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::metrics;
 use rtc::interceptor::{Interceptor, Packet, StreamInfo, TaggedPacket};
 use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use rtc::rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate;
 use rtc::rtcp::receiver_report::ReceiverReport;
 use rtc::rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
 use rtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
@@ -156,6 +158,9 @@ impl SubscribeRtcpStats {
         for packet in packets {
             let any = packet.as_any();
             if let Some(nack) = any.downcast_ref::<TransportLayerNack>() {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "nack"])
+                    .inc();
                 if self.is_video_ssrc(nack.media_ssrc) {
                     let count: u64 = nack
                         .nacks
@@ -165,6 +170,9 @@ impl SubscribeRtcpStats {
                     self.nack_packets.fetch_add(count, Ordering::Relaxed);
                 }
             } else if let Some(rr) = any.downcast_ref::<ReceiverReport>() {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "rr"])
+                    .inc();
                 for report in &rr.reports {
                     if self.is_video_ssrc(report.ssrc) {
                         self.rr_fraction_lost
@@ -172,6 +180,9 @@ impl SubscribeRtcpStats {
                     }
                 }
             } else if let Some(twcc) = any.downcast_ref::<TransportLayerCc>() {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "twcc"])
+                    .inc();
                 if self.is_video_ssrc(twcc.media_ssrc) {
                     // recv_deltas has one entry per received packet; the
                     // remainder of packet_status_count was not received.
@@ -181,10 +192,27 @@ impl SubscribeRtcpStats {
                     self.twcc_lost
                         .fetch_add(total.saturating_sub(received), Ordering::Relaxed);
                 }
-            } else if any.downcast_ref::<PictureLossIndication>().is_some()
-                || any.downcast_ref::<FullIntraRequest>().is_some()
-            {
+            } else if any.downcast_ref::<PictureLossIndication>().is_some() {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "pli"])
+                    .inc();
                 self.pli_fir.fetch_add(1, Ordering::Relaxed);
+            } else if any.downcast_ref::<FullIntraRequest>().is_some() {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "fir"])
+                    .inc();
+                self.pli_fir.fetch_add(1, Ordering::Relaxed);
+            } else if any
+                .downcast_ref::<ReceiverEstimatedMaximumBitrate>()
+                .is_some()
+            {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "remb"])
+                    .inc();
+            } else {
+                metrics::RTCP_PACKETS_TOTAL
+                    .with_label_values(&["from_subscriber", "other"])
+                    .inc();
             }
         }
     }
@@ -367,5 +395,21 @@ mod tests {
         let q = sample_after(&stats, vec![Box::new(twcc)]);
         assert!(!q.twcc);
         assert_eq!(q.loss, 0.0);
+    }
+
+    #[test]
+    fn fir_remb_and_other_kinds_counted() {
+        let stats = SubscribeRtcpStats::new();
+        let fir = FullIntraRequest {
+            sender_ssrc: 0,
+            media_ssrc: 1,
+            fir: vec![],
+        };
+        let remb = ReceiverEstimatedMaximumBitrate::default();
+        // No dedicated arm in observe(): unclassified packets land in the
+        // "other" metric kind (a SenderReport as a convenient example).
+        let sr = rtc::rtcp::sender_report::SenderReport::default();
+        let q = sample_after(&stats, vec![Box::new(fir), Box::new(remb), Box::new(sr)]);
+        assert_eq!(q.pli_fir, 1);
     }
 }

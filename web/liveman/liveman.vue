@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, useTemplateRef, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from "vue";
 
 import { useNeedAuthorization } from "@/shared/hooks/use-need-authorization";
 import StreamsTable from "@/shared/components/streams-table.vue";
@@ -71,14 +71,17 @@ watch(currentView, () => {
     filterNodes.value = params.getAll("nodes");
 });
 
-const getStreams = async () => {
-    try {
-        const streams = await livemanApi.getStreams(filterNodes.value);
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
-    } catch {
-        return [];
+// SSE pushes of the merged cluster view, same as liveion's dashboard; the
+// nodes filter rides along as a query param (reactive, so the table
+// reconnects when it changes).
+const streamsSSEUrl = computed(() => {
+    if (filterNodes.value.length === 0) {
+        return sharedApi.STREAMS_SSE_URL;
     }
-};
+    const params = new URLSearchParams();
+    filterNodes.value.forEach(v => params.append("nodes", v));
+    return `${sharedApi.STREAMS_SSE_URL}?${params.toString()}`;
+});
 
 const getWhxpUrl = (whxp: "whep" | "whip", streamId: string) => {
     let url = `/${whxp}/${streamId}`;
@@ -93,6 +96,13 @@ const getWhxpUrl = (whxp: "whep" | "whip", streamId: string) => {
 const getWhepUrl = (streamId: string) => getWhxpUrl("whep", streamId);
 const getWhipUrl = (streamId: string) => getWhxpUrl("whip", streamId);
 
+// Aliases of the nodes currently hosting a stream, for the source
+// dialog's cluster mode (the encoder source lives on exactly one of them).
+const getStreamNodes = async (streamId: string) => {
+    const detail = await livemanApi.getStreamDetail(streamId);
+    return Object.keys(detail);
+};
+
 const streamTokenDialog = useTemplateRef<IStreamTokenDialog>("streamTokenDialog");
 </script>
 
@@ -106,13 +116,14 @@ const streamTokenDialog = useTemplateRef<IStreamTokenDialog>("streamTokenDialog"
         <template v-else>
             <NodesTable v-if="filterNodes.length === 0" />
             <StreamsTable
-                :get-streams="getStreams"
+                :streams-s-s-e-url="streamsSSEUrl"
                 :get-whep-url="getWhepUrl"
                 :get-whip-url="getWhipUrl"
-                :features="{ autoDetectRecording: true }"
+                :get-stream-nodes="getStreamNodes"
+                :features="{ autoDetectRecording: true, source: true }"
             >
                 <template #extra-actions="{ stream }">
-                    <button class="btn btn-sm" @click="streamTokenDialog?.show(stream.id)">Create token</button>
+                    <a @click="streamTokenDialog?.show(stream.id)">Create token</a>
                 </template>
             </StreamsTable>
         </template>

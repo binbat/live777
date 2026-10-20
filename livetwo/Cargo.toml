@@ -38,9 +38,17 @@ rtc-rtcp = { workspace = true }
 rtc-shared = { workspace = true }
 
 rsmpeg = { version = "0.18", features = ["link_system_ffmpeg"], optional = true }
+socket2 = { version = "0.6", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]
+# Multicast-aware UDP socket builders (transport::multicast), used by
+# liveion's SDP file source and rtp:// output target, and by whepfrom's
+# rtp://group:port output (always on in the root crate's livetwo dependency)
+multicast = ["dep:socket2", "dep:libc"]
 rsmpeg = ["dep:rsmpeg"]

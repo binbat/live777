@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use libwish::Client;
 use rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
 use rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
@@ -8,19 +8,26 @@ use rtc_rtcp::payload_feedbacks::receiver_estimated_maximum_bitrate::ReceiverEst
 use rtc_rtcp::receiver_report::ReceiverReport;
 use rtc_rtcp::transport_feedbacks::transport_layer_cc::TransportLayerCc;
 use rtc_rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack;
-use tokio::sync::{Notify, mpsc::UnboundedSender, watch};
+use tokio::sync::{Notify, mpsc, mpsc::UnboundedSender, watch};
 use tracing::debug;
 use webrtc::peer_connection::{PeerConnection, RTCIceServer, RTCPeerConnectionState};
 
+use crate::datachannel::{CableRouter, run_cable_send_dispatch, run_data_channel_loop};
 use crate::utils;
 use crate::utils::stats::RtcpStats;
 use crate::whip::core::{self, PublishDiagnostics, PublishPeerOptions};
 use crate::whip::track;
 
+/// `control_channel` creates the DataChannel joining the matching cable; it
+/// must be requested by the caller (via `--cable-url`) because it adds an
+/// `m=application` section to the WHIP offer, which not every WHIP server
+/// accepts.
 pub async fn setup_whip_peer(
     client: &mut Client,
     media_info: &rtsp::MediaInfo,
     input_id: String,
+    control_channel: bool,
+    cable_label: String,
     ice_servers: Vec<RTCIceServer>,
 ) -> Result<(
     Arc<dyn PeerConnection>,
@@ -29,18 +36,51 @@ pub async fn setup_whip_peer(
     Arc<RtcpStats>,
     watch::Receiver<RTCPeerConnectionState>,
     Arc<PublishDiagnostics>,
+    Option<(
+        mpsc::UnboundedReceiver<Vec<u8>>,
+        mpsc::UnboundedSender<Vec<u8>>,
+    )>,
 )> {
     let gather_complete = Arc::new(Notify::new());
+
+    // The DataChannel must exist before the offer is created in
+    // `setup_connection` below, or the offer carries no m=application
+    // section. The cable plumbing (router + outbound dispatcher) is set up
+    // first so the peer's handler can also accept server-created cable
+    // channels.
+    let cable = if control_channel {
+        let (dc_recv_tx, dc_recv_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (dc_send_tx, dc_send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let router = CableRouter::new();
+        run_cable_send_dispatch(dc_send_rx, router.clone(), "whipinto");
+        Some((dc_recv_tx, dc_recv_rx, dc_send_tx, router))
+    } else {
+        None
+    };
 
     let publish = core::create_publish_peer(
         gather_complete.clone(),
         PublishPeerOptions {
             ice_servers,
             extra_video_codecs: Vec::new(),
+            cable: cable
+                .as_ref()
+                .map(|(recv_tx, _, _, router)| (recv_tx.clone(), router.clone())),
         },
     )
     .await?;
     let peer = publish.peer;
+
+    let dc_channels = if let Some((dc_recv_tx, dc_recv_rx, dc_send_tx, router)) = cable {
+        let dc = peer
+            .create_data_channel(&cable_label, None)
+            .await
+            .map_err(|e| anyhow!("create_data_channel failed: {:?}", e))?;
+        run_data_channel_loop(dc, dc_recv_tx, router, "whipinto");
+        Some((dc_recv_rx, dc_send_tx))
+    } else {
+        None
+    };
 
     let video_tx = if let Some(ref video_codec_params) = media_info.video_codec {
         track::setup_video_track(peer.clone(), video_codec_params, input_id.clone()).await?
@@ -83,6 +123,7 @@ pub async fn setup_whip_peer(
         stats,
         publish.state_rx,
         publish.diagnostics,
+        dc_channels,
     ))
 }
 

@@ -41,6 +41,50 @@ pub enum ApplyTierOutcome {
     /// The source could not apply the tier (not running, or the rebuild
     /// failed and was rolled back).
     Unsupported,
+    /// A synchronous `on_source_changed` hook failed and the apply
+    /// was aborted before touching the pipeline.
+    HookFailed,
+}
+
+/// `on_source_changed` hook configuration for source tier applies (see
+/// [`crate::config::HookConfig::on_source_changed`]).
+#[cfg(feature = "source")]
+#[derive(Clone, Default)]
+pub struct TierHooks {
+    /// Global `[hooks]` scripts, run before per-stream ones.
+    pub global: Vec<String>,
+    /// Per-stream `[stream.<name>.hooks]` scripts.
+    pub per_stream: HashMap<String, Vec<String>>,
+    /// Per-script timeout (`None` = no timeout).
+    pub timeout: Option<Duration>,
+    /// Whether a failing script aborts the apply.
+    pub on_error: crate::config::OnError,
+}
+
+#[cfg(feature = "source")]
+impl TierHooks {
+    /// Build from the liveion config: global `[hooks]` plus every
+    /// `[stream.<name>.hooks]` entry that declares tier hooks.
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            global: config.hooks.hooks.on_source_changed.clone(),
+            per_stream: config
+                .stream
+                .streams
+                .iter()
+                .map(|(name, e)| (name.clone(), e.hooks.on_source_changed.clone()))
+                .filter(|(_, scripts)| !scripts.is_empty())
+                .collect(),
+            timeout: (config.hooks.timeout_ms > 0)
+                .then(|| Duration::from_millis(config.hooks.timeout_ms)),
+            on_error: config.hooks.on_error,
+        }
+    }
+
+    /// Whether any `on_source_changed` hook is configured at all.
+    pub fn is_empty(&self) -> bool {
+        self.global.is_empty() && self.per_stream.is_empty()
+    }
 }
 
 /// How the stream source's encoder bitrate is currently driven.
@@ -99,6 +143,15 @@ pub struct SourceManager {
     /// sources too, not only adaptive ones.
     #[cfg(feature = "source")]
     bitrate_controls: Arc<RwLock<HashMap<String, Arc<super::adaptive_bitrate::BitrateControl>>>>,
+
+    /// Synchronous `on_source_changed` hooks run before tier applies.
+    #[cfg(feature = "source")]
+    tier_hooks: TierHooks,
+
+    /// Serializes prepare+apply so rapid admin tier calls cannot interleave
+    /// a hardware prepare with another tier's rebuild.
+    #[cfg(feature = "source")]
+    tier_apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SourceManager {
@@ -109,7 +162,19 @@ impl SourceManager {
             bridges: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "source")]
             bitrate_controls: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "source")]
+            tier_hooks: TierHooks::default(),
+            #[cfg(feature = "source")]
+            tier_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Construct with `on_source_changed` hooks from the liveion config.
+    #[cfg(feature = "source")]
+    pub fn with_tier_hooks(config: &crate::config::Config) -> Self {
+        let mut manager = Self::new();
+        manager.tier_hooks = TierHooks::from_config(config);
+        manager
     }
 
     pub async fn add_source(&self, mut source: Box<dyn StreamSource>) -> Result<String> {
@@ -441,7 +506,13 @@ impl SourceManager {
     /// the running encoder in place; geometry tiers rebuild the pipeline
     /// underneath the stream (subscribers stay attached across the gap).
     /// The AIMD is not suspended — the tier's bitrate becomes its new
-    /// rung ceiling and resume seed.
+    /// rung ceiling and resume seed.  Configured `on_source_changed`
+    /// hooks run synchronously before the re-provisioning; a hook failure
+    /// aborts the apply (`on_error = "stop"`).  When the apply does not
+    /// reach the target state — prepare aborted, or the rebuild failed
+    /// and rolled back — the hooks run again with the source's *current*
+    /// state so hardware they switched (e.g. a camera sensor's mode gear)
+    /// is switched back.
     #[cfg(feature = "source")]
     pub async fn apply_source_tier(
         &self,
@@ -456,11 +527,51 @@ impl SourceManager {
             return ApplyTierOutcome::SourceNotFound;
         };
 
+        // Prepare+apply is one critical section: a hardware gear switched by
+        // a tier hook must not interleave with another tier's rebuild.
+        let _tier_guard = self.tier_apply_lock.lock().await;
+        if !self.tier_hooks.is_empty() {
+            let stream_scripts = self.stream_tier_scripts(stream_id);
+            if crate::hook::run_tier_hooks(
+                &self.tier_hooks.global,
+                stream_scripts,
+                stream_id,
+                &crate::hook::TierEnv {
+                    name: tier.name.clone(),
+                    width: tier.width,
+                    height: tier.height,
+                    fps: tier.fps,
+                    bitrate: tier.bitrate,
+                },
+                self.tier_hooks.timeout,
+                self.tier_hooks.on_error,
+            )
+            .await
+            .is_err()
+            {
+                // The pipeline was never touched, but earlier scripts in
+                // the batch may have switched hardware — re-align it with
+                // the still-current state.
+                let state = source.lock().await.active_tier_state();
+                if let Some(state) = state {
+                    self.run_tier_hooks_with_state(stream_id, state).await;
+                }
+                return ApplyTierOutcome::HookFailed;
+            }
+        }
+
         // The rebuild swaps the whole pipeline; the adaptive controller
         // never touches the encoder mid-rebuild because it only applies
         // decisions under this same source lock.
         let mut source_guard = source.lock().await;
         if !source_guard.apply_tier(tier).await {
+            let restored = source_guard.active_tier_state();
+            drop(source_guard);
+            // The pipeline rolled back to its previous params; re-align
+            // hook-driven hardware with the restored state.
+            if let Some(state) = restored {
+                self.run_tier_hooks_with_state(stream_id, state).await;
+            }
             return ApplyTierOutcome::Unsupported;
         }
 
@@ -469,6 +580,46 @@ impl SourceManager {
         }
         drop(source_guard);
         ApplyTierOutcome::Applied
+    }
+
+    /// The stream's per-stream tier hook scripts (`[]` when unset).
+    #[cfg(feature = "source")]
+    fn stream_tier_scripts(&self, stream_id: &str) -> &[String] {
+        self.tier_hooks
+            .per_stream
+            .get(stream_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Re-run the tier hooks against the state the source is *currently*
+    /// running with, after a failed tier apply: the pre-apply run switched
+    /// hardware for the target tier (e.g. a camera sensor's mode gear, on
+    /// platforms where framerate is a sensor-mode property), and the
+    /// pipeline rolled back — without this the hardware and the pipeline
+    /// diverge.  Best effort: runs with [`crate::config::OnError::Continue`]
+    /// and ignores the result, the apply is already failing.
+    #[cfg(feature = "source")]
+    async fn run_tier_hooks_with_state(
+        &self,
+        stream_id: &str,
+        state: super::tier::ActiveTierState,
+    ) {
+        let _ = crate::hook::run_tier_hooks(
+            &self.tier_hooks.global,
+            self.stream_tier_scripts(stream_id),
+            stream_id,
+            &crate::hook::TierEnv {
+                name: state.name.unwrap_or_default(),
+                width: Some(state.width),
+                height: Some(state.height),
+                fps: Some(state.fps),
+                bitrate: state.bitrate,
+            },
+            self.tier_hooks.timeout,
+            crate::config::OnError::Continue,
+        )
+        .await;
     }
 
     /// Snapshot of a stream source's bitrate state for the admin API.
@@ -639,6 +790,17 @@ mod tests {
         #[cfg(feature = "source")]
         fn active_tier(&self) -> Option<String> {
             self.active_tier.clone()
+        }
+
+        #[cfg(feature = "source")]
+        fn active_tier_state(&self) -> Option<super::super::tier::ActiveTierState> {
+            Some(super::super::tier::ActiveTierState {
+                name: self.active_tier.clone(),
+                width: 1920,
+                height: 1080,
+                fps: 30,
+                bitrate: self.configured.unwrap_or(4_000_000),
+            })
         }
 
         #[cfg(feature = "source")]
@@ -828,6 +990,131 @@ mod tests {
         assert_eq!(
             manager.apply_source_tier("broken", &res_tier).await,
             super::ApplyTierOutcome::Unsupported
+        );
+    }
+
+    /// Append-to-log shell script; each run appends one line with the
+    /// hook contract values.
+    #[cfg(all(unix, feature = "source"))]
+    fn tier_log_script(dir: &std::path::Path, name: &str, log: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$1 [$2] $LIVE777_SOURCE_WIDTH $LIVE777_SOURCE_HEIGHT $LIVE777_SOURCE_FPS $LIVE777_SOURCE_BITRATE\" >> {}\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[cfg(all(unix, feature = "source"))]
+    #[tokio::test]
+    async fn apply_source_tier_runs_tier_hooks_with_declared_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("tier.log");
+        let script = tier_log_script(dir.path(), "tier.sh", &log);
+
+        let mut manager = SourceManager::new();
+        manager.tier_hooks = super::TierHooks {
+            global: vec![script],
+            ..Default::default()
+        };
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        manager.add_source(Box::new(mock)).await.unwrap();
+
+        let mut rung = tier("hd60", 1_000_000);
+        rung.width = Some(1280);
+        rung.height = Some(720);
+        assert_eq!(
+            manager.apply_source_tier("cam", &rung).await,
+            super::ApplyTierOutcome::Applied
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "cam [hd60] 1280 720  1000000\n"
+        );
+    }
+
+    #[cfg(all(unix, feature = "source"))]
+    #[tokio::test]
+    async fn apply_source_tier_failure_reruns_hooks_with_current_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("tier.log");
+        let script = tier_log_script(dir.path(), "tier.sh", &log);
+
+        let mut manager = SourceManager::new();
+        manager.tier_hooks = super::TierHooks {
+            global: vec![script],
+            ..Default::default()
+        };
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        let retune_ok = mock.retune_ok.clone();
+        manager.add_source(Box::new(mock)).await.unwrap();
+        retune_ok.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let mut rung = tier("hd60", 1_000_000);
+        rung.width = Some(1280);
+        rung.height = Some(720);
+        assert_eq!(
+            manager.apply_source_tier("cam", &rung).await,
+            super::ApplyTierOutcome::Unsupported
+        );
+        // The pre-apply run exported the declared tier overlay; the
+        // compensation run exported the pipeline's actual current values
+        // (base profile: empty tier name, mock geometry/bitrate).
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "cam [hd60] 1280 720  1000000\n\
+             cam [] 1920 1080 30 4000000\n"
+        );
+    }
+
+    #[cfg(all(unix, feature = "source"))]
+    #[tokio::test]
+    async fn apply_source_tier_hook_failure_aborts_and_compensates() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("tier.log");
+        // The hook itself fails: it logs its run, then exits 1.
+        use std::os::unix::fs::PermissionsExt;
+        let fail = dir.path().join("fail.sh");
+        std::fs::write(
+            &fail,
+            format!(
+                "#!/bin/sh\necho \"ran [$2]\" >> {}\nexit 1\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fail, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut manager = SourceManager::new();
+        manager.tier_hooks = super::TierHooks {
+            global: vec![fail.to_str().unwrap().to_string()],
+            on_error: crate::config::OnError::Stop,
+            ..Default::default()
+        };
+        let mut mock = tiered_mock("cam");
+        mock.configured = Some(4_000_000);
+        manager.add_source(Box::new(mock)).await.unwrap();
+
+        assert_eq!(
+            manager
+                .apply_source_tier("cam", &tier("hd60", 1_000_000))
+                .await,
+            super::ApplyTierOutcome::HookFailed
+        );
+        // The pipeline was never touched, but the hooks still re-ran with
+        // the current state (compensation for partial prepare side
+        // effects) — the failing script logged both runs.
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "ran [hd60]\nran []\n"
         );
     }
 }

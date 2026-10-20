@@ -21,6 +21,8 @@
 //! bitrate = 1_500_000
 //! profile = "42001f"
 //! gop = 60
+//! # bitrate_mode = "vbr"   # v4l2-m2m only: "vbr" (driver default) or "cbr";
+//!                          # bcm2835-codec firmware rejects CBR
 //!
 //! [stream.usb-cam.sources.output]
 //! payload_type = 96
@@ -55,6 +57,19 @@ pub struct CaptureSpec {
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
+    /// Horizontal flip (mirror the image left-right, default `false`).
+    /// Both `hflip` and `vflip` set together give a 180° rotation.
+    ///
+    /// **libcamera backend only**: the flip is applied by the ISP, so it
+    /// costs no CPU.  90°/270° rotation is not offered — the Raspberry Pi
+    /// ISP cannot transpose an image in hardware.  The `v4l2` backend is
+    /// rejected by validation: its video node (unicam) only DMA-moves
+    /// frames and has no image-processing capability.
+    #[serde(default)]
+    pub hflip: bool,
+    /// Vertical flip (top-bottom, default `false`).  See [`CaptureSpec::hflip`].
+    #[serde(default)]
+    pub vflip: bool,
 }
 
 /// Encoder specification.
@@ -76,9 +91,19 @@ pub struct EncoderSpec {
     /// Optional encoder tier (H.265 only: `"main"` or `"high"`).
     #[serde(default)]
     pub tier: Option<String>,
-    /// GOP size (keyframe interval).
+    /// GOP size (keyframe interval in frames).  `0` disables periodic
+    /// keyframes on the `v4l2-m2m` backend: the encoder emits one initial
+    /// IDR and afterwards only P-frames, so keyframes are produced solely
+    /// on request (subscriber join / RTCP PLI/FIR → `FORCE_KEY_FRAME`).
     #[serde(default = "default_gop")]
     pub gop: u32,
+    /// Encoder rate-control mode: `"vbr"` or `"cbr"`.  Absent keeps the
+    /// driver default (VBR on bcm2835-codec).  Only the `v4l2-m2m` backend
+    /// honours this today; other backends ignore it.  Note the
+    /// bcm2835-codec (Raspberry Pi) firmware rejects CBR — the encoder
+    /// fails to start with it.
+    #[serde(default)]
+    pub bitrate_mode: Option<String>,
     /// Prefer DMA-BUF zero-copy path (default `false`).
     #[serde(default)]
     pub prefer_dmabuf: bool,
@@ -328,6 +353,15 @@ impl SourceSpec {
                 self.capture.backend
             );
         }
+        if (self.capture.hflip || self.capture.vflip) && backend != "libcamera" {
+            anyhow::bail!(
+                "capture.hflip/vflip are supported only by the libcamera backend: \
+                 the v4l2 video node (unicam) only DMA-moves frames and has no \
+                 image-processing capability; flip controls exist only on the \
+                 sensor sub-device, and setting them behind libcamera's back \
+                 would desync the ISP's Bayer order"
+            );
+        }
         if self.capture.width == 0 || self.capture.height == 0 {
             anyhow::bail!("capture width/height must be non-zero");
         }
@@ -337,8 +371,18 @@ impl SourceSpec {
         if self.encoder.bitrate == 0 {
             anyhow::bail!("encoder.bitrate must be non-zero");
         }
-        if self.encoder.gop == 0 {
-            anyhow::bail!("encoder.gop must be non-zero");
+        // gop = 0 (no periodic keyframes; IDR only on request) is a
+        // v4l2-m2m / bcm2835-codec capability — MMAL INTRAPERIOD = 0.
+        // Other backends have no defined zero semantics, so keep
+        // rejecting it there.
+        if self.encoder.gop == 0 && !self.encoder.backend.eq_ignore_ascii_case("v4l2-m2m") {
+            anyhow::bail!(
+                "encoder.gop must be non-zero (gop = 0 is supported only by the v4l2-m2m backend)"
+            );
+        }
+        if let Some(mode) = &self.encoder.bitrate_mode {
+            bitrate_mode_to_u32(mode)
+                .map_err(|e| anyhow::anyhow!("encoder.bitrate_mode: {}", e))?;
         }
         if let Some(AdaptiveConfig::Knobs {
             min_bitrate: Some(min),
@@ -520,6 +564,16 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
 /// Used when converting structured `EncoderSpec` into `NativeSourceParams`.
 pub fn codec_to_u32(s: &str) -> anyhow::Result<u32> {
     video_codec_from_str(s).map(Into::into)
+}
+
+/// Map a rate-control mode string to its FFI numeric value:
+/// 1 = VBR, 2 = CBR (0 = driver default is produced by an absent key).
+pub fn bitrate_mode_to_u32(s: &str) -> anyhow::Result<u32> {
+    match s.to_lowercase().as_str() {
+        "vbr" => Ok(1),
+        "cbr" => Ok(2),
+        other => anyhow::bail!("unsupported bitrate_mode: '{}'. Supported: vbr, cbr", other),
+    }
 }
 
 /// Parse a codec string into a typed enum.
@@ -722,9 +776,15 @@ impl SourceSpec {
             bitrate: self.encoder.bitrate,
             profile: profile_string.clone(),
             gop: self.encoder.gop,
+            bitrate_mode: match &self.encoder.bitrate_mode {
+                Some(mode) => bitrate_mode_to_u32(mode)?,
+                None => 0,
+            },
             payload_type: self.output.payload_type as u32,
             clock_rate: self.output.clock_rate,
             capture_prefer_dmabuf: self.capture.prefer_dmabuf as u8,
+            capture_hflip: self.capture.hflip as u8,
+            capture_vflip: self.capture.vflip as u8,
             encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
             codec_name: self.encoder.codec.to_uppercase(),
             default_profile: profile_string,
@@ -754,6 +814,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "yuyv".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "v4l2-m2m".into(),
@@ -763,6 +825,7 @@ mod tests {
                 level: None,
                 tier: None,
                 gop: 60,
+                bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
             },
@@ -782,6 +845,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: true,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rdk".into(),
@@ -791,6 +856,7 @@ mod tests {
                 level: Some("4.2".into()),
                 tier: None,
                 gop: 60,
+                bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
             },
@@ -810,6 +876,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rkmpp".into(),
@@ -819,6 +887,7 @@ mod tests {
                 level: None,
                 tier: None,
                 gop: 60,
+                bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
             },
@@ -838,6 +907,8 @@ mod tests {
                 fps: 30,
                 pixel_format: "nv12".into(),
                 prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
             },
             encoder: EncoderSpec {
                 backend: "rkmpp".into(),
@@ -847,6 +918,7 @@ mod tests {
                 level: Some("4.0".into()),
                 tier: None,
                 gop: 60,
+                bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
             },
@@ -900,6 +972,27 @@ mod tests {
     fn test_source_spec_rejects_mjpeg() {
         let mut spec = v4l2_spec();
         spec.capture.pixel_format = "mjpeg".into();
+        assert!(spec.validate().is_err());
+    }
+
+    // --- capture flip (hflip/vflip) tests ---
+
+    #[test]
+    fn test_source_spec_validate_libcamera_flip_ok() {
+        let mut spec = libcamera_spec();
+        spec.capture.hflip = true;
+        assert!(spec.validate().is_ok());
+        spec.capture.vflip = true;
+        assert!(spec.validate().is_ok()); // both = 180° rotation
+    }
+
+    #[test]
+    fn test_source_spec_validate_v4l2_flip_rejected() {
+        let mut spec = v4l2_spec();
+        spec.capture.hflip = true;
+        assert!(spec.validate().is_err());
+        spec.capture.hflip = false;
+        spec.capture.vflip = true;
         assert!(spec.validate().is_err());
     }
 
@@ -1165,6 +1258,34 @@ mod tests {
         assert!(codec_to_u32("h266").is_err());
         assert!(codec_to_u32("").is_err());
         assert!(codec_to_u32("mjpeg").is_err());
+    }
+
+    #[test]
+    fn test_bitrate_mode_to_u32() {
+        assert_eq!(bitrate_mode_to_u32("vbr").unwrap(), 1);
+        assert_eq!(bitrate_mode_to_u32("CBR").unwrap(), 2);
+        assert!(bitrate_mode_to_u32("auto").is_err());
+    }
+
+    #[test]
+    fn test_bitrate_mode_validation() {
+        let mut spec = v4l2_spec();
+        spec.encoder.bitrate_mode = Some("vbr".into());
+        assert!(spec.validate().is_ok());
+        spec.encoder.bitrate_mode = Some("auto".into());
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_gop_zero_only_v4l2_m2m() {
+        // gop = 0 (IDR only on request) is a v4l2-m2m capability.
+        let mut spec = v4l2_spec();
+        spec.encoder.gop = 0;
+        assert!(spec.validate().is_ok());
+
+        let mut spec = rkmpp_spec();
+        spec.encoder.gop = 0;
+        assert!(spec.validate().is_err());
     }
 
     // --- profile/level/tier tests ---
@@ -1442,6 +1563,21 @@ mod tests {
         assert_eq!(params.capture_device, "0");
         assert_eq!(params.encoder_backend, "rdk");
         assert_eq!(params.profile, "64002a");
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_capture_flip() {
+        let mut spec = libcamera_spec();
+        spec.capture.hflip = true;
+        spec.capture.vflip = true;
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.capture_hflip, 1);
+        assert_eq!(params.capture_vflip, 1);
+
+        let params = v4l2_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_hflip, 0);
+        assert_eq!(params.capture_vflip, 0);
     }
 
     #[test]

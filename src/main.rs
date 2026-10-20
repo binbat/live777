@@ -22,9 +22,11 @@ mod utils;
     "capture-v4l2",
     "encoder-v4l2-m2m",
     "encoder-rdk",
+    "encoder-rkmpp",
     "native-rpi",
     "native-generic-v4l2",
     "native-rdk",
+    "native-rkmpp",
 ))]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]

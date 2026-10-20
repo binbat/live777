@@ -31,6 +31,26 @@ whepfrom -o rtp://{target_ip}?video={video_port}&audio={audio_port} -w http://lo
 whepfrom -o rtp://localhost?video=9000&audio=9002 -w http://localhost:7777/whep/777 --sdp-file output.sdp
 ```
 
+The URL's own port also works: video goes to it and audio to port + 2 (the
+RTP/AVP convention), while `?video=`/`?audio=` still override per track:
+
+```bash
+whepfrom -o rtp://localhost:9000 -w http://localhost:7777/whep/777 --sdp-file output.sdp
+```
+
+A multicast group as the host makes whepfrom a self-contained WHEP →
+multicast bridge — the tool-side counterpart of live777's `rtp://` output
+target:
+
+```bash
+whepfrom -o rtp://230.1.1.1:1720 -w http://localhost:7777/whep/777 --sdp-file output.sdp
+```
+
+Multicast options ride as query parameters: `?ttl=16` (IPv4 TTL / IPv6 hops,
+default 1) and `?interface=...` (an IPv4 interface address for IPv4 groups,
+an interface index or name for IPv6 groups). Both are rejected for unicast
+destinations.
+
 Use [`ffplay`](/guide/ffmpeg) play
 
 ```bash

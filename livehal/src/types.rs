@@ -18,9 +18,17 @@ pub struct NativeSourceParams {
     pub bitrate: u32,
     pub profile: String,
     pub gop: u32,
+    /// Encoder rate-control mode: 0 = driver default, 1 = VBR, 2 = CBR.
+    /// Only the v4l2-m2m backend honours this today.
+    pub bitrate_mode: u32,
     pub payload_type: u32,
     pub clock_rate: u32,
     pub capture_prefer_dmabuf: u8,
+    /// Mirror the captured image left-right (libcamera only; applied by the
+    /// ISP).  Both flips together give a 180° rotation.
+    pub capture_hflip: u8,
+    /// Flip the captured image top-bottom (libcamera only).
+    pub capture_vflip: u8,
     pub encoder_prefer_dmabuf: u8,
     /// Codec name for SDP (e.g. "H264", "H265"). Used by liveion's
     /// `get_video_codec()` when constructing RTCRtpCodecParameters.

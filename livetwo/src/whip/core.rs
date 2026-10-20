@@ -15,8 +15,9 @@ use rtc::peer_connection::configuration::interceptor_registry::{
 use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodecParameters, RtpCodecKind};
 use rtc::statistics::StatsSelector;
 use rtc::statistics::report::RTCStatsReportEntry;
-use tokio::sync::{Notify, watch};
-use tracing::info;
+use tokio::sync::{Notify, mpsc, watch};
+use tracing::{debug, info};
+use webrtc::data_channel::DataChannel;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
     RTCConfigurationBuilder, RTCIceConnectionState, RTCIceGatheringState, RTCIceServer,
@@ -29,6 +30,7 @@ use crate::utils;
 const WAIT_FOR_PEER_CONNECTED_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Options for [`create_publish_peer`].
+#[derive(Default)]
 pub struct PublishPeerOptions {
     /// ICE servers used for gathering the offer; an empty list means host
     /// candidates only, which is useful on loopback-only test setups. The
@@ -39,15 +41,13 @@ pub struct PublishPeerOptions {
     /// the SDP offer prefers them (e.g. H265 with sprop parameters or AV1 with
     /// a resolution-derived level-idx).
     pub extra_video_codecs: Vec<RTCRtpCodecParameters>,
-}
-
-impl Default for PublishPeerOptions {
-    fn default() -> Self {
-        Self {
-            ice_servers: iceserver::default_rtc_ice_servers(),
-            extra_video_codecs: Vec::new(),
-        }
-    }
+    /// Cable plumbing for the session's control channel: the sender fed with
+    /// inbound messages and the router the outbound queue drains into. Also
+    /// enables accepting server-created cable channels.
+    pub cable: Option<(
+        mpsc::UnboundedSender<Vec<u8>>,
+        crate::datachannel::CableRouter,
+    )>,
 }
 
 /// A peer built by [`create_publish_peer`]. Tracks are added by the caller.
@@ -89,6 +89,7 @@ pub async fn create_publish_peer(
         gather_complete,
         state_tx,
         diagnostics: diagnostics.clone(),
+        cable: options.cable.clone(),
     });
 
     let config = RTCConfigurationBuilder::new()
@@ -405,6 +406,10 @@ struct PublishPeerHandler {
     gather_complete: Arc<Notify>,
     state_tx: watch::Sender<RTCPeerConnectionState>,
     diagnostics: Arc<PublishDiagnostics>,
+    cable: Option<(
+        mpsc::UnboundedSender<Vec<u8>>,
+        crate::datachannel::CableRouter,
+    )>,
 }
 
 #[async_trait::async_trait]
@@ -413,6 +418,19 @@ impl PeerConnectionEventHandler for PublishPeerHandler {
         info!("WHIP publish connection state changed: {}", state);
         push_state(&self.diagnostics.connection_states, state);
         let _ = self.state_tx.send(state);
+    }
+
+    /// Server-created cable channels arrive here; bridge them like the
+    /// self-created control channel (which the server closes when it owns
+    /// the cable).
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        let Some((tx, router)) = &self.cable else {
+            debug!("WHIP publish: ignoring unexpected inbound data channel");
+            return;
+        };
+        let label = dc.label().await.unwrap_or_default();
+        info!("WHIP publish: accepted data channel '{}'", label);
+        crate::datachannel::run_data_channel_loop(dc, tx.clone(), router.clone(), "whipinto");
     }
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
@@ -511,6 +529,7 @@ mod tests {
             PublishPeerOptions {
                 ice_servers: Vec::new(),
                 extra_video_codecs: Vec::new(),
+                cable: None,
             },
         )
         .await

@@ -144,7 +144,18 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
 - `source-all`     — enables all source types.
+- `target`         — base feature shared by all `target-*` kinds (the
+  `targets` stream config, supervisor dispatch, virtual-subscriber ids);
+  enables no target kind on its own, mirroring how `source` relates to the
+  `source-*` kinds.
 - `target-whip`    — WHIP push targets (static cascade-push).
+- `target-rtp`     — RTP/UDP output targets: send a stream out as plain RTP
+  to a multicast group or unicast address (the sender counterpart of the
+  SDP-file source; multicast socket builders live in
+  `livetwo::transport::multicast`).
+- `target-rtsp`    — RTSP client-push output targets: push a stream to an
+  RTSP server with ANNOUNCE/SETUP/RECORD (the counterpart of `source-rtsp`;
+  built on the `libs/rtsp` client shared with whepfrom).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
@@ -153,7 +164,7 @@ Key feature groups defined in the root `Cargo.toml`:
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
-builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip`
+builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp`
 instead of `--all-features`.
 
 ### Cross-Compilation
@@ -212,11 +223,16 @@ Configuration files:
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 `recorder.storage`, `strategy`, `net4mqtt`.
 
+There are no default ICE servers anywhere: liveion's `ice_servers` and
+liveman's `extra_ice` are empty unless configured, so an out-of-the-box
+deployment is LAN-only (host candidates only, no STUN/TURN advertised to
+clients via Link headers).
+
 ## Code Organization Conventions
 
 - Rust crate source lives in `src/` or `<crate>/src/`.
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
-  stream, strategy, source, recorder, info, sdp).
+  stream, source, recorder, info, sdp).
 - `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
   track, bridge, media, RTCP). Media statistics (issue #252): per-track and
   per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
@@ -229,9 +245,33 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   flow's `unsampled()` tail to the folded totals so stream-level counters
   line up with the per-session ones between ticks; removal also refreshes
   the aggregate bitrate immediately so closed directions do not keep a stale
-  rate until the next tick. Stats surface as the `stats` field on the
-  stream/session API types and as the
-  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. The
+  rate until the next tick. Direct-tap consumers (output targets, RTSP pull
+  clients) count too (live777#474): `Manager::add_virtual_subscriber` hands
+  the consumer a `MediaStats` its send loop `inc()`s, each send epoch
+  registers it on the forward's tap list (`PeerForward::add_tap_stats`,
+  re-registered per epoch because a stream reset recreates the forward),
+  the tick samples taps into the outbound totals, and detach or stream
+  close folds the tail exactly once. Stats surface as the `stats` field on
+  the stream/session API types and as the
+  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. RTCP is
+  counted separately as
+  `live777_rtcp_packets_total{direction="to_publisher|from_subscriber", kind="pli|fir|nack|rr|sr|twcc|remb|other"}`:
+  `to_publisher` comes from the publish chain's outermost interceptor
+  (`rtcp_egress_probe` in `forward/internal.rs`, which sees both
+  interceptor-generated and application-written packets, e.g. relayed
+  PLI/FIR), `from_subscriber` from the subscribe-quality tap
+  (`forward/subscribe_quality.rs`, compiled only with the `source` feature).
+  Per-stream series: `live777_stream_rtp_bytes_total{stream, direction}`
+  shares the RTP accounting points (tick deltas plus final folds), and
+  `live777_stream_sessions{stream, kind="publish|subscribe"}` is *set* from
+  the live session counts in the same stats tick — poll-model gauges that
+  cannot drift, unlike inc/dec counters. A stream's series are removed from
+  the vecs at teardown (`emit_stream_deleted`): the prometheus client never
+  drops vec children on its own, so without the removal deleted streams
+  would stay in /metrics forever (registry growth on churn, and Prometheus
+  would never mark them stale). The `stream` label is still unbounded on
+  auto-create deployments while the streams are *live*; the removal keeps
+  the registry bounded to live streams. The
   stream API includes `statsScope`: `node` for liveion snapshots and
   `clusterNodeWork` for liveman's merged sum of per-node work, where cascade
   hops are counted on each relay node.
@@ -241,6 +281,60 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   covers stats) — live rates push every tick while media flows, a silent
   stream's zero rate flushes exactly once, and an idle server sends
   nothing.
+  DataChannel lifecycle: every stream owns a stream-level **cable hub**
+  (`stream/cable.rs`, held by `Manager::cable_hubs`) — an anonymous default
+  bus pair plus one bus pair per declared cable — so a provisioned-stream
+  reset (which recreates the forward) never churns the buses or the cable
+  UDP bridges' listen ports; bridges die with the hub (stream delete), via
+  `Drop` cancelling a hub token. A peer channel joins the cable matching its
+  label (`CableHub::route`), else the default pair. Every channel gets a
+  read and a write task
+  (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
+  its cable's buses; a bus send failure (no active receivers) drops the
+  message with a warn log instead of killing the loop. The webrtc driver
+  never delivers `OnClose` for a server-side `PeerConnection::close` (it
+  aborts first), so each session carries a `CancellationToken` (`dc_cancel`
+  on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
+  `Drop`) that both loops `select!` on. `on_data_channel` only wires a
+  channel whose peer still owns a live session (a late announce from a
+  replaced/torn-down session is dropped), and both sides gate sends on
+  `Connected` (`wait_for_peer_connected`, 15 s). Cables with `create = true`
+  get a server-created channel per session —
+  created on the session's first inbound channel OPEN (an inbound OPEN
+  proves the SCTP association is Established and the DTLS role resolved;
+  creating at `Connected` drops the OPEN write as non-Established and can
+  collide stream-id parity with the client's channels) — and a client-created
+  channel matching such a cable's label is closed (the server-created
+  channel wins). DC UDP endpoints are declared as `udp://` URLs on the
+  stream's `sources` (broadcast seat: inbound packets go to all subscribers,
+  replies go to the endpoint's `?host`/`?port` target) and `targets`
+  (subscriber seat: publisher messages go to the target, inbound packets go
+  to the publisher), each a `cables` entry carrying the cable `label` it
+  joins plus a `udp://` URL, attached once via
+  `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
+  reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
+  for a future dynamic API). The `udp://` authority (listen) and the
+  `host`/`port` query pair (target) are independently optional (one-way
+  endpoints; an omitted target means reply-to-sender). The client side
+  mirrors this:
+  whepfrom's and whipinto's channel bridges (the shared
+  `livetwo::datachannel` module — UDP bridge, channel poll loop,
+  `CancelOnDrop`) run on a session-scoped token that `whep::from` /
+  `whip::into` cancels and awaits before returning; both accept
+  server-created cable channels (a `CableRouter` retargets the outbound
+  queue to the currently open channel). On the
+  WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
+  it adds an `m=application` section to the offer; the WHEP leg creates it
+  unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
+  DataChannel Prometheus metrics directly (no stats tick — messages are
+  low-volume discrete events, the same pattern as the RTCP probe):
+  `live777_datachannel_messages_total{direction="in|out"}` and
+  `live777_datachannel_bytes_total{direction}` count at receipt
+  (`dc_read_loop`) resp. after a successful channel write (`dc_write_loop`,
+  so bus fan-out is counted per attached peer), bus-lag drops land in
+  `live777_datachannel_dropped_total{direction="out"}`, and the per-stream
+  `live777_stream_datachannel_bytes_total{stream, direction}` series are
+  removed at stream teardown (`emit_stream_deleted`) like the RTP ones.
 - `liveion/src/stream/` — stream manager + source adapters. Every
   `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
   (`Manager::provision_streams`), always listed in the API/Dashboard, exempt
@@ -254,15 +348,36 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   with the synthesized `virtual-source` session id. On-demand readiness is
   judged by the source *bridge* (`SourceManager::has_bridge`), not source
   existence, and starts/stops serialize on a per-stream lock
-  (`on_demand_locks`). A WHIP publish onto a stream with an active source
+  (`on_demand_locks`). The idle check (`on_demand_stream_idle`) counts real
+  subscriber sessions (WHEP/cascade) and registered *virtual subscribers*
+  (`Manager::virtual_subscribers`): internal consumers that tap the forward
+  track broadcast directly instead of holding a subscribe session — static
+  targets and RTSP pull clients. This is the subscribe-side counterpart of
+  the `virtual-source` publisher: attach/detach
+  (`add_virtual_subscriber`/`remove_virtual_subscriber`) emits
+  `SubscribeStarted`/`SubscribeStopped`, `Manager::info`/`do_snapshot`
+  synthesize always-Connected sessions with reserved `virtual-…` ids
+  (e.g. `virtual-target-rtp-230.1.1.2:1720`, so dashboards show why an
+  on-demand stream is running), the per-stream
+  `live777_stream_sessions{kind="subscribe"}` gauge and the global
+  `live777_subscribe` gauge include them, and the session-delete API
+  rejects their ids (400 — they are owned by their consumer's supervisor).
+  Without the registration the idle check stopped an on-demand stream's
+  sources every `on_demand_close_after_ms` underneath its targets
+  (live777#481). The recorder is intentionally not registered: it must not
+  keep an on-demand source alive by itself. A WHIP publish onto a stream with an active source
   bridge is rejected (409) to avoid mixing two publishers' tracks. A second
   WHIP publish on an already-published stream instead *displaces* the
   incumbent (mediamtx-style override): the old session is torn down with
   `PublishStopped`/`SessionStopReason::Replaced`, and same-codec takeovers
   are seamless to subscribers via the media-generation machinery. Streams
   opt out with `strategy.override_publisher = false` (global or per-stream),
-  restoring the 409; cascade-pull publishers are never displaced and always
-  conflict (409), since their supervisor would reconnect and fight.
+  restoring the 409 — except a plain-WHIP incumbent that is already
+  `Disconnected`/`Failed`/`Closed` is displaced even then, so a fast
+  reconnect does not bounce off the zombie session with a 409 while the
+  disconnected-watchdog is still reaping it. Cascade-pull publishers are
+  never displaced and always conflict (409), since their supervisor would
+  reconnect and fight.
   Source encoder bitrate control (issue #409): adaptive bitrate is on by
   default for native encoder sources (`adaptive = false` opts out,
   `adaptive = { min_bitrate = … }` sets a custom floor; the default floor
@@ -298,7 +413,22 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   dispatcher forwards `StreamCreated`/`StreamDeleted`/`PublishStarted`/
   `PublishStopped` into an internal queue, then scripts run sequentially
   (global first, per-stream after, configured order) with per-script timeout
-  and `on_error` policy.
+  and `on_error` policy.  One hook deliberately bypasses the queue:
+  `on_source_changed` scripts run **synchronously inside** a source's
+  parameter-set change (the admin tier API, `apply_source_tier`) before
+  the capture+encoder re-provisioning — for hardware that must be
+  reconfigured ahead of the pipeline rebuild (e.g. camera sensor mode
+  gears on Rockchip-style V4L2 pipelines, where framerate is a
+  sensor-mode property).  A hook failure aborts the apply when
+  `on_error = "stop"` (`ApplyTierOutcome::HookFailed` → 500).  When the
+  apply does not reach the target state (aborted, or the rebuild failed
+  and rolled back), the scripts run again with the source's *current*
+  state (`StreamSource::active_tier_state`, best effort) so hardware
+  they switched is switched back.  Scripts see argv `<stream> <tier>`
+  and `LIVE777_SOURCE_TIER` plus the source geometry/bitrate
+  (`LIVE777_SOURCE_WIDTH`/`_HEIGHT`/`_FPS`/`_BITRATE`) — declared tier
+  values on the pre-apply run, the pipeline's actual current values on
+  the compensation run.
 - `liveion/src/target.rs` — static WHIP push targets
   (`[[stream.<name>.targets]]`, declarative cascade-push; `target-whip`
   feature). One supervisor task per target keeps the push media-driven:
@@ -306,10 +436,90 @@ Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
   negotiates per media epoch, so its codecs always match the current
   publisher), retried with source-style backoff (5 s doubling, 60 s cap),
   reconciled against the manager on event-bus lag; a target on an
-  `on_demand` stream acts as standing demand: its sources are (re)started
-  whenever the stream has neither a publisher nor a push session, paced by
-  the same backoff.
-- `liveman/src/route/` — proxy/cascade/admin routes.
+  `on_demand` stream is standing demand: the supervisor registers as a
+  virtual subscriber (`Manager::add_virtual_subscriber`, id
+  `virtual-target-…`) for its whole lifetime so the sources are never
+  idle-stopped underneath it, and (re)starts them whenever the stream has
+  neither a publisher nor a push session, paced by the same backoff.
+  `target::init` dispatches per target by URL scheme, so `whip://`,
+  `rtp://` and `rtsp://` targets mix freely on one stream.
+- `liveion/src/target_rtp.rs` — static RTP/UDP output targets
+  (`rtp://group-or-host:port`; `target-rtp` feature), the sender
+  counterpart of the SDP-file source: live777 acts as the multicast sender,
+  keeping Unitree-style video-link receivers working unmodified. The
+  supervisor mirrors the WHIP one (media-driven, same backoff/reconcile/
+  standing-demand semantics) plus per-track send tasks that tap the forward
+  track broadcast directly (the recorder / RTSP-server pattern, no
+  subscribe session): first video track to the URL port, first audio track
+  to port + 2 (RTP/AVP convention). Like the RTSP target, the epoch waits
+  for the *negotiated* publish track counts (`PeerForward::wait_for_publish_tracks`,
+  shared by both media targets, on top of
+  `PeerForwardInternal::negotiated_publish_track_counts`) instead of the
+  first non-empty snapshot — tracks arrive one `on_track` each after
+  `PublishStarted`, so a snapshot would race an AV publisher into a
+  video-only send and SDP. Send tasks report their exit tagged
+  with the epoch's generation, and the supervisor ignores tags that are not
+  the live epoch — a belated exit from an already torn-down epoch must
+  never cancel the fresh one, or every teardown self-sustains a restart
+  storm. A live epoch's spontaneous exit (and a reconcile after event lag)
+  is paced like the WHIP supervisor's dead-session path: tear down, wait
+  `reconnect_delay(1)` while media is still up, re-check, then rebuild — a
+  flapping track set cannot rebind the socket, rewrite the SDP file and
+  PLI the publisher at the churn rate (live777#477). While media flows,
+  each send task also emits a periodic RTCP sender report to its RTP port
+  + 1 (packet/octet counters and the NTP ↔ RTP timestamp mapping are
+  maintained at the marshal point, live777#471); inbound receiver reports
+  are not consumed. Video is re-packetized through livetwo's `RePayloadCodec`
+  (SPS/PPS inlined ahead of every IDR, seeded from the codec fmtp via
+  `with_sprop_params`), a PLI nudges the publisher on attach, and the video
+  payload type can be pinned (`payload_type`, e.g. 96 for Unitree
+  receivers); `sdp_file` writes a receiver-side SDP on send start that
+  live777's own SDP-file source can ingest (live777 → live777 multicast
+  cascade). Multicast sender/receiver socket builders, interface
+  resolution (v4 address vs v6 index/name via `if_nametoindex`) and the
+  dual-stack RTCP socket are shared in `livetwo::transport::multicast`
+  (`multicast` feature), used by `target-rtp`, `source-sdp` and whepfrom's
+  `rtp://group:port` output (the root crate enables the feature for
+  livetwo, so whepfrom always has it: video rides the URL port, audio port
+  + 2, `?ttl=`/`?interface=` tune the group send; the legacy
+  `?video=`/`?audio=` query-port form and `sdp://` are unchanged).
+- `liveion/src/target_rtsp.rs` — static RTSP client-push output targets
+  (`rtsp://[user:pass@]host:port/path[?transport=tcp|udp]`; `target-rtsp`
+  feature), the counterpart of the RTSP source: live777 ANNOUNCE/SETUP/
+  RECORDs the stream to an RTSP server (mediamtx, another live777's RTSP
+  server, gst-rtsp-server) with the `libs/rtsp` client whepfrom also uses.
+  The supervisor mirrors the RTP one (media-driven, same backoff/reconcile/
+  standing-demand semantics, generation-tagged epochs) and the media plane
+  is the same track-broadcast tap + `RePayloadCodec` + payload-type
+  re-stamp; the ANNOUNCE SDP is built from the forward's track codecs in
+  the shape of the RTSP server's DESCRIBE (`a=control:` per media, which
+  the client session derives the SETUP URLs from). `PublishStarted` fires
+  at negotiation time while tracks arrive one `on_track` each, so the
+  epoch waits for the *negotiated* track counts
+  (`PeerForward::wait_for_publish_tracks`, shared with the RTP target)
+  instead of the first non-empty snapshot — an AV publisher whose audio
+  track lands first would otherwise announce audio-only. UDP is the default
+  transport
+  (`?transport=tcp` selects interleaved, mirroring whepfrom); UDP senders
+  bind the SETUP-announced local port because strict servers (mediamtx)
+  drop RTP from any other source port. Teardown cancels the epoch token
+  threaded into `rtsp::setup_rtsp_session`: TCP closes the connection,
+  UDP sends TEARDOWN from the keep-alive loop, so the server releases the
+  published path immediately and a re-push cannot collide with a zombie
+  publisher. Server-side keyframe requests (a puller's PLI/FIR relayed by
+  mediamtx or another live777) arrive on the interleaved RTCP channel /
+  UDP RTCP port and are forwarded to the publisher via
+  `send_rtcp_to_publish`.
+- `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's
+  streams table is SSE-pushed like liveion's: `GET /api/sse/streams`
+  (`route/stream.rs::sse`, same `?nodes=` filter as `GET /api/streams/`)
+  sends the merged cluster view on connect and re-sends it whenever
+  `Storage`'s `watch` change-version bumps (snapshot applies, eager
+  stream-index writes) and on a 3 s idle cadence that doubles as the
+  driver for the throttled lazy poll of poll-mode nodes. Identical
+  consecutive payloads are suppressed, and the loop selects on the
+  server's `CancellationToken` so a streaming response cannot hold
+  graceful shutdown open.
 - `liveman/src/service/` — business logic (database, recordings index).
 - `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
 - `libs/api/src/` — shared REST/WebRTC API types (`request`, `response`,
@@ -344,7 +554,7 @@ Run tests:
 ```bash
 # full workspace with coverage, matching the CI feature set
 cargo llvm-cov nextest --profile ci --workspace \
-  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip \
+  --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp \
   --lcov --output-path lcov.info
 
 # without coverage
@@ -380,7 +590,8 @@ pnpm exec playwright install --with-deps chromium
 export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright
 ```
 
-mediamtx interop tests (`whep_mediamtx_pull_*` and `rtsp_push_mediamtx_*` in
+mediamtx interop tests (`whep_mediamtx_pull_*`, `rtsp_push_mediamtx_*` and
+`rtsp_target_mediamtx_*` in
 the matrix binary, live777#212) need a mediamtx binary: `just mediamtx`
 downloads the pinned release into `target/`, or install mediamtx into `PATH`;
 `MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.
@@ -406,11 +617,20 @@ carries the check.
 
 ## Deployment & Packaging
 
-- **Docker**: multi-stage Dockerfiles in `docker/` for `live777`, `liveman`,
-  `whipinto`, `whepfrom`, `net4mqtt`, `ffmpeg`, and `gstreamer` variants.
-  Images are published to `ghcr.io/binbat/<app>`.
+- **Docker**: multi-stage Dockerfiles in `docker/` for `live777-server`
+  (live777 + liveman), `live777-client` (self-contained FFmpeg + whipinto +
+  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `liveion`
+  (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
+  `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
+  `ghcr.io/binbat/<app>`.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
+- **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana
+  stack scraping the live777 `/metrics` endpoint (always compiled in);
+  scrape config in `conf/monitoring/prometheus.yml`, provisioned datasource
+  and the `live777 overview` dashboard under `conf/monitoring/grafana/`.
+  Just recipes: `just monitoring-up` / `just monitoring-down`. liveman has
+  no Prometheus endpoint — scrape the live777 nodes directly.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
 - **Size-optimized builds are opt-in**: official release binaries use the

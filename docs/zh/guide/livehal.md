@@ -111,6 +111,40 @@ on-demand 流在空闲时 Dashboard 显示 `standby` 徽标，源运行时显示
 url = "rtsp://192.168.1.100:554/stream"
 ```
 
+当 SDP 文件源的连接地址是组播组时（例如 `c=IN IP4 230.1.1.1`），
+源会在每个媒体端口上加入该组播组，而不仅仅是绑定端口——无人机、
+机器人相机等常开组播发送端可以直接接入 live777；配合
+`on_demand = true` 时，只有存在观看者期间才保持组成员关系：
+
+```toml
+[stream.robot-cam]
+on_demand = true
+
+[[stream.robot-cam.sources]]
+url = "/etc/live777/robot-cam.sdp"   # c=IN IP4 230.1.1.1, m=video 1720 RTP/AVP 96
+# 加入组播组使用的网卡：IPv4 组填 IPv4 地址，IPv6 组填网卡序号或名称
+# （此项未配置时，取 SDP 地址自带的 `%zone`，如 `c=IN IP6 ff12::1%eth0`）。
+# 不配置则由内核选择，只能收到默认路由网卡上的组播流量——链路本地
+# IPv6 组（ff02::/16、ff12::/16）必须显式指定网卡。
+multicast_interface = "192.168.123.11"
+```
+
+连接地址的 RFC 4566 后缀（`c=IN IP4 230.1.1.1/64`、`c=IN IP6 ff15::1/3`）
+会被正确识别。接收 socket 设置了 `SO_REUSEADDR`，同一台主机上可以有
+多个接收者同时收同一个 group:port（另一条流、监控工具）。绑定/加入
+失败会先按退避重试若干次再判定源启动失败——但对于常开的（非
+`on_demand`）组播流，仍应确保 live777 在网卡地址分配完成后再启动
+（systemd：`After=network-online.target`），因为较长的 DHCP 延迟会
+超过重试窗口。
+
+::: warning
+组播发送端保留内核默认的回环行为（`IP_MULTICAST_LOOP`），因此本源
+也会收到同机发送端——包括 live777 自己的 `rtp://` 输出 target——
+发往已加入 group:port 的流量。在同一台主机上把源和 target 指向同一
+个 group:port（直接配置，或经 liveman 级联绕回本机）会让 live777
+摄入自己的输出形成反馈回环；同机演示请使用不同的组播组或端口。
+:::
+
 ### 结构化原生配置（libcamera / V4L2 / RDK）
 
 ```toml
@@ -124,6 +158,8 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "yuv420"
+# hflip = true           # 左右镜像；仅 libcamera（ISP 完成，零 CPU 开销）
+# vflip = true           # 上下翻转；hflip + vflip = 旋转 180°
 
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
@@ -131,7 +167,10 @@ codec = "h264"
 bitrate = 1_000_000
 profile = "baseline"     # 也可以是 6 位十六进制 profile-level-id，如 "42001f"
 level = "3.1"            # 当 profile 为名称时必填
-gop = 60
+gop = 60                 # 关键帧间隔（帧数）；0 = 仅按需出关键帧
+                         # （PLI/FIR、新订阅者加入）——仅 v4l2-m2m
+# bitrate_mode = "vbr"   # 仅 v4l2-m2m："vbr"（驱动默认）或 "cbr"；
+                         # 注意 bcm2835-codec 固件会拒绝 CBR
 
 [stream.pi-cam.sources.output]
 payload_type = 96
@@ -139,6 +178,13 @@ clock_rate = 90000
 ```
 
 `pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`capture` + `encoder` 与 `url` 互斥，源类型由 `capture.backend` 推导（`device` 对 libcamera 是 camera ID，对 v4l2 是设备路径）。
+
+`capture.hflip` / `capture.vflip`（默认均为 `false`）用于画面翻转——
+分别是左右镜像和上下翻转；两者同时开启即旋转 180°。**仅 libcamera 后端
+支持**：翻转由 ISP 完成，零 CPU 开销。`v4l2` 后端在启动校验时会直接
+报错——它的视频节点（unicam）只做 DMA 搬运、没有图像处理能力，而翻转
+control 只存在于 sensor 子设备节点上，绕开 libcamera 手动设置会与 ISP
+的 Bayer 顺序失配。不提供 90°/270° 旋转：树莓派 ISP 硬件不支持转置。
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 
@@ -296,7 +342,7 @@ cargo build --bin live777 --release \
 ## 构建 {#build}
 
 ::: tip 预编译二进制
-通常不需要自己编译：`v0.9.0` 之后的 Release 会发布原生构建（树莓派用
+通常不需要自己编译：自 `v0.10.0` 起的 Release 会发布原生构建（树莓派用
 `live777-<版本>-aarch64-unknown-linux-gnu-rpi.tar.gz`，RK3588/RV1126B 用
 `-rkmpp.tar.gz`）。见[安装部署](./installation.md#arm-boards)和
 [树莓派部署指南](./raspberry-pi.md)。只有需要未发布的改动、或 RDK X5

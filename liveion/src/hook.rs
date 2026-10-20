@@ -19,6 +19,11 @@
 //!   earlier event finish before any hook of a later event starts, which
 //!   yields a global ordering guarantee (stronger than the per-stream
 //!   ordering the events actually require).
+//! - One hook bypasses the queue entirely: `on_source_changed`
+//!   scripts run **synchronously inside** the source tier apply via
+//!   [`run_tier_hooks`], before the tier's capture+encoder
+//!   re-provisioning (and again with the restored state when a failed
+//!   apply rolls back) — they never pass through the dispatcher/executor.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -44,6 +49,25 @@ struct HookJob {
     session: Option<String>,
     /// Global scripts followed by per-stream scripts, in configured order.
     scripts: Vec<String>,
+}
+
+/// Tier metadata exported to `source-changed` hook scripts.
+#[cfg(feature = "source")]
+#[derive(Clone)]
+pub(crate) struct TierEnv {
+    /// Tier name — argv[2] and `LIVE777_SOURCE_TIER`.  Empty when the
+    /// source runs its configured base profile (possible on the
+    /// compensation run after a failed apply rolled back to the base
+    /// profile).
+    pub name: String,
+    /// Exported as `LIVE777_SOURCE_WIDTH` / `_HEIGHT` / `_FPS` /
+    /// `_BITRATE`.  The *declared* tier overlay for the pre-apply run
+    /// (`None` = inherits the base config, exported as an empty string);
+    /// the pipeline's *actual* current values for the compensation run.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<u32>,
+    pub bitrate: u32,
 }
 
 fn reason_str(reason: StreamDeleteReason) -> &'static str {
@@ -82,6 +106,34 @@ fn effective_scripts(global: &[String], per_stream: Option<&[String]>) -> Vec<St
 /// startup are not missed: the broadcast bus does not replay events sent
 /// before the subscription.
 pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
+    // Catch path typos early; a missing script is not fatal — spawn errors
+    // are reported (and counted by on_error) at run time like any failure.
+    let all_scripts = hooks
+        .hooks
+        .on_stream_created
+        .iter()
+        .chain(&hooks.hooks.on_stream_deleted)
+        .chain(&hooks.hooks.on_publish_started)
+        .chain(&hooks.hooks.on_publish_stopped)
+        .chain(&hooks.hooks.on_source_changed)
+        .chain(stream_cfg.streams.values().flat_map(|e| {
+            e.hooks
+                .on_stream_created
+                .iter()
+                .chain(&e.hooks.on_stream_deleted)
+                .chain(&e.hooks.on_publish_started)
+                .chain(&e.hooks.on_publish_stopped)
+                .chain(&e.hooks.on_source_changed)
+        }));
+    for script in all_scripts {
+        if !std::path::Path::new(script).exists() {
+            warn!("hook script does not exist : {}", script);
+        }
+    }
+
+    // `on_source_changed` is not checked here: it runs synchronously
+    // inside the tier apply (driven by the source manager) and needs no
+    // dispatcher/executor.
     let global_empty = hooks.hooks.on_stream_created.is_empty()
         && hooks.hooks.on_stream_deleted.is_empty()
         && hooks.hooks.on_publish_started.is_empty()
@@ -95,29 +147,6 @@ pub fn init(manager: &Manager, hooks: HooksConfig, stream_cfg: StreamConfig) {
     if global_empty && per_stream_empty {
         debug!("no stream hooks configured, hook executor disabled");
         return;
-    }
-
-    // Catch path typos early; a missing script is not fatal — spawn errors
-    // are reported (and counted by on_error) at run time like any failure.
-    let all_scripts = hooks
-        .hooks
-        .on_stream_created
-        .iter()
-        .chain(&hooks.hooks.on_stream_deleted)
-        .chain(&hooks.hooks.on_publish_started)
-        .chain(&hooks.hooks.on_publish_stopped)
-        .chain(stream_cfg.streams.values().flat_map(|e| {
-            e.hooks
-                .on_stream_created
-                .iter()
-                .chain(&e.hooks.on_stream_deleted)
-                .chain(&e.hooks.on_publish_started)
-                .chain(&e.hooks.on_publish_stopped)
-        }));
-    for script in all_scripts {
-        if !std::path::Path::new(script).exists() {
-            warn!("hook script does not exist : {}", script);
-        }
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<HookJob>();
@@ -238,6 +267,63 @@ async fn executor(
     }
 }
 
+/// Synchronously run the `on_source_changed` hooks for a tier apply:
+/// global scripts first, then per-stream, in configured order — awaited
+/// inside the tier apply, before the capture+encoder re-provisioning (see
+/// [`HookConfig::on_source_changed`]).  The first failing script
+/// aborts with `Err` when `on_error` is [`OnError::Stop`]; `Continue`
+/// runs every script and always returns `Ok` (used for the compensation
+/// run after a failed apply rolls the pipeline back).
+#[cfg(feature = "source")]
+pub(crate) async fn run_tier_hooks(
+    global_scripts: &[String],
+    stream_scripts: &[String],
+    stream: &str,
+    tier: &TierEnv,
+    timeout: Option<Duration>,
+    on_error: OnError,
+) -> anyhow::Result<()> {
+    for script in global_scripts.iter().chain(stream_scripts.iter()) {
+        if let Err(e) = run_tier_script(script, stream, tier, timeout).await {
+            warn!(
+                "source tier hook failed, script : {}, stream : {}, tier : {}, error : {}",
+                script, stream, tier.name, e
+            );
+            if on_error == OnError::Stop {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run one `source-changed` hook script and wait for it to exit.
+///
+/// Same contract as [`run_script`], except argv is `<stream> <tier>` (the
+/// hook only ever fires for this one event, so no event slot is passed)
+/// and the `LIVE777_SOURCE_*` metadata is exported instead of
+/// `LIVE777_EVENT` / `LIVE777_REASON` / `LIVE777_SESSION`.
+#[cfg(feature = "source")]
+async fn run_tier_script(
+    script: &str,
+    stream: &str,
+    tier: &TierEnv,
+    timeout: Option<Duration>,
+) -> anyhow::Result<()> {
+    let mut cmd = tokio::process::Command::new(script);
+    cmd.arg(stream).arg(&tier.name);
+    cmd.env("LIVE777_STREAM", stream)
+        .env("LIVE777_SOURCE_TIER", &tier.name);
+    // Declared tier parameters are exported with empty strings for unset
+    // fields; the compensation run exports the pipeline's actual values.
+    let opt = |v: Option<u32>| v.map(|v| v.to_string()).unwrap_or_default();
+    cmd.env("LIVE777_SOURCE_WIDTH", opt(tier.width))
+        .env("LIVE777_SOURCE_HEIGHT", opt(tier.height))
+        .env("LIVE777_SOURCE_FPS", opt(tier.fps))
+        .env("LIVE777_SOURCE_BITRATE", tier.bitrate.to_string());
+    run_hook_command(&mut cmd, script, "source-changed", stream, timeout).await
+}
+
 /// Run one hook script and wait for it to exit.
 ///
 /// Contract: argv is `<event> <stream> [reason]`; the same values are also
@@ -259,13 +345,25 @@ async fn run_script(script: &str, job: &HookJob, timeout: Option<Duration>) -> a
     if let Some(session) = &job.session {
         cmd.env("LIVE777_SESSION", session);
     }
+    run_hook_command(&mut cmd, script, job.event, &job.stream, timeout).await
+}
+
+/// Spawn a prepared hook command and wait for it to exit, enforcing the
+/// per-script timeout and collecting output for the logs.
+async fn run_hook_command(
+    cmd: &mut tokio::process::Command,
+    script: &str,
+    event: &str,
+    stream: &str,
+    timeout: Option<Duration>,
+) -> anyhow::Result<()> {
     // Dropping the expired timeout future drops the Child, which kills it.
     cmd.kill_on_drop(true);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     debug!(
         "running hook script, script : {}, event : {}, stream : {}",
-        script, job.event, job.stream
+        script, event, stream
     );
     let child = cmd
         .spawn()
@@ -284,7 +382,7 @@ async fn run_script(script: &str, job: &HookJob, timeout: Option<Duration>) -> a
         debug!(
             "hook script stdout, script : {}, stream : {}, stdout : {}",
             script,
-            job.stream,
+            stream,
             String::from_utf8_lossy(&output.stdout).trim()
         );
     }
@@ -293,7 +391,7 @@ async fn run_script(script: &str, job: &HookJob, timeout: Option<Duration>) -> a
             debug!(
                 "hook script stderr, script : {}, stream : {}, stderr : {}",
                 script,
-                job.stream,
+                stream,
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
@@ -548,6 +646,88 @@ mod tests {
             // sender and lets the executor finish.
             drop(event_tx);
             handle.await.unwrap();
+        }
+
+        #[cfg(feature = "source")]
+        #[tokio::test]
+        async fn tier_hooks_run_global_then_stream_and_export_tier_env() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = dir.path().join("tier.log");
+            // argv contract: $1 = stream, $2 = tier name.
+            let global = log_line_script(
+                dir.path(),
+                "global.sh",
+                &log,
+                "global $1 $2 $LIVE777_SOURCE_FPS",
+            );
+            let per_stream = log_line_script(
+                dir.path(),
+                "stream.sh",
+                &log,
+                "stream $LIVE777_SOURCE_WIDTH-$LIVE777_SOURCE_HEIGHT- $LIVE777_SOURCE_BITRATE",
+            );
+
+            run_tier_hooks(
+                &[global],
+                &[per_stream],
+                "cam1",
+                &TierEnv {
+                    name: "hd60".to_string(),
+                    width: Some(1920),
+                    height: None,
+                    fps: Some(60),
+                    bitrate: 8_000_000,
+                },
+                None,
+                OnError::Stop,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(&log)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                ["global cam1 hd60 60", "stream 1920-- 8000000"]
+            );
+        }
+
+        #[cfg(feature = "source")]
+        #[tokio::test]
+        async fn tier_hooks_failure_policy() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = dir.path().join("tier-fail.log");
+            let fail = write_script(dir.path(), "fail.sh", "#!/bin/sh\nexit 1\n");
+            let marker = log_line_script(dir.path(), "marker.sh", &log, "marker");
+            let env = TierEnv {
+                name: "save".to_string(),
+                width: None,
+                height: None,
+                fps: None,
+                bitrate: 300_000,
+            };
+
+            // on_error = Stop: the failing script aborts the run with Err
+            // and the remaining script is skipped.
+            let err = run_tier_hooks(
+                &[fail.clone(), marker.clone()],
+                &[],
+                "cam1",
+                &env,
+                None,
+                OnError::Stop,
+            )
+            .await;
+            assert!(err.is_err());
+            assert!(!log.exists());
+
+            // on_error = Continue (the compensation run's policy): the run
+            // succeeds and every script ran.
+            run_tier_hooks(&[fail, marker], &[], "cam1", &env, None, OnError::Continue)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), "marker\n");
         }
     }
 }

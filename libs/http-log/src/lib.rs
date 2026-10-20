@@ -25,6 +25,24 @@ pub async fn print_request_response(
     let req = Request::from_parts(parts, Body::from(bytes));
 
     let res = next.run(req).await;
+
+    // An SSE stream never finishes collecting, so its body cannot be
+    // buffered for logging — pass the response through untouched.
+    let is_event_stream = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    if is_event_stream {
+        info!(
+            "[{} {}] [{}] event stream",
+            method,
+            uri,
+            res.status().as_u16()
+        );
+        return Ok(res);
+    }
+
     let res_headers = res.headers().clone();
     let (parts, body) = res.into_parts();
     let bytes = buffer_and_print("response", res_headers, body).await?;

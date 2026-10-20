@@ -44,6 +44,21 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
             on_demand: false,
             stats: value.stats,
             stats_scope: api::response::StatsScope::Node,
+            cables: vec![],
+        }
+    }
+}
+
+impl From<&crate::config::CableConfig> for api::response::Cable {
+    fn from(value: &crate::config::CableConfig) -> Self {
+        api::response::Cable {
+            label: value.label.clone(),
+            ordered: value.ordered,
+            max_retransmits: value.max_retransmits,
+            max_packet_life_time: value.max_packet_life_time,
+            protocol: value.protocol.clone(),
+            create: value.create,
+            capacity: value.capacity,
         }
     }
 }

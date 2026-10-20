@@ -47,7 +47,7 @@ build:
 [group('build')]
 build-size:
     cargo build --profile release-size --bins \
-        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip
+        --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp
 
 # Extreme size build: build-size + UPX LZMA (needs upx installed)
 [group('build')]
@@ -173,18 +173,18 @@ rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
 [group('embedded')]
 rpi-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui
+        just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp,target-rtsp
 
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
 [group('embedded')]
 rdk-pack-size:
     test -n "${RDK_SYSROOT:?set RDK_SYSROOT to the RDK sysroot first (see AGENTS.md)}" && \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui
+        just cross-pack-size aarch64-unknown-linux-gnu native-rdk,webui,target-rtp,target-rtsp
 
 # Generic V4L2 device (native-generic-v4l2; override the target for 64-bit boards)
 [group('embedded')]
 v4l2-pack-size target="armv7-unknown-linux-gnueabihf":
-    just cross-pack-size {{target}} native-generic-v4l2,webui
+    just cross-pack-size {{target}} native-generic-v4l2,webui,target-rtp,target-rtsp
 
 # MacOS:
 #   brew install gstreamer
@@ -236,6 +236,10 @@ run:
 
 run-cluster:
     cargo run --bin=livenil --features=webui -- -c conf/livenil
+
+# Edge cameras + cloud SFU cascade demo (see conf/livenil/edge-cloud/)
+run-edge-cloud:
+    cargo run --bin=livenil --features=webui,cascade,source-whep -- -c conf/livenil/edge-cloud
 
 only-mpeg-rtp-h264:
     ffmpeg -re {{vsrc}} -vcodec {{h264}} -f rtp 'rtp://{{host}}:5002?pkt_size=1200' -sdp_file {{isdp}}
@@ -661,6 +665,19 @@ livewrk-whep sessions="100" duration="60" target_stream=stream:
 loadtest-channel mode="all":
     cargo run --release --features=source --bin datachannel_loadtest -- {{mode}}
 
+# Prometheus + Grafana monitoring stack (scrapes the live777 /metrics endpoint)
+# Usage: just monitoring-up    # Grafana: http://localhost:3000 (admin/admin)
+#        just monitoring-down
+# ============================================================
+
+[group('monitoring')]
+monitoring-up:
+    docker compose -f compose.monitoring.yml up -d
+
+[group('monitoring')]
+monitoring-down:
+    docker compose -f compose.monitoring.yml down
+
 
 # Rockchip RKMPP (RK3588, RV1126B): V4L2 capture, Rockchip MPP encoder
 # Uses the RKMPP cross image (sysroot baked at /opt/rkmpp-sysroot); set
@@ -668,4 +685,4 @@ loadtest-channel mode="all":
 [group('embedded')]
 rkmpp-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rkmpp_cross_image}} \
-        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui
+        just cross-pack-size aarch64-unknown-linux-gnu native-rkmpp,webui,target-rtp,target-rtsp

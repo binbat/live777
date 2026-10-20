@@ -137,6 +137,8 @@ async fn create_source(
 
     let config = crate::config::SourceConfig {
         url: Some(req.url.clone()),
+        cables: vec![],
+        multicast_interface: None,
         #[cfg(feature = "native-source")]
         capture: None,
         #[cfg(feature = "native-source")]
@@ -397,6 +399,11 @@ async fn apply_source_tier(
         ApplyTierOutcome::Unsupported => Err(AppError::source_bitrate_unsupported(format!(
             "Applying tier '{}' to {stream} failed (the source is not running, \
              or the pipeline rebuild failed and was rolled back)",
+            resolved.name
+        ))),
+        ApplyTierOutcome::HookFailed => Err(AppError::hook_failed(format!(
+            "Applying tier '{}' to {stream} aborted: an on_source_changed \
+             hook failed",
             resolved.name
         ))),
     }

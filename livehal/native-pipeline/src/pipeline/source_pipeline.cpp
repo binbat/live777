@@ -63,7 +63,7 @@ public:
         EncoderConfig encoder_cfg = ecfg;
         // Use the format the capture backend actually delivers, not the
         // requested one: the generic V4L2 backend converts YUYV to
-        // YUV420P, passes UYVY through unchanged, and libcamera always
+        // NV12, passes UYVY through unchanged, and libcamera always
         // delivers YUV420P regardless of the configured pixel_format.
         encoder_cfg.input_format = capture_->outputFormat();
         // Zero-copy needs both sides: the user opts in via prefer_dmabuf on
@@ -270,6 +270,8 @@ static CaptureConfig to_capture_config(const CaptureConfigFFI* ffi) {
     cfg.fps = ffi->fps;
     cfg.pixel_format = static_cast<RawPixelFormat>(ffi->pixel_format);
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
+    cfg.hflip = (ffi->hflip != 0);
+    cfg.vflip = (ffi->vflip != 0);
     return cfg;
 }
 
@@ -286,6 +288,7 @@ static EncoderConfig to_encoder_config(const EncoderConfigFFI* ffi) {
     cfg.level_idc = ffi->level_idc;
     cfg.tier_flag = ffi->tier_flag;
     cfg.gop = ffi->gop;
+    cfg.bitrate_mode = ffi->bitrate_mode;
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     return cfg;
 }

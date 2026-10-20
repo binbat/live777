@@ -1,7 +1,7 @@
 import wretch from 'wretch';
 import QueryStringAddon from 'wretch/addons/queryString';
 
-import { type Stream } from '../shared/api';
+import { type ServerInfo, type Stream } from '../shared/api';
 import { makeAuthorizationMiddleware } from '../shared/authorization-middleware';
 
 const authMiddleware = makeAuthorizationMiddleware();
@@ -25,15 +25,19 @@ export interface Node {
     alias: string;
     url: string;
     duration: string;
-    strategy?: Record<string, string | number | boolean>,
     status: 'running' | 'stopped';
+    /**
+     * The node's own build info (GET /api/info), cached by liveman;
+     * absent until the first successful fetch
+     */
+    info?: ServerInfo;
 }
 
 export function getNodes() {
     return w.url('/api/nodes/').get().json<Node[]>();
 }
 
-export { type Stream };
+export { type ServerInfo, type Stream };
 
 export function getStreams(nodes?: string[]) {
     return w.url('/api/streams/').query({ nodes }).get().json<Stream[]>();

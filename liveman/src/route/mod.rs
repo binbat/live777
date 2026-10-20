@@ -2,6 +2,7 @@ pub mod cascade;
 pub mod node;
 pub mod proxy;
 pub mod recorder;
+pub mod source;
 #[cfg(feature = "recorder")]
 pub mod storage;
 #[cfg(not(feature = "recorder"))]

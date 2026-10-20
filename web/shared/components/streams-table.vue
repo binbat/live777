@@ -6,6 +6,13 @@ export interface StreamTableProps {
     streamsSSEUrl?: string;
     getWhepUrl?: (streamId: string) => string;
     getWhipUrl?: (streamId: string) => string;
+    /**
+     * Cluster mode (liveman): resolve the aliases of the nodes hosting a
+     * stream. When set, the Source menu action shows on every row and the
+     * source dialog probes these nodes for the stream's encoder source,
+     * instead of gating rows by the single-node `/api/sources` poll.
+     */
+    getStreamNodes?: (streamId: string) => Promise<string[]>;
     showCascade?: boolean;
     features?: {
         player?: boolean;
@@ -31,7 +38,7 @@ import {
     type ComputedRef,
     type MaybeRefOrGetter,
 } from "vue";
-import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, PlusIcon } from "@heroicons/vue/24/outline";
+import { ArrowPathIcon, ArrowRightEndOnRectangleIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon } from "@heroicons/vue/24/outline";
 
 import {
     type CapabilityProbeStatus,
@@ -46,7 +53,7 @@ import {
     startRecording,
     stopRecording,
 } from "../api";
-import { formatBitrate, formatBytes, formatTime, nextSeqId } from "../utils";
+import { formatBitrate, formatBytes, formatTime, formatTimeShort, nextSeqId } from "../utils";
 import { useRefreshTimer } from "../hooks/use-refresh-timer";
 import { useStreamSSE } from "../hooks/use-stream-sse";
 import { useToken } from "../context";
@@ -58,20 +65,51 @@ import PreviewDialog, { type IPreviewDialog } from "./dialog-preview.vue";
 import WebStreamDialog, { type IWebStreamDialog } from "./dialog-web-stream.vue";
 import NewStreamDialog, { type INewStreamDialog } from "./dialog-new-stream.vue";
 
-async function getStreamsSorted(): Promise<StreamType[]> {
-    try {
-        const streams = await getStreams();
-        return streams.sort((a, b) => a.createdAt - b.createdAt);
-    } catch {
-        return [];
-    }
-}
-
 const ACTIVE_STATES: SessionConnectionState[] = ["new", "connecting", "connected"];
 
 function countActiveSessions(sessions: { state: SessionConnectionState }[]): number {
     return sessions.filter(s => ACTIVE_STATES.includes(s.state)).length;
 }
+
+function cascadeSessionCount(s: StreamType): number {
+    return countActiveSessions(s.publish.sessions.filter(t => t.cascade))
+        + countActiveSessions(s.subscribe.sessions.filter(t => t.cascade));
+}
+
+type SortKey = "id" | "publisher" | "subscriber" | "in" | "out" | "cascade" | "createdAt";
+
+const SORT_COLUMNS: { key: SortKey; label: string; title?: string }[] = [
+    { key: "id", label: "ID" },
+    { key: "publisher", label: "Pub", title: "Publisher" },
+    { key: "subscriber", label: "Sub", title: "Subscriber" },
+    { key: "in", label: "In" },
+    { key: "out", label: "Out" },
+    { key: "cascade", label: "Cas", title: "Cascade" },
+    { key: "createdAt", label: "Created" },
+];
+
+// The table is fixed-layout in thirds: the id column and the operation
+// column take a third each, the data columns share the middle third sized
+// for their content (session counts are almost always below 100).
+const COLUMN_PADDING: Record<SortKey, string> = {
+    id: "px-2",
+    publisher: "px-1",
+    subscriber: "px-1",
+    in: "px-2",
+    out: "px-2",
+    cascade: "px-1",
+    createdAt: "px-1",
+};
+
+const SORT_FNS: Record<SortKey, (a: StreamType, b: StreamType) => number> = {
+    id: (a, b) => a.id.localeCompare(b.id),
+    publisher: (a, b) => countActiveSessions(a.publish.sessions) - countActiveSessions(b.publish.sessions),
+    subscriber: (a, b) => countActiveSessions(a.subscribe.sessions) - countActiveSessions(b.subscribe.sessions),
+    in: (a, b) => (a.stats?.publish.bitrate ?? 0) - (b.stats?.publish.bitrate ?? 0),
+    out: (a, b) => (a.stats?.subscribe.bitrate ?? 0) - (b.stats?.subscribe.bitrate ?? 0),
+    cascade: (a, b) => cascadeSessionCount(a) - cascadeSessionCount(b),
+    createdAt: (a, b) => a.createdAt - b.createdAt,
+};
 
 type ConnectionStatus = "connected" | "connecting" | "reconnecting" | "disconnected" | "error";
 
@@ -144,7 +182,7 @@ const {
     updateData,
     toggleTimer,
     connectionStatus,
-} = useStreamsDataSource(props.getStreams ?? getStreamsSorted, () => props.streamsSSEUrl);
+} = useStreamsDataSource(props.getStreams ?? (() => getStreams().catch(() => [])), () => props.streamsSSEUrl);
 
 const selectedStreamId = ref("");
 const cascadePullDialog = useTemplateRef<ICascadeDialog>("cascadePullDialog");
@@ -158,6 +196,42 @@ const webStreamDialogs = new Map<string, IWebStreamDialog>();
 const previewStreams = ref<string[]>([]);
 const previewStreamId = ref("");
 const previewDialogs = new Map<string, IPreviewDialog>();
+
+// Sorting lives in the component so it covers both data paths (SSE pushes
+// arrive in the server's map order, never sorted) and stays stable across
+// refreshes; the id tie-break means equal keys never reshuffle rows.
+// The selection persists across page loads.
+const SORT_KEY_STORAGE = "shared:streams-table:sort-key";
+const SORT_ASC_STORAGE = "shared:streams-table:sort-asc";
+
+const storedSortKey = localStorage.getItem(SORT_KEY_STORAGE);
+const sortKey = ref<SortKey>(
+    SORT_COLUMNS.some(col => col.key === storedSortKey) ? (storedSortKey as SortKey) : "createdAt",
+);
+const sortAsc = ref(localStorage.getItem(SORT_ASC_STORAGE) !== "false");
+
+watch([sortKey, sortAsc], ([key, asc]) => {
+    localStorage.setItem(SORT_KEY_STORAGE, key);
+    localStorage.setItem(SORT_ASC_STORAGE, String(asc));
+});
+
+const sortedStreams = computed(() => {
+    const cmp = SORT_FNS[sortKey.value];
+    const dir = sortAsc.value ? 1 : -1;
+    return [...streamsData.value].sort((a, b) => {
+        const primary = cmp(a, b);
+        return primary !== 0 ? dir * primary : a.id.localeCompare(b.id);
+    });
+});
+
+const toggleSort = (key: SortKey) => {
+    if (sortKey.value === key) {
+        sortAsc.value = !sortAsc.value;
+    } else {
+        sortKey.value = key;
+        sortAsc.value = true;
+    }
+};
 
 const setWebStreamDialog = (id: string, el: unknown) => {
     if (el) {
@@ -253,13 +327,16 @@ watch([streamsData, recordingAvailable], () => {
     })();
 }, { immediate: true });
 
-// Streams with a configured source (liveion only — liveman has no
-// /api/sources and keeps features.source off).  Sources change
-// only through the admin API, so a slow poll is enough.
+// Streams with a configured source, polled from the single-node
+// /api/sources (liveion). Cluster mode (liveman, getStreamNodes set)
+// skips this poll: its source API is node-pinned, so the Source menu
+// action shows on every row and the dialog discovers the owning node
+// instead. Sources change only through the admin API, so a slow poll is
+// enough.
 const sourceStreams = ref<Set<string>>(new Set());
 watchEffect((onCleanup) => {
     void token.value;
-    if (!features.value.source) {
+    if (!features.value.source || props.getStreamNodes) {
         sourceStreams.value = new Set();
         return;
     }
@@ -293,8 +370,16 @@ const handleViewClients = (id: string) => {
     clientsDialog.value?.show();
 };
 
-const handleViewSource = (id: string) => {
-    sourceDialog.value?.show(id);
+const sourceAvailable = (id: string) =>
+    features.value.source && (props.getStreamNodes ? true : sourceStreams.value.has(id));
+
+const handleViewSource = async (id: string) => {
+    if (props.getStreamNodes) {
+        const aliases = await props.getStreamNodes(id).catch(() => [] as string[]);
+        sourceDialog.value?.show(id, aliases);
+    } else {
+        sourceDialog.value?.show(id);
+    }
 };
 
 const handleCascadePullStream = () => {
@@ -371,15 +456,18 @@ const handleOpenDebuggerPage = (id: string) => {
 // The "More" menu teleports to <body>: the table scrolls horizontally
 // inside an overflow-x-auto wrapper on mobile, which would clip an
 // in-cell dropdown (overflow-x: auto forces overflow-y clipping too).
-const moreMenu = ref<{ id: string; top: number; right: number; openedAt: number } | null>(null);
-const toggleMoreMenu = (id: string, event: MouseEvent) => {
-    if (moreMenu.value?.id === id) {
+// The stream is kept on the state so menu-only actions (the
+// `extra-actions` slot) receive the row's stream object.
+const moreMenu = ref<{ id: string; stream: StreamType; top: number; right: number; openedAt: number } | null>(null);
+const toggleMoreMenu = (stream: StreamType, event: MouseEvent) => {
+    if (moreMenu.value?.id === stream.id) {
         moreMenu.value = null;
         return;
     }
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     moreMenu.value = {
-        id,
+        id: stream.id,
+        stream,
         top: rect.bottom + 4,
         right: Math.max(8, window.innerWidth - rect.right),
         openedAt: Date.now(),
@@ -520,60 +608,91 @@ const handleCancelStop = () => {
     </div>
 
     <div class="overflow-x-auto" @scroll.passive="passiveCloseMoreMenu">
-        <table class="table whitespace-nowrap">
+        <table class="table whitespace-nowrap w-full min-w-[1024px] table-fixed">
+            <colgroup>
+                <col class="w-[33%]" />
+                <col class="w-[4%]" />
+                <col class="w-[4%]" />
+                <col class="w-[8%]" />
+                <col class="w-[8%]" />
+                <col class="w-[4%]" />
+                <col class="w-[7%]" />
+                <col class="w-[32%]" />
+            </colgroup>
             <thead>
                 <tr>
-                    <th><span>ID</span></th>
-                    <td><span>Publisher</span></td>
-                    <td><span>Subscriber</span></td>
-                    <td><span>In</span></td>
-                    <td><span>Out</span></td>
-                    <td><span>Cascade</span></td>
-                    <td><span>Creation Time</span></td>
-                    <td><span>Operation</span></td>
+                    <th
+                        v-for="col in SORT_COLUMNS"
+                        :key="col.key"
+                        class="whitespace-normal"
+                        :class="COLUMN_PADDING[col.key]"
+                        :aria-sort="sortKey === col.key ? (sortAsc ? 'ascending' : 'descending') : 'none'"
+                    >
+                        <button
+                            class="inline-flex cursor-pointer select-none items-center gap-0.5"
+                            :title="col.title"
+                            @click="toggleSort(col.key)"
+                        >
+                            {{ col.label }}
+                            <ChevronUpIcon v-if="sortKey === col.key && sortAsc" class="size-3.5" />
+                            <ChevronDownIcon v-else-if="sortKey === col.key" class="size-3.5" />
+                        </button>
+                    </th>
+                    <td class="px-2"><span>Operation</span></td>
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="i in streamsData" :key="i.id">
-                    <th class="whitespace-normal">
-                        <span>
-                            {{ i.id }}
+                <tr v-for="i in sortedStreams" :key="i.id">
+                    <th class="px-2">
+                        <!-- long ids are ellipsized to keep the row on one
+                             line; the full id is on the tooltip -->
+                        <div class="flex items-center">
+                            <span class="min-w-0 truncate" :title="i.id">{{ i.id }}</span>
                             <div
                                 v-if="i.onDemand && countActiveSessions(i.publish.sessions) > 0"
                                 aria-label="Badge"
-                                class="badge badge-sm badge-info ml-2"
+                                class="badge badge-sm badge-info ml-2 flex-none"
                             >on-demand</div>
                             <div
                                 v-else-if="i.onDemand"
                                 aria-label="Badge"
-                                class="badge badge-sm badge-ghost ml-2"
+                                class="badge badge-sm badge-ghost ml-2 flex-none"
                             >standby</div>
                             <div
                                 v-if="!i.onDemand && i.provisioned"
                                 aria-label="Badge"
-                                class="badge badge-sm badge-ghost ml-2"
+                                class="badge badge-sm badge-ghost ml-2 flex-none"
                             >config</div>
-                        </span>
+                            <div
+                                v-if="recordingStates[i.id]"
+                                aria-label="Badge"
+                                class="badge badge-sm badge-success ml-2 flex-none"
+                            >rec</div>
+                        </div>
                     </th>
-                    <td><span>{{ countActiveSessions(i.publish.sessions) }}</span></td>
-                    <td><span>{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
-                    <td>
-                        <span :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                    <td class="px-1"><span class="tabular-nums">{{ countActiveSessions(i.publish.sessions) }}</span></td>
+                    <td class="px-1"><span class="tabular-nums">{{ countActiveSessions(i.subscribe.sessions) }}</span></td>
+                    <td class="px-2">
+                        <span
+                            class="block text-right tabular-nums"
+                            :title="`${formatBytes(i.stats?.publish.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`"
+                        >
                             {{ formatBitrate(i.stats?.publish.bitrate ?? 0) }}
                         </span>
                     </td>
-                    <td>
-                        <span :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`">
+                    <td class="px-2">
+                        <span
+                            class="block text-right tabular-nums"
+                            :title="`${formatBytes(i.stats?.subscribe.bytes ?? 0)} ${i.statsScope === 'clusterNodeWork' ? 'node work' : 'total'}`"
+                        >
                             {{ formatBitrate(i.stats?.subscribe.bitrate ?? 0) }}
                         </span>
                     </td>
-                    <td>
-                        <span>
-                            {{ countActiveSessions(i.publish.sessions.filter(t => t.cascade)) + countActiveSessions(i.subscribe.sessions.filter(t => t.cascade)) }}
-                        </span>
+                    <td class="px-1"><span class="tabular-nums">{{ cascadeSessionCount(i) }}</span></td>
+                    <td class="px-1">
+                        <span class="tabular-nums" :title="formatTime(i.createdAt)">{{ formatTimeShort(i.createdAt) }}</span>
                     </td>
-                    <td><span>{{ formatTime(i.createdAt) }}</span></td>
-                    <td>
+                    <td class="px-2">
                         <div class="flex flex-nowrap gap-1">
                             <button
                                 class="btn btn-sm"
@@ -582,22 +701,10 @@ const handleCancelStop = () => {
                             >Preview</button>
                             <button class="btn btn-sm" @click="handleViewClients(i.id)">Clients</button>
                             <button
-                                v-if="features.source && sourceStreams.has(i.id)"
+                                v-if="showCascade || features.player || features.debugger || sourceAvailable(i.id) || recordingAvailable || $slots['extra-actions']"
                                 class="btn btn-sm"
-                                @click="handleViewSource(i.id)"
-                            >Source</button>
-                            <button
-                                v-if="showCascade || features.player || features.debugger"
-                                class="btn btn-sm"
-                                @click="toggleMoreMenu(i.id, $event)"
+                                @click="toggleMoreMenu(i, $event)"
                             >More</button>
-                            <button
-                                v-if="recordingAvailable"
-                                class="btn btn-sm"
-                                :class="recordingStates[i.id] ? 'btn-success' : 'btn-info'"
-                                @click="openRecordDialog(i.id)"
-                            >{{ recordingStates[i.id] ? "Recording" : "Record" }}</button>
-                            <slot name="extra-actions" :stream="i" />
                             <!-- disabled buttons don't fire mouse events in
                                  some browsers, so the tooltip lives on the
                                  wrapper -->
@@ -717,6 +824,12 @@ const handleCancelStop = () => {
                 class="menu fixed z-50 bg-base-100 rounded-box w-40 p-2 shadow"
                 :style="{ top: `${moreMenu.top}px`, right: `${moreMenu.right}px` }"
             >
+                <li v-if="sourceAvailable(moreMenu.id)">
+                    <a @click="handleViewSource(moreMenu.id); closeMoreMenu()">Source</a>
+                </li>
+                <li v-if="recordingAvailable">
+                    <a @click="openRecordDialog(moreMenu.id); closeMoreMenu()">{{ recordingStates[moreMenu.id] ? "Stop Recording" : "Record" }}</a>
+                </li>
                 <li v-if="showCascade">
                     <a @click="handleCascadePushStream(moreMenu.id); closeMoreMenu()">Cascade Push</a>
                 </li>
@@ -725,6 +838,11 @@ const handleCancelStop = () => {
                 </li>
                 <li v-if="features.debugger">
                     <a @click="handleOpenDebuggerPage(moreMenu.id); closeMoreMenu()">Debugger</a>
+                </li>
+                <!-- app-specific row actions (e.g. liveman's Create token);
+                     the click bubbles here so the menu always closes -->
+                <li v-if="$slots['extra-actions']" @click="closeMoreMenu">
+                    <slot name="extra-actions" :stream="moreMenu.stream" />
                 </li>
             </ul>
         </template>

@@ -80,10 +80,10 @@ Response: [200] Binary media data or [302] redirect to storage URL
 Response: [200]
 
 - `alias`: String, Alias must be unique
-- `url`: String, Node API URL  
-- `pub_max`: Int16, Maximum publish count
-- `sub_max`: Int16, Maximum subscribe count
-- `status`: StringEnum("running" | "stopped"), Node status
+- `url`: String, Node API URL
+- `status`: StringEnum("running" | "stopped"), Node contact health: the latest poll result for `poll` nodes (any HTTP response counts as reachable), the SSE connection state for `sse` nodes, and the discovery presence for net4mqtt nodes
+- `duration`: String, Round-trip of the latest node contact (e.g. `"12ms"`): the poll RTT for `poll` nodes, the SSE connect handshake RTT for `sse` nodes, or the `/api/info` fetch RTT whenever liveman refreshes the node's build info; `"-"` until the first successful contact
+- `info`: Object, optional — the node's own `GET /api/info` build information (`version`, `gitHash`, `buildTime`, `features`), cached by liveman and refetched on reconnect; absent until the first successful fetch
 
 For Example:
 
@@ -92,26 +92,65 @@ For Example:
   {
     "alias": "buildin-0",
     "url": "http://127.0.0.1:55581",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "3ms",
+    "info": {
+      "version": "v0.10.2",
+      "gitHash": "b789a64",
+      "buildTime": "2026-09-28T10:00:00+00:00",
+      "features": ["webui", "cascade", "recorder", "source-all"]
+    }
   },
   {
     "alias": "buildin-1",
     "url": "http://127.0.0.1:55582",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "running",
+    "duration": "5ms"
   },
   {
     "alias": "buildin-2",
     "url": "http://127.0.0.1:55583",
-    "pub_max": 65535,
-    "sub_max": 1,
-    "status": "running"
+    "status": "stopped",
+    "duration": "-"
   }
 ]
 ```
+
+## Source
+
+Source management is proxied to a named node (`{alias}`): liveman rewrites each request to the same path on that node and forwards it with the node's bearer token injected, so cluster clients manage per-node sources through liveman only. Request/response bodies are the node's liveion source API — see [live777 API / Source](/guide/live777-api#source). An unknown alias fails with [503].
+
+`GET` `/api/sources/{alias}`
+
+List the node's sources.
+
+`POST` `/api/sources/{alias}/{stream}`
+
+Create a source. On success liveman eagerly registers the stream→node mapping so WHEP routing sees it before the next node snapshot.
+
+`GET` `/api/sources/{alias}/{stream}`
+
+Get source info.
+
+`DELETE` `/api/sources/{alias}/{stream}`
+
+Delete the source.
+
+`GET` `/api/sources/{alias}/{stream}/state`
+
+Get the source runtime state.
+
+`GET` `/api/sources/{alias}/{stream}/bitrate`
+
+Get the encoder bitrate telemetry.
+
+`GET` `/api/sources/{alias}/{stream}/tier`
+
+Get the source quality tiers.
+
+`POST` `/api/sources/{alias}/{stream}/tier`
+
+Apply a source quality tier.
 
 ## Stream
 
@@ -273,4 +312,16 @@ Response: [200]
   }
 }
 ```
+
+### Streams SSE
+
+**This API pushes the same merged view as `GET /api/streams/`**
+
+`GET` `/api/sse/streams`
+
+Server-Sent Events endpoint. Requires the same auth as admin routes.
+
+Pushes the full merged snapshot of all streams (per-node snapshots merged by stream id) whenever the stored cluster state changes. Each SSE message is a JSON array of stream objects, in the same shape as `GET /api/streams/` (including the `statsScope` marking). The optional `?nodes=<alias>` query parameter (repeatable) restricts the view to the given nodes, exactly like `GET /api/streams/`.
+
+The first message is sent when the connection is established; subsequent messages are sent on every state change, with identical consecutive payloads suppressed. Nodes updated by polling refresh on the poll cadence while at least one client is connected.
 

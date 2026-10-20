@@ -1,13 +1,20 @@
 use std::{collections::HashMap, env, net::SocketAddr, str::FromStr};
 
-use iceserver::{IceServer, default_ice_servers};
+use iceserver::IceServer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub http: Http,
-    #[serde(default = "default_ice_servers")]
+    /// STUN/TURN servers advertised to WHIP/WHEP clients via
+    /// `Link: ...; rel="ice-server"` response headers and used by outgoing
+    /// peers (e.g. WHEP pull sources). Empty by default — nothing is
+    /// advertised and only host candidates are gathered, so an unconfigured
+    /// server stays fully on the LAN. Add entries only for internet-facing
+    /// deployments. Server-side sessions ignore this list while
+    /// `webrtc.ice_lite` is on (the default).
+    #[serde(default)]
     pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub auth: Auth,
@@ -61,8 +68,10 @@ impl Net4mqtt {
 pub struct Http {
     #[serde(default = "default_http_listen")]
     pub listen: SocketAddr,
+    /// CORS allowed origins: empty (default) disables CORS, `["*"]` allows
+    /// any origin, otherwise only the listed origins are allowed.
     #[serde(default)]
-    pub cors: bool,
+    pub cors: api::cors::Cors,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -158,50 +167,233 @@ impl Default for Log {
     }
 }
 
-#[cfg(feature = "source")]
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ChannelConfig {
-    /// Local UDP socket address to bind for the DataChannel bridge.
-    /// Example: `"0.0.0.0:7774"` or `"[::]:7774"`.
-    pub listen: std::net::SocketAddr,
-    /// Target UDP address where DataChannel messages are forwarded.
-    /// Example: `"127.0.0.1:8890"`.
-    pub target: std::net::SocketAddr,
+pub const DEFAULT_CABLE_CAPACITY: usize = 1024;
+
+fn default_cable_create() -> bool {
+    true
 }
 
-#[cfg(feature = "source")]
-impl ChannelConfig {
-    /// Return the listen and target socket addresses.
-    pub fn endpoints(&self) -> (std::net::SocketAddr, std::net::SocketAddr) {
-        (self.listen, self.target)
+fn default_cable_capacity() -> usize {
+    DEFAULT_CABLE_CAPACITY
+}
+
+/// A declared datachannel cable of a stream: a named, bidirectional message
+/// pipe joining every peer channel created with the same label — the
+/// publisher's and any subscriber's alike.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CableConfig {
+    /// Cable identity: peer channels created with this label join this cable.
+    pub label: String,
+    /// `ordered` of the server-created channel; unset means the WebRTC
+    /// default (ordered and reliable). Irrelevant for `create = false`
+    /// cables: there each endpoint's own channel parameters apply per leg —
+    /// a cable is SFU-bridged, not end-to-end, so the two legs may
+    /// legitimately differ.
+    #[serde(default)]
+    pub ordered: Option<bool>,
+    /// Partial reliability by retransmission count; mutually exclusive with
+    /// `max_packet_life_time`. Unset (with it unset) means fully reliable.
+    #[serde(default)]
+    pub max_retransmits: Option<u16>,
+    /// Partial reliability by retransmission lifetime (ms); mutually
+    /// exclusive with `max_retransmits`.
+    #[serde(default)]
+    pub max_packet_life_time: Option<u16>,
+    /// Sub-protocol of the server-created channel. Empty by default.
+    #[serde(default)]
+    pub protocol: String,
+    /// Whether live777 creates this cable's channel on every session (the
+    /// parameters above take effect on the server-created channel; browsers
+    /// mirror them to both directions). When false, live777 only routes by
+    /// label and each endpoint creates its own channel with its own
+    /// parameters.
+    #[serde(default = "default_cable_create")]
+    pub create: bool,
+    /// Broadcast capacity of the cable's two direction buses, in messages.
+    #[serde(default = "default_cable_capacity")]
+    pub capacity: usize,
+}
+
+impl CableConfig {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            ordered: None,
+            max_retransmits: None,
+            max_packet_life_time: None,
+            protocol: String::new(),
+            create: default_cable_create(),
+            capacity: default_cable_capacity(),
+        }
     }
 }
 
-#[cfg(feature = "source")]
+/// One datachannel UDP endpoint, resolved from a `udp://` source/target URL.
+///
+/// The URL's authority is the local bind (`listen`, UDP -> cable injection)
+/// and the `host`/`port` query pair is the fixed destination (`target`,
+/// cable -> UDP export):
+///
+/// ```text
+/// udp://<listen_host>:<listen_port>[?host=<target_host>&port=<target_port>]
+/// ```
+///
+/// Both halves are optional but at least one must be present:
+/// `udp://0.0.0.0:8891` is inject-only, `udp://?host=127.0.0.1&port=8890`
+/// is export-only, and the full form is bidirectional. An omitted `target`
+/// means reply-to-sender: the bridge sends back to the last inbound source
+/// address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DcUdpEndpoint {
+    /// Local UDP socket address to bind for inbound packets (UDP -> cable).
+    pub listen: Option<std::net::SocketAddr>,
+    /// UDP destination for cable messages (cable -> UDP).
+    pub target: Option<std::net::SocketAddr>,
+}
+
+impl DcUdpEndpoint {
+    pub fn parse(url: &str) -> anyhow::Result<Self> {
+        let rest = url
+            .strip_prefix("udp://")
+            .ok_or_else(|| anyhow::anyhow!("dc endpoint must use udp:// scheme, got {url}"))?;
+
+        // Split authority (listen) from query (target).
+        let (authority, query) = match rest.split_once('?') {
+            Some((a, q)) => (a, Some(q)),
+            None => (rest, None),
+        };
+
+        // Authority = listen; empty means export-only (no listen).
+        let listen = if authority.is_empty() {
+            None
+        } else {
+            Some(authority.parse::<std::net::SocketAddr>().map_err(|e| {
+                anyhow::anyhow!("invalid dc listen address '{authority}' in {url}: {e}")
+            })?)
+        };
+
+        // Query = target host/port pair.
+        let mut target = None;
+        if let Some(query) = query {
+            let mut host: Option<&str> = None;
+            let mut port: Option<u16> = None;
+            for pair in query.split('&') {
+                let (key, value) = pair.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("invalid dc endpoint query '{pair}' in {url}")
+                })?;
+                match key {
+                    "host" => host = Some(value),
+                    "port" => {
+                        port = Some(value.parse().map_err(|e| {
+                            anyhow::anyhow!("invalid dc target port '{value}' in {url}: {e}")
+                        })?)
+                    }
+                    other => {
+                        anyhow::bail!("unknown dc endpoint query parameter '{other}' in {url}")
+                    }
+                }
+            }
+            match (host, port) {
+                (Some(host), Some(port)) => {
+                    let host = bracket_ipv6(host);
+                    target = Some(
+                        format!("{host}:{port}")
+                            .parse::<std::net::SocketAddr>()
+                            .map_err(|e| {
+                                anyhow::anyhow!("invalid dc target address in {url}: {e}")
+                            })?,
+                    );
+                }
+                (None, None) => {}
+                _ => anyhow::bail!("dc endpoint target host and port must be set together: {url}"),
+            }
+        }
+
+        if listen.is_none() && target.is_none() {
+            anyhow::bail!("dc endpoint needs at least one of listen or target: {url}");
+        }
+        Ok(Self { listen, target })
+    }
+}
+
+/// Wrap a bare IPv6 host in brackets so it composes into a `host:port`
+/// socket address.
+fn bracket_ipv6(host: &str) -> String {
+    if host.starts_with('[') {
+        host.to_string()
+    } else if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+/// One datachannel endpoint declared on a source/target: the cable it joins
+/// plus its UDP address. A source/target may declare several, so a single
+/// logical endpoint (e.g. a flight controller) can feed multiple cables.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CableEndpoint {
+    /// Cable label this endpoint joins; must be declared in
+    /// `[[stream.<name>.cables]]`.
+    pub label: String,
+    /// UDP endpoint URL: `udp://<listen>?host=<target>&port=<port>`.
+    pub url: String,
+}
+
+/// Validate a cable endpoint: label non-empty, url parses as a DC endpoint.
+fn validate_cable_endpoint(ep: &CableEndpoint) -> anyhow::Result<()> {
+    if ep.label.trim().is_empty() {
+        anyhow::bail!("cable endpoint label cannot be empty");
+    }
+    DcUdpEndpoint::parse(&ep.url)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_channel_config_ipv4() {
-        let s = ChannelConfig {
-            listen: "0.0.0.0:7774".parse().unwrap(),
-            target: "127.0.0.1:1234".parse().unwrap(),
-        };
-        let (listen, target) = s.endpoints();
-        assert_eq!(listen.to_string(), "0.0.0.0:7774");
-        assert_eq!(target.to_string(), "127.0.0.1:1234");
+    fn ice_servers_default_to_empty() {
+        // LAN-only out of the box: an omitted key must not pull in a public
+        // STUN server, and an explicit empty list stays empty.
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.ice_servers.is_empty());
+        let cfg: Config = toml::from_str("ice_servers = []").unwrap();
+        assert!(cfg.ice_servers.is_empty());
     }
 
     #[test]
-    fn test_channel_config_ipv6() {
-        let s = ChannelConfig {
-            listen: "[::]:7774".parse().unwrap(),
-            target: "[::1]:1234".parse().unwrap(),
-        };
-        let (listen, target) = s.endpoints();
-        assert_eq!(listen.to_string(), "[::]:7774");
-        assert_eq!(target.to_string(), "[::1]:1234");
+    fn test_dc_udp_endpoint_ipv4() {
+        let e = DcUdpEndpoint::parse("udp://0.0.0.0:7774?host=127.0.0.1&port=1234").unwrap();
+        assert_eq!(e.listen.unwrap().to_string(), "0.0.0.0:7774");
+        assert_eq!(e.target.unwrap().to_string(), "127.0.0.1:1234");
+    }
+
+    #[test]
+    fn test_dc_udp_endpoint_ipv6_inject_only() {
+        let e = DcUdpEndpoint::parse("udp://[::]:7774").unwrap();
+        assert_eq!(e.listen.unwrap().to_string(), "[::]:7774");
+        assert!(e.target.is_none());
+    }
+
+    #[test]
+    fn test_dc_udp_endpoint_export_only() {
+        let e = DcUdpEndpoint::parse("udp://?host=127.0.0.1&port=1234").unwrap();
+        assert!(e.listen.is_none());
+        assert_eq!(e.target.unwrap().to_string(), "127.0.0.1:1234");
+    }
+
+    #[test]
+    fn test_cable_config_defaults() {
+        let c: CableConfig = toml::from_str(r#"label = "control""#).unwrap();
+        assert_eq!(c.label, "control");
+        assert_eq!(c.ordered, None);
+        assert!(c.create);
+        assert_eq!(c.capacity, DEFAULT_CABLE_CAPACITY);
+        assert!(c.max_retransmits.is_none());
+        assert!(c.max_packet_life_time.is_none());
+        assert!(c.protocol.is_empty());
     }
 
     #[test]
@@ -225,10 +417,6 @@ mod tests {
             level = "3.1"
             gop = 60
 
-            [channel]
-            listen = "0.0.0.0:8891"
-            target = "127.0.0.1:8890"
-
             [strategy]
             auto_create_whip = false
             "#,
@@ -246,10 +434,6 @@ mod tests {
             source.encoder.as_ref().unwrap().level.as_deref(),
             Some("3.1")
         );
-
-        let channel = entry.channel.as_ref().unwrap();
-        assert_eq!(channel.listen.to_string(), "0.0.0.0:8891");
-        assert_eq!(channel.target.to_string(), "127.0.0.1:8890");
 
         let strategy = entry.strategy.as_ref().unwrap();
         assert!(!strategy.auto_create_whip);
@@ -299,6 +483,57 @@ mod tests {
         assert!(spec.validate().is_ok());
         assert_eq!(spec.tiers.len(), 2);
         assert!(spec.encoder.adaptive.is_some());
+    }
+
+    fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
+        SourceConfig {
+            url: Some(url.to_string()),
+            cables: vec![],
+            multicast_interface: multicast_interface.map(str::to_string),
+            #[cfg(feature = "native-source")]
+            capture: None,
+            #[cfg(feature = "native-source")]
+            encoder: None,
+            #[cfg(feature = "native-source")]
+            output: Default::default(),
+            #[cfg(feature = "native-source")]
+            tiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn multicast_interface_accepts_address_index_and_name() {
+        for iface in [
+            "192.168.123.11",
+            "0.0.0.0",
+            "2",
+            "eth0",
+            "vlan.100",
+            "br-lan",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_ok(), "'{iface}' must validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_rejects_garbage() {
+        for iface in [
+            "not an ip",
+            "99999999999999999999999",
+            "way-too-long-interface-name",
+        ] {
+            let cfg = url_source("/etc/live777/cam.sdp", Some(iface));
+            assert!(cfg.validate().is_err(), "'{iface}' must not validate");
+        }
+    }
+
+    #[test]
+    fn multicast_interface_warns_but_validates_for_non_sdp_sources() {
+        // Set on an RTSP source it is ignored (only SDP file sources join
+        // multicast groups), but it is not a config error.
+        let cfg = url_source("rtsp://192.168.1.100:554/stream", Some("192.168.123.11"));
+        assert!(cfg.validate().is_ok());
     }
 }
 
@@ -389,6 +624,11 @@ fn default_log_level() -> String {
 
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
+        self.http
+            .cors
+            .validate()
+            .map_err(|e| anyhow::anyhow!("http.cors error: {e}"))?;
+
         for ice_server in self.ice_servers.iter() {
             ice_server
                 .validate()
@@ -402,17 +642,66 @@ impl Config {
                     anyhow::anyhow!("stream[{}] source config error: {}", stream_id, e)
                 })?;
             }
-            if let Some(channel) = &entry.channel
-                && (channel.listen.port() == 0 || channel.target.port() == 0)
-            {
-                anyhow::bail!(
-                    "stream[{}] channel listen/target ports must be non-zero",
-                    stream_id
-                );
+        }
+
+        for (stream_id, entry) in &self.stream.streams {
+            let mut seen_labels = std::collections::HashSet::new();
+            for cable in &entry.cables {
+                if cable.label.trim().is_empty() {
+                    anyhow::bail!("stream[{}] cable label cannot be empty", stream_id);
+                }
+                if !seen_labels.insert(cable.label.as_str()) {
+                    anyhow::bail!(
+                        "stream[{}] duplicate cable label '{}'",
+                        stream_id,
+                        cable.label
+                    );
+                }
+                if cable.max_retransmits.is_some() && cable.max_packet_life_time.is_some() {
+                    anyhow::bail!(
+                        "stream[{}] cable '{}': max_retransmits and max_packet_life_time are mutually exclusive",
+                        stream_id,
+                        cable.label
+                    );
+                }
+                if cable.capacity == 0 {
+                    anyhow::bail!(
+                        "stream[{}] cable '{}': capacity must be non-zero",
+                        stream_id,
+                        cable.label
+                    );
+                }
+            }
+            // DC endpoints must reference a declared cable: a misspelled or
+            // missing label would otherwise only surface as a warn at attach
+            // time. Reject it here so config errors fail loudly.
+            #[cfg(feature = "source")]
+            for source in &entry.sources {
+                for ep in &source.cables {
+                    if !seen_labels.contains(ep.label.as_str()) {
+                        anyhow::bail!(
+                            "stream[{}] source cable endpoint references undeclared cable '{}'",
+                            stream_id,
+                            ep.label
+                        );
+                    }
+                }
+            }
+            #[cfg(feature = "target")]
+            for target in &entry.targets {
+                for ep in &target.cables {
+                    if !seen_labels.contains(ep.label.as_str()) {
+                        anyhow::bail!(
+                            "stream[{}] target cable endpoint references undeclared cable '{}'",
+                            stream_id,
+                            ep.label
+                        );
+                    }
+                }
             }
         }
 
-        #[cfg(feature = "target-whip")]
+        #[cfg(feature = "target")]
         for (stream_id, entry) in &self.stream.streams {
             let mut seen_urls = std::collections::HashSet::new();
             for target in &entry.targets {
@@ -587,6 +876,32 @@ pub struct HookConfig {
     /// `idle-timeout`) is passed as argv[3] / `LIVE777_REASON`.
     #[serde(default)]
     pub on_publish_stopped: Vec<String>,
+    /// Scripts run, in order, when a source's parameter set is changed
+    /// through the admin tier API (`POST /api/sources/{stream}/tier`) — a
+    /// tier is a named preset of source parameters, applying one
+    /// re-provisions the source.  The scripts run **synchronously inside**
+    /// the apply, before the tier's capture+encoder re-provisioning:
+    /// hardware that must be reconfigured for the new parameter set
+    /// (e.g. a camera sensor's mode gear on Rockchip-style V4L2 pipelines,
+    /// where framerate is a sensor-mode property the capture node cannot
+    /// change) is switched here so the subsequent pipeline rebuild starts
+    /// on the right hardware state.  A failing script aborts the apply
+    /// when `on_error = "stop"`, before the pipeline is touched.  When
+    /// the apply does not reach the target state — aborted, or the
+    /// pipeline rebuild failed and rolled back — the scripts run again
+    /// with the source's *current* state, so hardware they switched is
+    /// switched back (best effort; scripts must be idempotent).
+    ///
+    /// Unlike the lifecycle hooks these do not go through the queued hook
+    /// executor.  argv is `<stream> <tier>`; the tier name is also
+    /// exported as `LIVE777_SOURCE_TIER` (empty when the source runs its
+    /// configured base profile), and the tier parameters as
+    /// `LIVE777_SOURCE_WIDTH` / `LIVE777_SOURCE_HEIGHT` /
+    /// `LIVE777_SOURCE_FPS` / `LIVE777_SOURCE_BITRATE` — the *declared*
+    /// tier values on the pre-apply run (empty for unset fields), the
+    /// pipeline's *actual* current values on the compensation run.
+    #[serde(default)]
+    pub on_source_changed: Vec<String>,
 }
 
 /// Global `[hooks]` section: hook scripts plus execution policy.
@@ -622,7 +937,9 @@ pub struct StreamConfig {
     ///
     /// Example:
     ///   [stream.dc-udp]
-    ///   [stream.dc-udp.channel]
+    ///   [[stream.dc-udp.cables]]
+    ///   label = "control"
+    ///   [[stream.dc-udp.cables.udp]]
     ///   listen = "0.0.0.0:8891"
     ///   target = "127.0.0.1:8890"
     ///
@@ -634,14 +951,17 @@ pub struct StreamConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamEntry {
     /// Media input sources for this stream.
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
-    /// Optional DataChannel <-> UDP bridge for this stream.
-    #[cfg(feature = "source")]
+    /// Declared datachannel cables of this stream: named, per-label message
+    /// pipes with optional channel parameters and cable <-> UDP bridges.
+    /// Channels whose label matches no declared cable mix onto the anonymous
+    /// default bus pair.
     #[serde(default)]
-    pub channel: Option<ChannelConfig>,
+    pub cables: Vec<CableConfig>,
     /// Optional per-stream strategy override.
     #[serde(default)]
     pub strategy: Option<api::strategy::Strategy>,
@@ -662,8 +982,10 @@ pub struct StreamEntry {
     #[serde(default = "default_on_demand_start_timeout_ms")]
     pub on_demand_start_timeout_ms: u64,
     /// Static output targets: push this stream to downstream WHIP endpoints
-    /// (declarative cascade-push).
-    #[cfg(feature = "target-whip")]
+    /// (declarative cascade-push), send it out as plain RTP/UDP to a
+    /// multicast group or unicast address, and/or push it to an RTSP server
+    /// as a client (ANNOUNCE/RECORD).
+    #[cfg(feature = "target")]
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -672,14 +994,13 @@ impl Default for StreamEntry {
     fn default() -> Self {
         Self {
             sources: Vec::new(),
-            #[cfg(feature = "source")]
-            channel: None,
+            cables: Vec::new(),
             strategy: None,
             hooks: HookConfig::default(),
             on_demand: false,
             on_demand_close_after_ms: default_on_demand_close_after_ms(),
             on_demand_start_timeout_ms: default_on_demand_start_timeout_ms(),
-            #[cfg(feature = "target-whip")]
+            #[cfg(feature = "target")]
             targets: Vec::new(),
         }
     }
@@ -693,34 +1014,143 @@ fn default_on_demand_start_timeout_ms() -> u64 {
     10_000
 }
 
-/// A static output target of a stream: media is pushed to a downstream WHIP
-/// endpoint (declarative cascade-push), on par with how a WHEP source pulls
-/// media in. The push is media-driven: it is established when the stream
-/// gains a publisher and torn down when the publisher goes away; failures
-/// are retried with backoff. A target on an `on_demand` stream acts as
-/// standing demand: its sources are (re)started whenever the stream has
-/// neither a publisher nor a push session.
-#[cfg(feature = "target-whip")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A static output target of a stream. Three flavors:
+///
+/// - `whip://`/`whips://`: media is pushed to a downstream WHIP endpoint
+///   (declarative cascade-push), on par with how a WHEP source pulls media
+///   in.
+/// - `rtp://`: media is sent out as plain RTP over UDP to a multicast group
+///   (e.g. a Unitree video receiver) or a unicast address.
+/// - `rtsp://`: media is pushed to an RTSP server as a client
+///   (ANNOUNCE/SETUP/RECORD), mirroring how an RTSP source pulls media in.
+///
+/// All are media-driven: sending starts when the stream gains a publisher
+/// and stops when the publisher goes away; failures are retried with
+/// backoff. A target on an `on_demand` stream acts as standing demand: its
+/// sources are (re)started whenever the stream has neither a publisher nor
+/// an active target session.
+///
+/// Multicast senders keep the kernel's default `IP_MULTICAST_LOOP`, so a
+/// same-host SDP file source joined to the same group:port ingests the
+/// target's own output — a feedback loop. Sending and ingesting the same
+/// group:port on one host is a misconfiguration (use distinct groups or
+/// ports for same-host demos).
+#[cfg(feature = "target")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetConfig {
     /// Downstream WHIP endpoint: `whip://[token@]host:port/whip/<stream>`
-    /// (or `whips://`). A Bearer token can be carried as userinfo.
+    /// (or `whips://`), or an RTP destination: `rtp://host:port`. A Bearer
+    /// token can be carried as userinfo (WHIP only). The RTP host must be
+    /// an IP literal (v6 in brackets); a multicast address sends to the
+    /// group, anything else is unicast.
     pub url: String,
+    /// Datachannel endpoints this target consumes, at the subscriber seat —
+    /// the publisher's messages are sent to each endpoint's target, and its
+    /// inbound packets are delivered to the publisher. Empty for media
+    /// (WHIP/RTP/RTSP) targets.
+    #[serde(default)]
+    pub cables: Vec<CableEndpoint>,
+    /// Outbound multicast interface for `rtp://` targets: an IPv4 address
+    /// for IPv4 groups; an interface index or name for IPv6 groups. Unset
+    /// lets the kernel choose. Only valid with a multicast `rtp://` url.
+    #[serde(default)]
+    pub multicast_interface: Option<String>,
+    /// IPv4 multicast TTL / IPv6 multicast hops for `rtp://` targets
+    /// (default 1). Only valid with a multicast `rtp://` url.
+    #[serde(default)]
+    pub ttl: Option<u32>,
+    /// Payload type stamped on the video track's outgoing packets and
+    /// advertised in the generated SDP (96-127, dynamic range). Unset keeps
+    /// the automatic choice: the publisher's negotiated PT, or 96 for
+    /// dynamic codecs. Only valid with an `rtp://` url.
+    #[serde(default)]
+    pub payload_type: Option<u32>,
+    /// Write a receiver-side SDP file describing this target's output when
+    /// sending starts (like ffmpeg's rtp output writing test.sdp). The
+    /// file is directly consumable by live777's SDP file source
+    /// (`source-sdp`), ffmpeg, and gstreamer. Unset disables. Only valid
+    /// with an `rtp://` url.
+    #[serde(default)]
+    pub sdp_file: Option<String>,
 }
 
-#[cfg(feature = "target-whip")]
+#[cfg(feature = "target")]
 impl TargetConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        crate::target::validate_target_url(self.url.trim())
+        let url = self.url.trim();
+        if !self.cables.is_empty() {
+            // DC target: consumes cables, not the media plane.
+            if !url.is_empty() {
+                anyhow::bail!("a target cannot mix url and cables; use separate entries");
+            }
+            if self.multicast_interface.is_some()
+                || self.ttl.is_some()
+                || self.payload_type.is_some()
+                || self.sdp_file.is_some()
+            {
+                anyhow::bail!(
+                    "multicast_interface, ttl, payload_type and sdp_file \
+                     are only valid with an rtp:// target"
+                );
+            }
+            for ep in &self.cables {
+                validate_cable_endpoint(ep)?;
+            }
+            return Ok(());
+        }
+        if url.is_empty() {
+            anyhow::bail!("a target needs either url or cables");
+        }
+        let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+        match scheme.as_str() {
+            #[cfg(feature = "target-whip")]
+            "whip" | "whips" => {
+                if self.multicast_interface.is_some()
+                    || self.ttl.is_some()
+                    || self.payload_type.is_some()
+                    || self.sdp_file.is_some()
+                {
+                    anyhow::bail!(
+                        "multicast_interface, ttl, payload_type and sdp_file \
+                         are only valid with an rtp:// target"
+                    );
+                }
+                crate::target::validate_target_url(url)
+            }
+            #[cfg(feature = "target-rtp")]
+            "rtp" => crate::target_rtp::validate_rtp_target(self),
+            #[cfg(feature = "target-rtsp")]
+            "rtsp" => crate::target_rtsp::validate_rtsp_target(self),
+            _ => anyhow::bail!("unsupported target url scheme: {url}"),
+        }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceConfig {
     /// URL source for RTSP / WHEP / SDP inputs. Mutually exclusive with structured native fields.
     /// Supported: rtsp://, rtsps://, whep://, wheps://, file://, .sdp
     #[serde(default)]
     pub url: Option<String>,
+
+    /// Datachannel endpoints this source feeds, at the broadcast (publisher)
+    /// seat — inbound packets are broadcast to every subscriber, and
+    /// subscribers' replies are sent to each endpoint's target. Empty for
+    /// media (RTSP/WHEP/SDP/native) sources.
+    #[serde(default)]
+    pub cables: Vec<CableEndpoint>,
+
+    /// Interface for joining multicast groups (SDP file sources whose SDP
+    /// connection address is a multicast group, e.g. `c=IN IP4 230.1.1.1`).
+    /// An IPv4 address selects the interface for IPv4 groups; IPv6 groups
+    /// take an interface index or name (a `%zone` on the SDP address, e.g.
+    /// `c=IN IP6 ff12::1%eth0`, is the fallback). Unset lets the kernel
+    /// choose, which only receives traffic arriving on the default-route
+    /// interface and cannot pick link-local IPv6 groups (ff02::/16,
+    /// ff12::/16) — those always need an explicit interface.
+    /// Ignored by non-SDP sources.
+    #[serde(default)]
+    pub multicast_interface: Option<String>,
 
     /// Capture config (required for structured native sources).
     #[cfg(feature = "native-source")]
@@ -741,6 +1171,18 @@ pub struct SourceConfig {
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub tiers: Vec<crate::stream::source::source_config::TierSpec>,
+}
+
+/// Whether `s` can be a network interface name: kernel names are at most
+/// 15 bytes (IFNAMSIZ-1) and conventionally use this charset (`eth0`,
+/// `vlan.100`, `br-lan`).  Looser than the kernel on purpose — validation
+/// only needs to catch mistyped IPs/indexes; a bogus name fails with a
+/// clear error when the source resolves it at start.
+fn is_plausible_interface_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 15
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 impl SourceConfig {
@@ -771,15 +1213,54 @@ impl SourceConfig {
             if encoder.bitrate == 0 {
                 anyhow::bail!("encoder.bitrate must be non-zero");
             }
+            if self.multicast_interface.is_some() {
+                tracing::warn!(
+                    "multicast_interface is only used by SDP file sources; it is ignored for this source"
+                );
+            }
             return Ok(());
         }
 
         let url = self.url.as_deref().unwrap_or("");
+
+        // DC sources feed cables, not the media plane.
+        if !self.cables.is_empty() {
+            if !url.is_empty() {
+                anyhow::bail!("a source cannot mix url and cables; use separate entries");
+            }
+            if self.multicast_interface.is_some() {
+                anyhow::bail!("multicast_interface is only valid with SDP file sources");
+            }
+            for ep in &self.cables {
+                validate_cable_endpoint(ep)?;
+            }
+            return Ok(());
+        }
+
         if url.is_empty() {
             anyhow::bail!("either url or capture must be set");
         }
 
         let url_lower = url.to_lowercase();
+
+        if let Some(iface) = self.multicast_interface.as_deref() {
+            let iface = iface.trim();
+            if iface.parse::<std::net::IpAddr>().is_err()
+                && iface.parse::<u32>().is_err()
+                && !is_plausible_interface_name(iface)
+            {
+                anyhow::bail!(
+                    "multicast_interface must be an IP address, an interface index, or an interface name, got '{iface}'"
+                );
+            }
+            let is_sdp_source = url_lower.starts_with("file://") || url_lower.ends_with(".sdp");
+            if !is_sdp_source {
+                tracing::warn!(
+                    "multicast_interface is only used by SDP file sources; it is ignored for this source"
+                );
+            }
+        }
+
         if !url_lower.starts_with("rtsp://")
             && !url_lower.starts_with("rtsps://")
             && !url_lower.starts_with("whep://")
@@ -1075,11 +1556,24 @@ fn default_rtsp_realm() -> String {
     "live777".to_string()
 }
 
-#[cfg(feature = "target-whip")]
+#[cfg(feature = "target")]
 #[cfg(test)]
 mod target_tests {
     use super::*;
 
+    #[cfg(feature = "target-rtp")]
+    fn rtp_target(url: &str) -> TargetConfig {
+        TargetConfig {
+            url: url.to_string(),
+            cables: vec![],
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
     #[test]
     fn target_config_validate_accepts_whip_schemes() {
         for url in [
@@ -1088,22 +1582,299 @@ mod target_tests {
             "whip://token@edge-1:7777/whip/cam1",
             "WHIP://edge-1/whip/cam1",
         ] {
-            let target = TargetConfig { url: url.into() };
+            let target = TargetConfig {
+                url: url.into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
             target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
         }
     }
 
+    #[cfg(feature = "target-whip")]
     #[test]
     fn target_config_validate_rejects_bad_input() {
         for url in [
             "",
             "whep://edge-1/whep/cam1",
-            "rtsp://edge-1/cam1",
+            "rtmp://edge-1/cam1",
             "whip://user:pass@edge-1/whip/cam1",
         ] {
-            let target = TargetConfig { url: url.into() };
+            let target = TargetConfig {
+                url: url.into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
             assert!(target.validate().is_err(), "{url} must be rejected");
         }
+        // A scheme whose feature is disabled falls through to the same
+        // unsupported-scheme rejection.
+        #[cfg(not(feature = "target-rtsp"))]
+        {
+            let target = TargetConfig {
+                url: "rtsp://edge-1/cam1".into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            assert!(
+                target.validate().is_err(),
+                "rtsp:// must be rejected without the target-rtsp feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-rtsp")]
+    #[test]
+    fn target_config_validate_accepts_rtsp_schemes() {
+        for url in [
+            "rtsp://mediamtx:8554/cam1",
+            "rtsp://user:pass@edge-1/cam1",
+            "rtsp://edge-1/cam1?transport=tcp",
+            "RTSP://edge-1/cam1",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
+    #[test]
+    fn target_config_validate_rejects_whip_url_with_multicast_options() {
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            cables: vec![],
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        };
+        let err = target.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("rtp://"),
+            "error must point at rtp:// targets: {err}"
+        );
+
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            cables: vec![],
+            multicast_interface: None,
+            ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_rtp_urls() {
+        for url in [
+            "rtp://230.1.1.1:1720",
+            "rtp://192.168.1.10:5004",
+            "rtp://[ff12::1]:1720",
+            "RTP://230.1.1.1:1720",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            target.validate().unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_multicast_rtp_options() {
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            cables: vec![],
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: Some(16),
+            payload_type: None,
+            sdp_file: None,
+        };
+        target.validate().unwrap();
+
+        let target = TargetConfig {
+            url: "rtp://[ff12::1]:1720".into(),
+            cables: vec![],
+            multicast_interface: Some("2".into()),
+            ttl: Some(255),
+            payload_type: None,
+            sdp_file: None,
+        };
+        target.validate().unwrap();
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_bad_rtp_urls() {
+        for url in [
+            "rtp://",
+            "rtp://230.1.1.1",
+            "rtp://camera.local:1720",
+            "rtp://user@230.1.1.1:1720",
+            "rtp://230.1.1.1:1720/x",
+            "rtp://230.1.1.1:0",
+        ] {
+            let target = TargetConfig {
+                url: url.into(),
+                cables: vec![],
+                multicast_interface: None,
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            assert!(target.validate().is_err(), "{url} must be rejected");
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_bad_rtp_options() {
+        // TTL out of range.
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            cables: vec![],
+            multicast_interface: None,
+            ttl: Some(256),
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+
+        // IPv4 group: the interface must be an IPv4 address, not a name or
+        // an interface index (those are the IPv6 form).
+        for interface in ["eth0", "2"] {
+            let target = TargetConfig {
+                url: "rtp://230.1.1.1:1720".into(),
+                cables: vec![],
+                multicast_interface: Some(interface.into()),
+                ttl: None,
+                payload_type: None,
+                sdp_file: None,
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("multicast_interface"),
+                "error must name multicast_interface: {err}"
+            );
+        }
+
+        // IPv6 group: an IPv4 interface address does not fit.
+        let target = TargetConfig {
+            url: "rtp://[ff12::1]:1720".into(),
+            cables: vec![],
+            multicast_interface: Some("192.168.1.10".into()),
+            ttl: None,
+            payload_type: None,
+            sdp_file: None,
+        };
+        assert!(target.validate().is_err());
+
+        // Unicast destination: multicast-only options are rejected.
+        for (interface, ttl) in [(Some("192.168.1.10"), None), (None, Some(16))] {
+            let target = TargetConfig {
+                url: "rtp://192.168.1.10:5004".into(),
+                cables: vec![],
+                multicast_interface: interface.map(str::to_string),
+                ttl,
+                payload_type: None,
+                sdp_file: None,
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("multicast"),
+                "error must say multicast-only: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_accepts_payload_type_and_sdp_file() {
+        let target = TargetConfig {
+            url: "rtp://230.1.1.1:1720".into(),
+            cables: vec![],
+            payload_type: Some(96),
+            sdp_file: Some("/etc/live777/robot-cam.sdp".into()),
+            multicast_interface: None,
+            ttl: None,
+        };
+        target.validate().unwrap();
+
+        // The whole dynamic range is usable.
+        let target = TargetConfig {
+            payload_type: Some(127),
+            ..rtp_target("rtp://230.1.1.1:1720")
+        };
+        target.validate().unwrap();
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn target_config_validate_rejects_payload_type_outside_dynamic_range() {
+        for pt in [0, 95, 128, 200] {
+            let target = TargetConfig {
+                payload_type: Some(pt),
+                ..rtp_target("rtp://230.1.1.1:1720")
+            };
+            let err = target.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("payload_type") && err.contains("96"),
+                "error must explain the dynamic range: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "target-whip")]
+    #[test]
+    fn target_config_validate_rejects_whip_url_with_rtp_options() {
+        // payload_type and sdp_file follow the same rule as the multicast
+        // options: an rtp://-only knob on a WHIP target is rejected.
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            cables: vec![],
+            multicast_interface: None,
+            ttl: None,
+            payload_type: Some(96),
+            sdp_file: None,
+        };
+        let err = target.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("rtp://"),
+            "error must point at rtp:// targets: {err}"
+        );
+
+        let target = TargetConfig {
+            url: "whip://edge-1:7777/whip/cam1".into(),
+            cables: vec![],
+            multicast_interface: None,
+            ttl: None,
+            payload_type: None,
+            sdp_file: Some("cam.sdp".into()),
+        };
+        assert!(target.validate().is_err());
     }
 
     #[test]
@@ -1117,6 +1888,38 @@ mod target_tests {
         .unwrap();
         assert_eq!(entry.targets.len(), 1);
         assert_eq!(entry.targets[0].url, "whip://token@edge-1:7777/whip/cam1");
+        assert_eq!(entry.targets[0].multicast_interface, None);
+        assert_eq!(entry.targets[0].ttl, None);
+        assert_eq!(entry.targets[0].payload_type, None);
+        assert_eq!(entry.targets[0].sdp_file, None);
+    }
+
+    #[cfg(feature = "target-rtp")]
+    #[test]
+    fn stream_entry_rtp_target_roundtrip_toml() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[targets]]
+            url = "rtp://230.1.1.1:1720"
+            multicast_interface = "192.168.123.10"
+            ttl = 16
+            payload_type = 96
+            sdp_file = "/etc/live777/robot-cam.sdp"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(entry.targets.len(), 1);
+        assert_eq!(entry.targets[0].url, "rtp://230.1.1.1:1720");
+        assert_eq!(
+            entry.targets[0].multicast_interface.as_deref(),
+            Some("192.168.123.10")
+        );
+        assert_eq!(entry.targets[0].ttl, Some(16));
+        assert_eq!(entry.targets[0].payload_type, Some(96));
+        assert_eq!(
+            entry.targets[0].sdp_file.as_deref(),
+            Some("/etc/live777/robot-cam.sdp")
+        );
     }
 
     #[test]
@@ -1127,6 +1930,11 @@ mod target_tests {
             StreamEntry {
                 targets: vec![TargetConfig {
                     url: "whep://edge-1/whep/cam1".into(),
+                    cables: vec![],
+                    multicast_interface: None,
+                    ttl: None,
+                    payload_type: None,
+                    sdp_file: None,
                 }],
                 ..Default::default()
             },
@@ -1137,16 +1945,33 @@ mod target_tests {
 
     #[test]
     fn config_validate_rejects_duplicate_target_urls() {
+        // Both schemes funnel through the same duplicate check; use whichever
+        // this feature set validates.
+        let url = if cfg!(feature = "target-whip") {
+            "whip://edge-1:7777/whip/cam1"
+        } else {
+            "rtp://230.1.1.1:1720"
+        };
         let mut cfg = Config::default();
         cfg.stream.streams.insert(
             "cam1".to_string(),
             StreamEntry {
                 targets: vec![
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
+                        cables: vec![],
+                        multicast_interface: None,
+                        ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                     TargetConfig {
-                        url: "whip://edge-1:7777/whip/cam1".into(),
+                        url: url.into(),
+                        cables: vec![],
+                        multicast_interface: None,
+                        ttl: None,
+                        payload_type: None,
+                        sdp_file: None,
                     },
                 ],
                 ..Default::default()

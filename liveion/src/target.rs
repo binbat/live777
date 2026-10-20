@@ -1,9 +1,13 @@
-//! Static WHIP push targets (declarative cascade-push).
+//! Static output targets (declarative cascade-push / RTP sender).
 //!
-//! A `[[stream.<name>.targets]]` config entry pushes the stream to a
-//! downstream WHIP endpoint (typically another live777 node) — the static
-//! counterpart of `POST /api/cascade/{stream}` with a `target_url`, just as
-//! the WHEP source is the static counterpart of a cascade pull.
+//! A `[[stream.<name>.targets]]` config entry with a `whip://`/`whips://` URL
+//! pushes the stream to a downstream WHIP endpoint (typically another
+//! live777 node) — the static counterpart of `POST /api/cascade/{stream}`
+//! with a `target_url`, just as the WHEP source is the static counterpart
+//! of a cascade pull. An `rtp://` URL instead sends the media out as plain
+//! RTP over UDP, see [`crate::target_rtp`]. An `rtsp://` URL pushes the
+//! media to an RTSP server as a client (ANNOUNCE/SETUP/RECORD), see
+//! [`crate::target_rtsp`].
 //!
 //! The push is media-driven: one supervisor task per target establishes the
 //! cascade-push session when the stream gains a publisher (`PublishStarted`,
@@ -17,23 +21,54 @@
 //! A failed push (downstream down, ICE failure, session loss) is retried
 //! with exponential backoff, mirroring the reconnect policy of the
 //! RTSP/WHEP sources. For an `on_demand` stream the configured target acts
-//! as standing demand: whenever the stream has neither a publisher nor a
-//! push session, the supervisor starts its sources, retried with the same
-//! backoff — so the relay recovers on its own once an unreachable
-//! downstream is back, capped at roughly one source restart per minute.
+//! as standing demand: the supervisor registers with the manager's
+//! on-demand idle accounting for its whole lifetime, so the sources are
+//! never idle-stopped underneath it (live777#481), and whenever the stream
+//! has neither a publisher nor a push session the supervisor starts its
+//! sources, retried with the same backoff — so the relay recovers on its
+//! own once an unreachable downstream is back.
 
 use std::sync::Arc;
+#[cfg(feature = "target-whip")]
 use std::time::Duration;
 
+#[cfg(feature = "target-whip")]
 use libwish::{Client, parse_whip_url};
+#[cfg(feature = "target-whip")]
 use tokio::sync::broadcast;
+#[cfg(feature = "target-whip")]
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "target-whip")]
+use tracing::{debug, warn};
+use tracing::{error, info};
 
+#[cfg(feature = "target-whip")]
 use crate::config::TargetConfig;
+#[cfg(feature = "target-whip")]
 use crate::event::{Event, StreamDeleteReason};
+#[cfg(feature = "target-whip")]
 use crate::reconnect::reconnect_delay;
 use crate::stream::manager::Manager;
+
+/// Session id under which a static target registers as a virtual subscriber
+/// (mirroring the source's `virtual-source` publisher): derived from the
+/// credential-free target URL with the scheme separator collapsed and
+/// path-hostile characters flattened, e.g.
+/// `virtual-target-rtp-230.1.1.2:1720`.
+pub(crate) fn virtual_target_session_id(display: &str) -> String {
+    let display = display.replacen("://", "-", 1);
+    let sanitized: String = display
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("virtual-target-{sanitized}")
+}
 
 /// Spawn one supervisor per configured static target. Must run after
 /// `Manager::provision_streams`: the supervisors snapshot stream state from
@@ -44,19 +79,40 @@ pub fn init(manager: Arc<Manager>) {
         return;
     }
     info!(
-        "[Server] Starting {} configured WHIP target(s)...",
+        "[Server] Starting {} configured target(s)...",
         targets.len()
     );
     for (stream, target) in targets {
-        match TargetContext::new(manager.clone(), stream, target) {
-            Ok(ctx) => {
-                tokio::spawn(ctx.run());
-            }
-            Err(e) => error!("[target] {}", e),
+        // Config validation already rejected unknown schemes; stay
+        // defensive so a programmatic config cannot panic the dispatch.
+        let scheme = target
+            .url
+            .trim()
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match scheme.as_str() {
+            #[cfg(feature = "target-whip")]
+            "whip" | "whips" => match TargetContext::new(manager.clone(), stream, target) {
+                Ok(ctx) => {
+                    tokio::spawn(ctx.run());
+                }
+                Err(e) => error!("[target] {}", e),
+            },
+            #[cfg(feature = "target-rtp")]
+            "rtp" => crate::target_rtp::spawn(manager.clone(), stream, target),
+            #[cfg(feature = "target-rtsp")]
+            "rtsp" => crate::target_rtsp::spawn(manager.clone(), stream, target),
+            _ => error!(
+                "[target] [{}] unsupported target url scheme: {}",
+                stream, target.url
+            ),
         }
     }
 }
 
+#[cfg(feature = "target-whip")]
 struct TargetContext {
     manager: Arc<Manager>,
     stream: String,
@@ -67,6 +123,7 @@ struct TargetContext {
     cancel: CancellationToken,
 }
 
+#[cfg(feature = "target-whip")]
 impl TargetContext {
     fn new(manager: Arc<Manager>, stream: String, target: TargetConfig) -> anyhow::Result<Self> {
         let (url, token) = parse_whip_url(&target.url)
@@ -97,7 +154,7 @@ impl TargetContext {
         // The bus does not replay: media that became available before this
         // task started (always-on sources, early publishers) is only visible
         // through the manager snapshot.
-        let mut desired = self.has_publisher().await;
+        let mut desired = self.manager.has_publisher(&self.stream).await;
         // A configured target on an on-demand stream is standing demand:
         // whenever the stream has neither a publisher nor a push session,
         // kick its sources. Retried with the same backoff as push failures,
@@ -106,6 +163,18 @@ impl TargetContext {
         // downstream is back.
         #[cfg(feature = "source")]
         let standing_demand = self.manager.is_on_demand_stream(&self.stream);
+        // Register as a virtual subscriber for the supervisor's whole
+        // lifetime: the push session only exists while the downstream is up,
+        // so during push retries nothing would otherwise keep the on-demand
+        // idle check from stopping the sources between attempts
+        // (live777#481). The registration also lists the target in the
+        // stream's `subscribe.sessions`. `self.url` is the credential-free
+        // http(s) form of the configured whip(s) URL; map the scheme back
+        // for the session id.
+        let virtual_id = virtual_target_session_id(&self.url.replacen("http", "whip", 1));
+        self.manager
+            .add_virtual_subscriber(&self.stream, virtual_id.clone())
+            .await;
 
         info!("[target] [{}] pushing to {}", self.stream, self.url);
 
@@ -124,13 +193,13 @@ impl TargetContext {
                     }
                     // The wait is event-blind: a real publisher may have
                     // arrived meanwhile.
-                    desired = self.has_publisher().await;
+                    desired = self.manager.has_publisher(&self.stream).await;
                     continue;
                 }
                 // The kick blocks until the source bridge is up, so the
                 // virtual publisher is already visible in the snapshot — no
                 // need to wait for PublishStarted.
-                desired = self.has_publisher().await;
+                desired = self.manager.has_publisher(&self.stream).await;
             }
 
             if desired && session.is_none() {
@@ -160,7 +229,7 @@ impl TargetContext {
                         // The backoff wait is event-blind: the media may have
                         // gone away mid-sleep, and pushing now would
                         // negotiate the session with the wrong codecs.
-                        desired = self.has_publisher().await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                         continue;
                     }
                 }
@@ -209,7 +278,7 @@ impl TargetContext {
                             }
                             // The wait is event-blind: re-check the media is
                             // still there before re-establishing.
-                            desired = self.has_publisher().await;
+                            desired = self.manager.has_publisher(&self.stream).await;
                         }
                     }
                     Ok(Event::StreamDeleted { stream, reason }) => {
@@ -235,7 +304,7 @@ impl TargetContext {
                             "[target] [{}] dropped {} stream events, reconciling",
                             self.stream, n
                         );
-                        desired = self.has_publisher().await;
+                        desired = self.manager.has_publisher(&self.stream).await;
                         let mut lost = false;
                         if let Some(id) = &session
                             && !self.session_alive(id).await
@@ -254,7 +323,7 @@ impl TargetContext {
                             if self.wait(reconnect_delay(1)).await {
                                 break;
                             }
-                            desired = self.has_publisher().await;
+                            desired = self.manager.has_publisher(&self.stream).await;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -270,6 +339,9 @@ impl TargetContext {
                 .remove_stream_session(self.stream.clone(), id)
                 .await;
         }
+        self.manager
+            .remove_virtual_subscriber(&self.stream, &virtual_id)
+            .await;
         info!("[target] [{}] stopped push to {}", self.stream, self.url);
     }
 
@@ -279,16 +351,6 @@ impl TargetContext {
             _ = self.cancel.cancelled() => true,
             _ = tokio::time::sleep(delay) => false,
         }
-    }
-
-    /// Whether the stream currently has a live publisher session (a real
-    /// WHIP publisher or a source bridge's virtual one).
-    async fn has_publisher(&self) -> bool {
-        self.manager
-            .info(vec![self.stream.clone()])
-            .await
-            .first()
-            .is_some_and(|s| s.publish.sessions.iter().any(|x| x.leave_at == 0))
     }
 
     /// Whether the manager still lists `id` as a live subscribe session of
@@ -311,9 +373,31 @@ impl TargetContext {
 /// userinfo rules, and that the token (if any) is usable as a Bearer header
 /// value. Called from `Config::validate` so misconfiguration fails at
 /// startup instead of surfacing once in a supervisor log line.
+#[cfg(feature = "target-whip")]
 pub(crate) fn validate_target_url(raw: &str) -> anyhow::Result<()> {
     let (_, token) = parse_whip_url(raw)?;
     // The token reaches the Authorization header verbatim on every push.
     Client::get_authorization_header_map(token)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::virtual_target_session_id;
+
+    #[test]
+    fn virtual_target_session_id_is_path_safe_and_readable() {
+        assert_eq!(
+            virtual_target_session_id("rtp://230.1.1.2:1720"),
+            "virtual-target-rtp-230.1.1.2:1720"
+        );
+        assert_eq!(
+            virtual_target_session_id("rtsp://mediamtx.example.com:8554/live/dog"),
+            "virtual-target-rtsp-mediamtx.example.com:8554_live_dog"
+        );
+        assert_eq!(
+            virtual_target_session_id("whips://edge.example.com/whip/cam?x=1"),
+            "virtual-target-whips-edge.example.com_whip_cam_x_1"
+        );
+    }
 }

@@ -486,6 +486,32 @@ where
         info!("RECORD request successful");
         Ok(())
     }
+
+    pub async fn send_teardown_request(&mut self) -> Result<()> {
+        let session_id = self
+            .session_id
+            .as_ref()
+            .ok_or_else(|| anyhow!("No session ID"))?;
+
+        let teardown_request = Request::builder(Method::Teardown, Version::V1_0)
+            .request_uri(self.url.parse::<Url>()?)
+            .header(headers::CSEQ, self.cseq.to_string())
+            .header(headers::SESSION, session_id.as_str())
+            .header(headers::USER_AGENT, client::USER_AGENT)
+            .empty();
+
+        self.send_request(&teardown_request.map_body(|_| vec![]))
+            .await?;
+        let response = self.read_response().await?;
+        self.cseq += 1;
+
+        if response.status() != StatusCode::Ok {
+            return Err(anyhow!("TEARDOWN failed: {}", response.status()));
+        }
+
+        info!("TEARDOWN request successful");
+        Ok(())
+    }
 }
 
 fn parse_server_ports(transport: &str) -> Result<(u16, u16)> {
@@ -515,6 +541,7 @@ pub async fn setup_rtsp_session(
     target_host: &str,
     mode: RtspMode,
     use_tcp: bool,
+    cancel: CancellationToken,
 ) -> Result<(MediaInfo, Option<InterleavedChannel>)> {
     use crate::channels::DEFAULT_CHANNEL_CAPACITY;
 
@@ -636,16 +663,15 @@ pub async fn setup_rtsp_session(
         let session_mode = mode.to_session_mode();
 
         // The client TCP stream is torn down when the returned channel halves
-        // are dropped (closing the receiver/sender) or the TCP socket errors.
-        // No external CancellationToken is needed here — channel closure is
-        // the teardown signal for the client side.
+        // are dropped (closing the receiver/sender), the TCP socket errors, or
+        // the caller's token is cancelled.
         tokio::spawn(async move {
             if let Err(e) = crate::tcp_stream::handle_tcp_stream(
                 stream,
                 session_mode,
                 data_from_stream_tx,
                 data_to_stream_rx,
-                CancellationToken::new(),
+                cancel,
                 false,
             )
             .await
@@ -736,7 +762,21 @@ pub async fn setup_rtsp_session(
             ));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        // The caller is tearing the session down (e.g. a
+                        // target's media epoch ended). UDP has no connection
+                        // whose close would release the server-side session,
+                        // so say goodbye properly: without this the server
+                        // keeps the published path until its own timeout and
+                        // a re-push collides with the zombie publisher.
+                        if let Err(e) = session.send_teardown_request().await {
+                            debug!("TEARDOWN on cancel failed: {}", e);
+                        }
+                        break;
+                    }
+                    _ = interval.tick() => {}
+                }
 
                 let options_request = Request::builder(Method::Options, Version::V1_0)
                     .request_uri(session_url.clone())
