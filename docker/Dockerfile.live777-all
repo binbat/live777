@@ -95,6 +95,10 @@ ENV FFMPEG_PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
 ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/ffmpeg/lib
 
+# crates.io can reset multiplexed HTTP/2 streams on slow or filtered networks.
+ENV CARGO_HTTP_MULTIPLEXING=false
+ENV CARGO_NET_RETRY=10
+
 # Same feature set as Dockerfile.live777-server, plus rsmpeg for whipsynth and
 # whepprobe.
 RUN LIBCLANG_PATH="$(dirname "$(find /usr/lib -name 'libclang*.so*' | sort | head -1)")" \
