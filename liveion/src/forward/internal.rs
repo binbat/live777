@@ -3614,8 +3614,14 @@ mod dc_tests {
         };
         let hub = Arc::new(crate::stream::cable::CableHub::from_configs(&entry.cables));
         hub.attach_static_endpoints("test", &entry).await;
+        // Probe with a wildcard bind: the bridge holds 0.0.0.0:P, and
+        // wildcard-after-wildcard collides on every platform. Probing
+        // 127.0.0.1:P instead only works on Linux — Windows lets a specific
+        // bind succeed over a held wildcard one (no SO_EXCLUSIVEADDRUSE), so
+        // the held port is not observable that way there (live777#504).
+        let wildcard = std::net::SocketAddr::from(([0, 0, 0, 0], listen.port()));
         assert!(
-            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            tokio::net::UdpSocket::bind(wildcard).await.is_err(),
             "bridge must hold its configured port"
         );
 
@@ -3633,14 +3639,14 @@ mod dc_tests {
         forward.close().await.unwrap();
         drop(forward);
         assert!(
-            tokio::net::UdpSocket::bind(listen).await.is_err(),
+            tokio::net::UdpSocket::bind(wildcard).await.is_err(),
             "forward close must not release the stream-level bridge's port"
         );
 
         // Deleting the stream drops the hub, which cancels the bridge.
         drop(hub);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while tokio::net::UdpSocket::bind(listen).await.is_err() {
+        while tokio::net::UdpSocket::bind(wildcard).await.is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "bridge port still held after the hub was dropped"
