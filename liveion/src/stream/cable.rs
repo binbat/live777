@@ -283,14 +283,20 @@ mod tests {
         };
         let hub = CableHub::from_configs(&entry.cables);
         hub.attach_static_endpoints("test", &entry).await;
+        // Probe with a wildcard bind: the bridge holds 0.0.0.0:P, and
+        // wildcard-after-wildcard collides on every platform. Probing
+        // 127.0.0.1:P instead only works on Linux — Windows lets a specific
+        // bind succeed over a held wildcard one (no SO_EXCLUSIVEADDRUSE), so
+        // the held port is not observable that way there (live777#504).
+        let wildcard = std::net::SocketAddr::from(([0, 0, 0, 0], listen.port()));
         assert!(
-            UdpSocket::bind(listen).await.is_err(),
+            UdpSocket::bind(wildcard).await.is_err(),
             "bridge must hold its port"
         );
 
         drop(hub);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while UdpSocket::bind(listen).await.is_err() {
+        while UdpSocket::bind(wildcard).await.is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "port still held after the hub was dropped"
