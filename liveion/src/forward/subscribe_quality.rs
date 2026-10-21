@@ -221,30 +221,23 @@ impl SubscribeRtcpStats {
 /// Inbound-RTCP observer for subscribe peers.  Pure tap: every packet is
 /// passed down the chain untouched, so the NACK responder's retransmissions
 /// keep working.
-pub struct SubscribeQualityInterceptor<P> {
-    inner: P,
+pub struct SubscribeQualityInterceptor {
     stats: Arc<SubscribeRtcpStats>,
+    read_queue: std::collections::VecDeque<TaggedPacket>,
+    write_queue: std::collections::VecDeque<TaggedPacket>,
 }
 
-impl<P> SubscribeQualityInterceptor<P> {
-    pub fn new(inner: P, stats: Arc<SubscribeRtcpStats>) -> Self {
-        Self { inner, stats }
+impl SubscribeQualityInterceptor {
+    pub fn new(stats: Arc<SubscribeRtcpStats>) -> Self {
+        Self {
+            stats,
+            read_queue: std::collections::VecDeque::new(),
+            write_queue: std::collections::VecDeque::new(),
+        }
     }
 }
 
-impl<P> Protocol<TaggedPacket, TaggedPacket, ()> for SubscribeQualityInterceptor<P>
-where
-    P: Protocol<
-            TaggedPacket,
-            TaggedPacket,
-            (),
-            Rout = TaggedPacket,
-            Wout = TaggedPacket,
-            Eout = (),
-            Time = Instant,
-            Error = Error,
-        >,
-{
+impl Protocol<TaggedPacket, TaggedPacket, ()> for SubscribeQualityInterceptor {
     type Rout = TaggedPacket;
     type Wout = TaggedPacket;
     type Eout = ();
@@ -252,56 +245,54 @@ where
     type Error = Error;
 
     fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-        if let Packet::Rtcp(ref packets) = msg.message {
+        if let Packet::Rtcp(ref packets) = msg.message.packet {
             self.stats.observe(packets);
         }
-        self.inner.handle_read(msg)
+        self.read_queue.push_back(msg);
+        Ok(())
     }
 
     fn poll_read(&mut self) -> Option<TaggedPacket> {
-        self.inner.poll_read()
+        self.read_queue.pop_front()
     }
 
     fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-        self.inner.handle_write(msg)
+        self.write_queue.push_back(msg);
+        Ok(())
     }
     fn poll_write(&mut self) -> Option<TaggedPacket> {
-        self.inner.poll_write()
+        self.write_queue.pop_front()
     }
-    fn handle_event(&mut self, evt: ()) -> Result<(), Error> {
-        self.inner.handle_event(evt)
+    fn handle_event(&mut self, _evt: ()) -> Result<(), Error> {
+        Ok(())
     }
     fn poll_event(&mut self) -> Option<()> {
-        self.inner.poll_event()
+        None
     }
-    fn handle_timeout(&mut self, now: Instant) -> Result<(), Error> {
-        self.inner.handle_timeout(now)
+    fn handle_timeout(&mut self, _now: Instant) -> Result<(), Error> {
+        Ok(())
     }
     fn poll_timeout(&mut self) -> Option<Instant> {
-        self.inner.poll_timeout()
+        None
     }
     fn close(&mut self) -> Result<(), Error> {
-        self.inner.close()
+        self.read_queue.clear();
+        self.write_queue.clear();
+        Ok(())
     }
 }
 
-impl<P: Interceptor> Interceptor for SubscribeQualityInterceptor<P> {
+impl Interceptor for SubscribeQualityInterceptor {
     fn bind_local_stream(&mut self, info: &StreamInfo) {
         if info.mime_type.starts_with("video/") {
             self.stats.video_ssrcs.lock().unwrap().insert(info.ssrc);
         }
-        self.inner.bind_local_stream(info);
     }
     fn unbind_local_stream(&mut self, info: &StreamInfo) {
         self.stats.video_ssrcs.lock().unwrap().remove(&info.ssrc);
-        self.inner.unbind_local_stream(info);
     }
-    fn bind_remote_stream(&mut self, info: &StreamInfo) {
-        self.inner.bind_remote_stream(info);
-    }
-    fn unbind_remote_stream(&mut self, info: &StreamInfo) {
-        self.inner.unbind_remote_stream(info);
-    }
+    fn bind_remote_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_remote_stream(&mut self, _info: &StreamInfo) {}
 }
 
 #[cfg(test)]

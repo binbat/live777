@@ -282,7 +282,6 @@ mod tests {
     use super::*;
     use tokio::net::UdpSocket;
     use tokio::sync::mpsc;
-    use webrtc::data_channel::{RTCDataChannelId, RTCDataChannelState};
 
     #[test]
     fn test_parse_channel_url_ipv4() {
@@ -411,77 +410,39 @@ mod tests {
         );
     }
 
-    /// Minimal DataChannel stub for exercising `CableRouter` routing without
-    /// a real peer connection.
-    struct MockDc;
-
-    #[async_trait::async_trait]
-    impl DataChannel for MockDc {
-        async fn label(&self) -> webrtc::error::Result<String> {
-            Ok("mock".to_string())
-        }
-        async fn ordered(&self) -> webrtc::error::Result<bool> {
-            Ok(true)
-        }
-        async fn max_packet_life_time(&self) -> webrtc::error::Result<Option<u16>> {
-            Ok(None)
-        }
-        async fn max_retransmits(&self) -> webrtc::error::Result<Option<u16>> {
-            Ok(None)
-        }
-        async fn protocol(&self) -> webrtc::error::Result<String> {
-            Ok(String::new())
-        }
-        async fn negotiated(&self) -> webrtc::error::Result<bool> {
-            Ok(false)
-        }
-        fn id(&self) -> RTCDataChannelId {
-            0
-        }
-        async fn ready_state(&self) -> webrtc::error::Result<RTCDataChannelState> {
-            Ok(RTCDataChannelState::Open)
-        }
-        async fn buffered_amount_high_threshold(&self) -> webrtc::error::Result<u32> {
-            Ok(u32::MAX)
-        }
-        async fn set_buffered_amount_high_threshold(
-            &self,
-            _threshold: u32,
-        ) -> webrtc::error::Result<()> {
-            Ok(())
-        }
-        async fn buffered_amount_low_threshold(&self) -> webrtc::error::Result<u32> {
-            Ok(0)
-        }
-        async fn set_buffered_amount_low_threshold(
-            &self,
-            _threshold: u32,
-        ) -> webrtc::error::Result<()> {
-            Ok(())
-        }
-        async fn send(&self, _data: bytes::BytesMut) -> webrtc::error::Result<()> {
-            Ok(())
-        }
-        async fn send_text(&self, _text: &str) -> webrtc::error::Result<()> {
-            Ok(())
-        }
-        async fn poll(&self) -> Option<DataChannelEvent> {
-            None
-        }
-        async fn close(&self) -> webrtc::error::Result<()> {
-            Ok(())
-        }
+    /// `DataChannel` is sealed, so a stub is not an option: an unconnected
+    /// peer hands out real channels without needing ICE to run.
+    async fn test_channels() -> (
+        Arc<dyn webrtc::peer_connection::PeerConnection>,
+        Arc<dyn DataChannel>,
+        Arc<dyn DataChannel>,
+    ) {
+        let peer = webrtc::peer_connection::PeerConnectionBuilder::<std::net::SocketAddr>::new()
+            .with_media_engine(webrtc::peer_connection::MediaEngine::default())
+            .with_interceptor_registry(webrtc::peer_connection::Registry::new())
+            .with_configuration(webrtc::peer_connection::RTCConfigurationBuilder::new().build())
+            .with_handler(crate::utils::webrtc::create_event_handler(
+                CancellationToken::new(),
+                Arc::new(tokio::sync::Notify::new()),
+            ))
+            .with_udp_addrs(vec!["127.0.0.1:0".parse().unwrap()])
+            .build()
+            .await
+            .unwrap();
+        let peer: Arc<dyn webrtc::peer_connection::PeerConnection> = Arc::new(peer);
+        let a = peer.create_data_channel("a", None).await.unwrap();
+        let b = peer.create_data_channel("b", None).await.unwrap();
+        (peer, a, b)
     }
 
     /// Deactivating the most recently opened channel must fall back to the
     /// next most recent still-open one — the race where the server-created
     /// cable channel activated before the client's own channel, and the
     /// client channel's later close used to strand the outbound queue.
-    #[test]
-    fn test_cable_router_falls_back_after_deactivate() {
+    #[tokio::test]
+    async fn test_cable_router_falls_back_after_deactivate() {
+        let (peer, older, newer) = test_channels().await;
         let router = CableRouter::new();
-        let older: Arc<dyn DataChannel> = Arc::new(MockDc);
-        let newer: Arc<dyn DataChannel> = Arc::new(MockDc);
 
         router.activate(&older);
         assert!(Arc::ptr_eq(&router.current().unwrap(), &older));
@@ -494,27 +455,27 @@ mod tests {
 
         router.deactivate(&older);
         assert!(router.current().is_none());
+        peer.close().await.unwrap();
     }
 
     /// Deactivating an older channel must not disturb the newer active one.
-    #[test]
-    fn test_cable_router_deactivate_is_targeted() {
+    #[tokio::test]
+    async fn test_cable_router_deactivate_is_targeted() {
+        let (peer, older, newer) = test_channels().await;
         let router = CableRouter::new();
-        let older: Arc<dyn DataChannel> = Arc::new(MockDc);
-        let newer: Arc<dyn DataChannel> = Arc::new(MockDc);
         router.activate(&older);
         router.activate(&newer);
         router.deactivate(&older);
         assert!(Arc::ptr_eq(&router.current().unwrap(), &newer));
+        peer.close().await.unwrap();
     }
 
     /// Re-activating an already tracked channel must not duplicate it, so a
     /// single deactivate fully removes it.
-    #[test]
-    fn test_cable_router_activate_is_idempotent() {
+    #[tokio::test]
+    async fn test_cable_router_activate_is_idempotent() {
+        let (peer, a, b) = test_channels().await;
         let router = CableRouter::new();
-        let a: Arc<dyn DataChannel> = Arc::new(MockDc);
-        let b: Arc<dyn DataChannel> = Arc::new(MockDc);
         router.activate(&a);
         router.activate(&a);
         router.activate(&b);
@@ -522,5 +483,6 @@ mod tests {
         assert!(Arc::ptr_eq(&router.current().unwrap(), &a));
         router.deactivate(&a);
         assert!(router.current().is_none());
+        peer.close().await.unwrap();
     }
 }

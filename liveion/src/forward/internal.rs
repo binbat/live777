@@ -34,7 +34,7 @@ use webrtc::media_stream::track_remote::TrackRemote;
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
     RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceGatheringState, RTCIceServer,
-    RTCPeerConnectionState, Registry, SettingEngine,
+    RTCPeerConnectionState, Registry, SettingEngineBuilder,
 };
 use webrtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit, RtpSender};
 
@@ -736,10 +736,9 @@ mod rtcp_egress_probe {
         status_count: u16,
     }
 
-    /// RtcpEgressProbe sits as the outermost interceptor in the publish
-    /// peer chain.  Its poll_write sees every RTCP packet that inner
-    /// interceptors (notably TwccReceiver) produce before the packets
-    /// go to the network.
+    /// RtcpEgressProbe occupies the wire-most slot of the publish peer chain,
+    /// so its poll_write sees every RTCP packet the generators (TwccReceiver,
+    /// RtcpReports, the NACK chain) produced before it leaves for the network.
     ///
     /// This interceptor is implemented manually (without derive macros)
     /// because rtc-interceptor-derive's proc macros generate references to
@@ -748,43 +747,32 @@ mod rtcp_egress_probe {
     /// add those deps, but the generated code can still have path resolution
     /// issues in external crates.  The manual impl is minimal and avoids
     /// the derive dependency entirely.
-    pub(crate) struct RtcpEgressProbe<P> {
-        inner: P,
+    pub(crate) struct RtcpEgressProbe {
         stream: String,
         counters: std::sync::Arc<Counters>,
         native_twcc_bound: Arc<AtomicBool>,
+        read_queue: std::collections::VecDeque<TaggedPacket>,
+        write_queue: std::collections::VecDeque<TaggedPacket>,
     }
 
-    impl<P> RtcpEgressProbe<P> {
+    impl RtcpEgressProbe {
         pub fn new(
-            inner: P,
             stream: String,
             counters: std::sync::Arc<Counters>,
             native_twcc_bound: Arc<AtomicBool>,
         ) -> Self {
             Self {
-                inner,
                 stream,
                 counters,
                 native_twcc_bound,
+                read_queue: std::collections::VecDeque::new(),
+                write_queue: std::collections::VecDeque::new(),
             }
         }
     }
 
-    // --- sansio::Protocol impl (manual delegation) ---
-    impl<
-        P: Protocol<
-                TaggedPacket,
-                TaggedPacket,
-                (),
-                Rout = TaggedPacket,
-                Wout = TaggedPacket,
-                Eout = (),
-                Time = std::time::Instant,
-                Error = Error,
-            >,
-    > Protocol<TaggedPacket, TaggedPacket, ()> for RtcpEgressProbe<P>
-    {
+    // --- sansio::Protocol impl: pass-through queues, tallying egress RTCP ---
+    impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpEgressProbe {
         type Rout = TaggedPacket;
         type Wout = TaggedPacket;
         type Eout = ();
@@ -792,13 +780,15 @@ mod rtcp_egress_probe {
         type Error = Error;
 
         fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-            self.inner.handle_read(msg)
+            self.read_queue.push_back(msg);
+            Ok(())
         }
         fn poll_read(&mut self) -> Option<TaggedPacket> {
-            self.inner.poll_read()
+            self.read_queue.pop_front()
         }
         fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-            self.inner.handle_write(msg)
+            self.write_queue.push_back(msg);
+            Ok(())
         }
         fn poll_write(&mut self) -> Option<TaggedPacket> {
             let cnt = self
@@ -806,12 +796,12 @@ mod rtcp_egress_probe {
                 .poll_write_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            let out = self.inner.poll_write();
+            let out = self.write_queue.pop_front();
             if let Some(tagged) = &out {
                 self.counters
                     .poll_write_non_empty
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                match &tagged.message {
+                match &tagged.message.packet {
                     Packet::Rtcp(pkts) => {
                         self.counters.tally(pkts, &self.stream);
                     }
@@ -820,6 +810,7 @@ mod rtcp_egress_probe {
                             .poll_write_rtp
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
+                    _ => {}
                 }
             }
             // This probe is useful when debugging RTCP egress, but it is too noisy for normal
@@ -844,31 +835,29 @@ mod rtcp_egress_probe {
             }
             out
         }
-        fn handle_event(&mut self, evt: ()) -> Result<(), Error> {
-            self.inner.handle_event(evt)
+        fn handle_event(&mut self, _evt: ()) -> Result<(), Error> {
+            Ok(())
         }
         fn poll_event(&mut self) -> Option<()> {
-            self.inner.poll_event()
+            None
         }
-        fn handle_timeout(&mut self, now: std::time::Instant) -> Result<(), Error> {
-            self.inner.handle_timeout(now)
+        fn handle_timeout(&mut self, _now: std::time::Instant) -> Result<(), Error> {
+            Ok(())
         }
         fn poll_timeout(&mut self) -> Option<std::time::Instant> {
-            self.inner.poll_timeout()
+            None
         }
         fn close(&mut self) -> Result<(), Error> {
-            self.inner.close()
+            self.read_queue.clear();
+            self.write_queue.clear();
+            Ok(())
         }
     }
 
-    // --- Interceptor impl (manual delegation) ---
-    impl<P: rtc::interceptor::Interceptor> rtc::interceptor::Interceptor for RtcpEgressProbe<P> {
-        fn bind_local_stream(&mut self, info: &StreamInfo) {
-            self.inner.bind_local_stream(info);
-        }
-        fn unbind_local_stream(&mut self, info: &StreamInfo) {
-            self.inner.unbind_local_stream(info);
-        }
+    // --- Interceptor impl: stream binds are only observed ---
+    impl rtc::interceptor::Interceptor for RtcpEgressProbe {
+        fn bind_local_stream(&mut self, _info: &StreamInfo) {}
+        fn unbind_local_stream(&mut self, _info: &StreamInfo) {}
         fn bind_remote_stream(&mut self, info: &StreamInfo) {
             let has_twcc = info
                 .rtp_header_extensions
@@ -887,7 +876,6 @@ mod rtcp_egress_probe {
                 has_twcc,
                 info.rtp_header_extensions.len(),
             );
-            self.inner.bind_remote_stream(info);
         }
         fn unbind_remote_stream(&mut self, info: &StreamInfo) {
             tracing::trace!(
@@ -895,7 +883,6 @@ mod rtcp_egress_probe {
                 self.stream,
                 info.ssrc,
             );
-            self.inner.unbind_remote_stream(info);
         }
     }
 
@@ -2133,24 +2120,25 @@ impl PeerForwardInternal {
         // bridged back because it describes a different network path.
         let registry = configure_twcc_receiver_only(registry, &mut m)?;
 
-        // Wrap the interceptor chain with an RTCP egress probe.  This probe
-        // is the outermost layer, so it sees every RTCP packet produced by
-        // inner interceptors (TwccReceiver, RtcpReports, NackChain) before
-        // the packets are written to the network.
+        // Register the RTCP egress probe at the wire-most slot: it sees every
+        // RTCP packet the generators (TwccReceiver, RtcpReports, NackChain)
+        // produced before the packets are written to the network.
         let stream = self.stream.clone();
         let egress_counters = std::sync::Arc::new(rtcp_egress_probe::Counters::new());
         let c = egress_counters.clone();
         let native_twcc_bound = self.native_twcc_bound.clone();
         native_twcc_bound.store(false, Ordering::Relaxed);
         *self.manual_twcc_feedback.lock().unwrap() = None;
-        let registry = registry.with(move |inner| {
-            rtcp_egress_probe::RtcpEgressProbe::new(inner, stream, c, native_twcc_bound)
-        });
+        let registry = registry.with(
+            rtc::interceptor::Slot::from(500),
+            rtcp_egress_probe::RtcpEgressProbe::new(stream, c, native_twcc_bound),
+        );
         *self.rtcp_egress_counters.lock().unwrap() = Some(egress_counters);
 
-        let mut s = SettingEngine::default();
-        s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
-        s.set_lite(self.ice_lite);
+        let s = SettingEngineBuilder::new()
+            .with_multicast_dns_mode(MulticastDnsMode::Disabled)
+            .with_lite(self.ice_lite)
+            .build();
 
         // ICE Lite agents gather host candidates only (RFC 8445 section 2.7),
         // so configured ICE servers must not reach the agent: rtc rejects
@@ -2457,7 +2445,7 @@ impl PeerForwardInternal {
         configure_simulcast_extension_headers(&mut m)?;
         let registry = configure_twcc_sender_only(registry, &mut m)?;
 
-        // Outermost layer: tap inbound subscriber feedback (NACK / RR /
+        // Wire-most slot: tap inbound subscriber feedback (NACK / RR /
         // TWCC / PLI) into per-subscriber quality counters for the
         // adaptive-bitrate controller (issue #409), also mirrored into the
         // server-wide `from_subscriber` RTCP Prometheus counters.  Pure
@@ -2471,12 +2459,16 @@ impl PeerForwardInternal {
                 .lock()
                 .unwrap()
                 .push(std::sync::Arc::downgrade(&stats));
-            registry.with(move |inner| SubscribeQualityInterceptor::new(inner, stats))
+            registry.with(
+                rtc::interceptor::Slot::from(500),
+                SubscribeQualityInterceptor::new(stats),
+            )
         };
 
-        let mut s = SettingEngine::default();
-        s.set_multicast_dns_mode(MulticastDnsMode::Disabled);
-        s.set_lite(self.ice_lite);
+        let s = SettingEngineBuilder::new()
+            .with_multicast_dns_mode(MulticastDnsMode::Disabled)
+            .with_lite(self.ice_lite)
+            .build();
 
         // ICE Lite agents gather host candidates only (RFC 8445 section 2.7),
         // so configured ICE servers must not reach the agent: rtc rejects
@@ -2750,7 +2742,7 @@ impl PeerForwardInternal {
                 match track_kind {
                     RtpCodecKind::Video => video_sender = sender,
                     RtpCodecKind::Audio => audio_sender = sender,
-                    RtpCodecKind::Unspecified => {}
+                    _ => {}
                 }
             }
         }

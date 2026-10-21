@@ -25,7 +25,7 @@ provides the embedded WebUIs.
 - **Rust** — edition 2024, workspace version `0.9.0`.
 - **Async runtime** — Tokio.
 - **HTTP/API layer** — Axum, `tower-http` (CORS, tracing).
-- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.20.1` from
+- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.21.1` from
   crates.io.
 - **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
