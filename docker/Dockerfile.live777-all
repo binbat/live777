@@ -1,0 +1,130 @@
+# All-in-one quickstart / AI-deploy image: live777 + liveman + ffmpeg/ffprobe
+# + the livetwo CLI tools (whipinto, whepfrom) + the rsmpeg tools (whipsynth,
+# whepprobe) + a `smoke-test` closed-loop media check. Default CMD is live777.
+FROM debian:trixie-slim AS common
+
+RUN apt update -y && apt install -y --no-install-recommends ca-certificates curl
+
+# Codec runtime libraries, shared by the FFmpeg build below and the final image.
+RUN apt install -y --no-install-recommends libaom3 librav1e0.7 libsvtav1enc2 libvpx9 libx264-164 libx265-215 libopus0
+
+# FFmpeg is built with OpenSSL; the slim base does not carry its runtime.
+RUN apt install -y --no-install-recommends libssl3t64
+
+# Upstream FFmpeg 8.1 shared build. Debian's libav*-dev packages carry
+# field-privatization patches that rsmpeg 0.18 cannot compile against, so the
+# rust builder needs upstream headers + pkg-config + shared libs — and the
+# final image ships the same build so whepprobe/whipsynth find their runtime
+# libraries. Codec set mirrors docker/Dockerfile.live777-client, but the build
+# is shared and installed to /opt/ffmpeg (see .github/actions/install-ffmpeg).
+FROM rust:slim-trixie AS builder-ffmpeg
+ENV FFMPEG_VER=8.1
+
+# rust:slim already carries gcc and libc headers; install only the missing
+# build tools and codec development packages.
+RUN apt update -y && apt install -y --no-install-recommends \
+    g++ make pkg-config nasm \
+    libaom-dev librav1e-dev libsvtav1enc-dev libvpx-dev libx264-dev \
+    libx265-dev libopus-dev libssl-dev
+
+RUN apt install -y --no-install-recommends xz-utils
+
+WORKDIR /app
+
+ADD https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz ffmpeg.tar.xz
+RUN tar -xf ffmpeg.tar.xz --strip-components 1
+
+RUN ./configure \
+        --prefix=/opt/ffmpeg \
+        --disable-debug \
+        --disable-stripping \
+        --disable-doc \
+        --enable-gpl \
+        --enable-shared \
+        --disable-static \
+        --enable-libaom \
+        --enable-libopus \
+        --enable-librav1e \
+        --enable-libsvtav1 \
+        --enable-libvpx \
+        --enable-libx264 \
+        --enable-libx265 \
+        --enable-openssl \
+        --enable-version3 \
+        --enable-protocol=dtls \
+        --enable-muxer=whip
+
+RUN make -j"$(nproc)"
+RUN make install
+
+# WebUI assets for live777/liveman (same as Dockerfile.live777-server).
+FROM node:trixie-slim AS builder-node
+ENV CI="true"
+RUN npm install -g pnpm
+WORKDIR /app
+
+COPY pnpm-lock.yaml /app
+RUN pnpm fetch --prod
+
+COPY . .
+RUN pnpm install
+RUN pnpm -r build
+
+FROM rust:slim-trixie AS builder-rust
+
+# pkg-config: rusty_ffmpeg (rsmpeg's link_system_ffmpeg) locates FFmpeg through
+# it. libclang: rsmpeg's bindgen needs it; trixie's libclang (LLVM 19) predates
+# the LLVM 22 AST change that breaks bindgen 0.71.
+RUN apt update -y && apt install -y --no-install-recommends pkg-config libclang-dev
+
+WORKDIR /app
+
+COPY . .
+
+COPY --from=builder-node /app/assets/ assets
+
+# Upstream FFmpeg headers and shared libraries for the rsmpeg build.
+COPY --from=builder-ffmpeg /opt/ffmpeg /opt/ffmpeg
+
+# Stamped into the binaries by libs/version; the build context has no .git.
+ARG LIVE777_VERSION
+
+# rusty_ffmpeg reads FFMPEG_PKG_CONFIG_PATH rather than PKG_CONFIG_PATH (see
+# .github/actions/install-ffmpeg); LD_LIBRARY_PATH covers the shared libs.
+ENV FFMPEG_PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
+ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
+ENV LD_LIBRARY_PATH=/opt/ffmpeg/lib
+
+# Same feature set as Dockerfile.live777-server, plus rsmpeg for whipsynth and
+# whepprobe.
+RUN LIBCLANG_PATH="$(dirname "$(find /usr/lib -name 'libclang*.so*' | sort | head -1)")" \
+    cargo build --release \
+    --bin=live777 --bin=liveman --bin=whipinto --bin=whepfrom --bin=whipsynth --bin=whepprobe \
+    --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,rtsp,rsmpeg
+
+FROM common
+
+# FFmpeg shared runtime: the same build the rsmpeg tools linked against.
+COPY --from=builder-ffmpeg /opt/ffmpeg /opt/ffmpeg
+RUN echo "/opt/ffmpeg/lib" > /etc/ld.so.conf.d/live777-ffmpeg.conf && ldconfig
+
+COPY --from=builder-ffmpeg /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=builder-ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe
+
+COPY --from=builder-rust /app/conf/live777.toml /etc/live777/live777.toml
+COPY --from=builder-rust /app/conf/liveman.toml /etc/live777/liveman.toml
+
+COPY --from=builder-rust /app/target/release/live777 /usr/local/bin/live777
+COPY --from=builder-rust /app/target/release/liveman /usr/local/bin/liveman
+COPY --from=builder-rust /app/target/release/whipinto /usr/local/bin/whipinto
+COPY --from=builder-rust /app/target/release/whepfrom /usr/local/bin/whepfrom
+COPY --from=builder-rust /app/target/release/whipsynth /usr/local/bin/whipsynth
+COPY --from=builder-rust /app/target/release/whepprobe /usr/local/bin/whepprobe
+
+# Closed-loop smoke test: whipsynth -> WHIP -> live777 -> WHEP -> whepprobe.
+# .dockerignore excludes docker/ except for this script, keeping the script
+# directly editable instead of embedding a generated copy here.
+COPY docker/smoke-test.sh /usr/local/bin/smoke-test
+RUN chmod +x /usr/local/bin/smoke-test
+
+CMD ["live777"]

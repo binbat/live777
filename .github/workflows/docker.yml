@@ -17,6 +17,7 @@ jobs:
         app:
           - ffmpeg
           - gstreamer
+          - live777-all
           - live777-client
           - live777-server
           - liveion

@@ -119,8 +119,9 @@ lifetime — a provisioned-stream reset does not rebind them.
 
 ## Clients
 
-`whipinto --channel udp://...` and `whepfrom --channel udp://...` bridge
-their control channel to UDP as before; both also accept server-created cable
+`whipinto --cable-url udp://...` and `whepfrom --cable-url udp://...` bridge
+their control channel to UDP as before (`--cable-label` selects a specific
+cable instead of the default); both also accept server-created cable
 channels automatically (the bridge follows whichever channel is currently
 open). Browser clients just handle `ondatachannel` for server-created cables:
 

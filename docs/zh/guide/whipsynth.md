@@ -8,6 +8,15 @@
 - 对 Live777 实例进行并发发布负载测试。
 - 在不连接真实摄像头或 FFmpeg 流水线的情况下复现特定编解码器问题。
 
+## 获取
+
+`whipsynth` 已包含在 all-in-one 的 `live777-all` 镜像中：
+
+```bash
+docker run --rm --network host ghcr.io/binbat/live777-all:latest \
+  whipsynth -w http://localhost:7777/whip/live
+```
+
 ## 构建
 
 ```bash
