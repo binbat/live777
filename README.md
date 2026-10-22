@@ -77,13 +77,25 @@ Live777 works with [GStreamer](https://gstreamer.freedesktop.org/), [FFmpeg](htt
 
 ## Quick Start
 
-Run Live777 with Docker (host networking is required):
+The all-in-one `live777-all` image bundles the server, FFmpeg, the WHIP/WHEP tools
+(`whipinto`, `whepfrom`, `whipsynth`, `whepprobe`) and a `smoke-test` command that
+verifies the full publish → subscribe → decode loop (host networking is required):
 
 ```sh
-docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
+docker run -d --name live777 --rm --network host ghcr.io/binbat/live777-all:latest
+docker exec live777 smoke-test
 ```
 
-Then open your browser at `http://localhost:7777/`.
+`smoke-test` publishes a test stream over WHIP, plays it back over WHEP and decodes the
+video with FFmpeg. On success it prints a `whepprobe` JSON report and exits `0`; on
+failure it exits non-zero and prints diagnostics. Then open your browser at
+`http://localhost:7777/`, and clean up with `docker stop live777`.
+
+No server running yet? A single command starts a temporary server, checks it and cleans up:
+
+```sh
+docker run --rm --network host ghcr.io/binbat/live777-all:latest smoke-test --standalone
+```
 
 For prebuilt binaries, Linux packages, winget and cargo installs, see the [installation guide](https://live777.pages.dev/guide/installation).
 
@@ -94,8 +106,11 @@ This repository also ships these companion tools:
 | Tool | Description |
 | ---- | ----------- |
 | `liveman` | Cluster manager for multiple Live777 nodes |
-| `whipinto` | Push RTP/RTSP streams into a WHIP endpoint |
-| `whepfrom` | Pull a WHEP stream and output RTP/RTSP |
+| `whipinto` | RTP/RTSP → WHIP bridge: push RTP/RTSP streams into a WHIP endpoint |
+| `whepfrom` | WHEP → RTP/RTSP bridge: pull a WHEP stream and output RTP/RTSP |
+| `whipsynth` | Synthetic WHIP publisher: generated test patterns, no media source needed |
+| `whepprobe` | `ffprobe`-style WHEP probe: verifies reachability and FFmpeg decoding |
+| `whepwright` | Browser-based WHEP playback tester (Playwright) |
 | `net4mqtt` | TCP/UDP-over-MQTT proxy and tunnel |
 
 ## Sponsors

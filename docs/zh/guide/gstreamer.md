@@ -216,7 +216,7 @@ EOF
 但是，你可以：
 
 ```bash
-cargo run --package=whepfrom -- -c av1 -u http://localhost:7777/whep/777 -t 127.0.0.1:5004
+cargo run --bin=whepfrom -- -w http://localhost:7777/whep/777 -o rtp://127.0.0.1:5004
 ```
 
 ```bash

@@ -6,20 +6,20 @@
 不要在这些开发板上把 `whipinto` 和软编码的 ffmpeg 搭配使用——CPU 撑不住。`native-rpi` / `native-rkmpp` 的 `live777` 构建在进程内用硬件完成采集和编码，见[树莓派部署指南](/zh/guide/raspberry-pi)。`whipinto` 适用于已经编码好的源（网络摄像头、RTP/RTSP 流、文件、合成测试源）。
 :::
 
-这个工具应该有三种模式：
+这个工具有两种模式：
 - `rtp`
 - `rtsp as client`
-- `rtsp as server`
 
 ## 选项
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `-i`, `--input` | `sdp://0.0.0.0:8554` | 输入源：`sdp://`（RTP/SDP 文件或 RTSP server 模式）、`rtsp://`（RTSP client 模式）、`synth://`（生成测试帧） |
+| `-i`, `--input` | `input.sdp` | 输入源：SDP 文件路径（RTP）、`rtsp://`（RTSP client 模式）、`synth://`（生成测试帧） |
 | `-w`, `--whip` | 必填 | WHIP 端点 URL |
 | `-t`, `--token` | 无 | WHIP 认证使用的 Bearer token |
 | `--command` | 无 | 以子进程方式运行命令 |
-| `--channel` | 无 | DataChannel &lt;-&gt; UDP 转发 URL，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-url` | 无 | Cable UDP 桥接 URL，用于 DataChannel &lt;-&gt; UDP 转发，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-label` | `-` | DataChannel label，加入服务器上对应的 cable |
 | `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 | `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
 
@@ -65,60 +65,6 @@ ffmpeg -re \
 -f lavfi -i testsrc=size=1280x720:rate=30 \
 -acodec libopus -vn -f rtp rtp://127.0.0.1:11111 \
 -vcodec libvpx -an -f rtp rtp://127.0.0.1:11113 -sdp_file input.sdp
-```
-
-## RTSP Server
-
-默认是这种模式
-
-这个例子是用 `whipinto` 作为 RTSP Server，用 `ffmpeg` 作为 client 用 RTSP 推流
-
-```bash
-whipinto -w http://localhost:7777/whip/777
-```
-
-### Only video
-
-```bash
-ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
--vcodec libvpx -f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-```bash
-ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
--vcodec -pix_fmt yuv420p \
--g 60 -keyint_min 60 -crf 23 \
--preset ultrafast -tune zerolatency \
--profile:v main -level 4.1 \
--f rtsp rtsp://127.0.0.1:8554
-```
-
-### Only audio
-
-```bash
-ffmpeg -re -f lavfi -i sine=frequency=1000 \
--acodec libopus -f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-### Audio and Video
-
-```bash
-ffmpeg -re \
--f lavfi -i sine=frequency=1000 \
--f lavfi -i testsrc=size=1280x720:rate=30 \
--acodec libopus -vcodec libvpx \
--f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-### Use transport `tcp`
-
-```bash
-ffmpeg -re \
--f lavfi -i sine=frequency=1000 \
--f lavfi -i testsrc=size=1280x720:rate=30 \
--acodec libopus -vcodec libvpx \
--rtsp_transport tcp \
--f rtsp 'rtsp://127.0.0.1:8554'
 ```
 
 ## RTSP Client

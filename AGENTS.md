@@ -72,6 +72,10 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
   feature it also accepts a `synth://<vcodec>?...` input that publishes
   in-process generated test frames (no external encoder needed).
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
+- `whipsynth`    — synthetic WHIP publisher: generates test frames in-process
+  (requires `rsmpeg`).
+- `whepprobe`    — WHEP probe: subscribes, decodes for a bounded time and
+  reports a human/JSON result (requires `rsmpeg`).
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
@@ -326,7 +330,7 @@ clients via Link headers).
   `whip::into` cancels and awaits before returning; both accept
   server-created cable channels (a `CableRouter` retargets the outbound
   queue to the currently open channel). On the
-  WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
+  WHIP leg the "control" DataChannel is opt-in (`whipinto --cable-url`) because
   it adds an `m=application` section to the offer; the WHEP leg creates it
   unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
   DataChannel Prometheus metrics directly (no stats tick — messages are
@@ -581,6 +585,9 @@ Integration test binaries live in `tests/`:
 - `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
   subprocesses against in-process liveion, including the rotating decode
   verification (needs the `rsmpeg` feature)
+- `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
+  synthetic publish and WHEP decode probes against in-process liveion,
+  including JSON/exit-code success and failure contracts (needs `rsmpeg`)
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -622,10 +629,27 @@ carries the check.
 
 - **Docker**: multi-stage Dockerfiles in `docker/` for `live777-server`
   (live777 + liveman), `live777-client` (self-contained FFmpeg + whipinto +
-  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `liveion`
+  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `live777-all`
+  (all-in-one quickstart/AI-deploy image, see below), `liveion`
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
   `ghcr.io/binbat/<app>`.
+- **`live777-all` vs the slim `live777-server`/`live777-client` split**:
+  `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
+  whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check
+  in one image (`CMD ["live777"]`), trading image size for a zero-setup
+  first-run experience — run the container, then `smoke-test --standalone`
+  (or `smoke-test` against an already-running server; `SMOKE_SERVER_URL` /
+  `SMOKE_TOKEN` env tune it) publishes a synthetic WHIP stream and decodes it
+  back over WHEP. Because whepprobe/whipsynth need rsmpeg 0.18 — which cannot
+  compile against Debian's field-privatized libav*-dev — the image builds
+  upstream FFmpeg 8.1 *shared* (codec set mirrors `Dockerfile.live777-client`,
+  installed to `/opt/ffmpeg`), points the rust builder at its
+  headers/pkg-config (`FFMPEG_PKG_CONFIG_PATH`) with trixie's libclang for
+  bindgen, and registers `/opt/ffmpeg/lib` with ldconfig so the same build
+  serves the ffmpeg/ffprobe CLIs and the rsmpeg tools at runtime. The slim
+  images stay the pick for size-sensitive or production deployments;
+  `live777-all` is the fast path for evaluation and agent-driven deploys.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
 - **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana

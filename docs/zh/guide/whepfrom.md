@@ -15,7 +15,8 @@
 | `--sdp-file` | `output.sdp` | 写出的 SDP 文件名（RTP 模式） |
 | `-t`, `--token` | 无 | WHEP 认证使用的 Bearer token |
 | `--command` | 无 | 以子进程方式运行命令 |
-| `--channel` | 无 | DataChannel &lt;-&gt; UDP 转发 URL，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-url` | 无 | Cable UDP 桥接 URL，用于 DataChannel &lt;-&gt; UDP 转发，例如 `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-label` | `-` | DataChannel label，加入服务器上对应的 cable |
 | `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 | `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
 
@@ -78,10 +79,10 @@ ffplay rtsp://localhost:8554/777 -rtsp_transport tcp
 
 ## RTSP Client
 
-`whepfrom` 作为一个客户端，忘其他的 RTSP Server 来推流
+`whepfrom` 作为一个客户端，向其他 RTSP Server 推流
 
 ```bash
-whepfrom -w http://localhost:7777/whip/777 -o rtsp://127.0.0.1:8554
+whepfrom -w http://localhost:7777/whep/777 -o rtsp://127.0.0.1:8554/777
 ```
 
 ### Use transport `tcp`

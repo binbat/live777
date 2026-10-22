@@ -78,10 +78,15 @@ async fn run() -> Result<bool> {
         _ => (Level::TRACE, Level::DEBUG),
     };
 
-    log::set(format!(
+    let filter = format!(
         "whepprobe={},livetwo={},webrtc={}",
         log_level, log_level, webrtc_level,
-    ));
+    );
+    if matches!(args.output, OutputFormat::Json) {
+        log::set_stderr(filter);
+    } else {
+        log::set(filter);
+    }
 
     let config = build_config(&args)?;
 

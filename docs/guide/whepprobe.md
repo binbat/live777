@@ -6,6 +6,18 @@ video can be decoded with FFmpeg via the `rsmpeg` crate.
 
 For browser-based playback verification, see [`WhepWright`](whepwright).
 
+## Get it
+
+`whepprobe` is included in the all-in-one `live777-all` image:
+
+```bash
+docker run --rm --network host ghcr.io/binbat/live777-all:latest \
+  whepprobe -w http://localhost:7777/whep/live
+```
+
+The image's built-in `smoke-test` command uses `whepprobe` for its WHEP
+verification step — see [Getting Started](/guide/getting-started).
+
 ## Build
 
 ```bash

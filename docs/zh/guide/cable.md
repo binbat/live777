@@ -105,10 +105,10 @@ reset 不会重新绑端口。
 
 ## 客户端
 
-`whipinto --channel udp://...` 和 `whepfrom --channel udp://...` 照旧把
-它们的 control channel 桥接到 UDP；两者也会自动接受服务器创建的 cable
-channel（桥跟随当前打开的 channel）。浏览器客户端只需处理
-`ondatachannel`：
+`whipinto --cable-url udp://...` 和 `whepfrom --cable-url udp://...` 照旧把
+它们的 control channel 桥接到 UDP（`--cable-label` 可指定加入某个 cable
+而非默认）；两者也会自动接受服务器创建的 cable channel（桥跟随当前打
+开的 channel）。浏览器客户端只需处理 `ondatachannel`：
 
 ```js
 pc.ondatachannel = (ev) => {

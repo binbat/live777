@@ -12,8 +12,8 @@ struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0)]
     verbose: u8,
-    /// rtp://[ip]:[port] / rtsp://[username]:[password]@[ip]:[port]/[stream] / <stream.sdp>
-    #[arg(short, long, default_value_t = format!("{}://0.0.0.0:8554", livetwo::SCHEME_RTP_SDP))]
+    /// SDP file, rtsp://[username]:[password]@[ip]:[port]/[stream], or synth://<vcodec>?...
+    #[arg(short, long, default_value = "input.sdp")]
     input: String,
     /// The WHIP server endpoint to POST SDP offer to. e.g.: https://example.com/whip/777
     #[arg(short, long)]

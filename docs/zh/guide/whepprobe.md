@@ -4,6 +4,18 @@
 
 如果需要基于真实浏览器的播放验证，请查看 [`WhepWright`](whepwright)。
 
+## 获取
+
+`whepprobe` 已包含在 all-in-one 的 `live777-all` 镜像中：
+
+```bash
+docker run --rm --network host ghcr.io/binbat/live777-all:latest \
+  whepprobe -w http://localhost:7777/whep/live
+```
+
+镜像内置的 `smoke-test` 命令在 WHEP 验证环节使用的就是
+`whepprobe`——见[快速开始](/zh/guide/getting-started)。
+
 ## 构建
 
 ```bash

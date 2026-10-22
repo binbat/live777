@@ -18,6 +18,27 @@ live777 --config live777.toml
 
 ## Docker
 
+For a quick start, use the all-in-one image — it bundles `live777`,
+`liveman`, FFmpeg, the WHIP/WHEP tools and a `smoke-test` self-check:
+
+```sh
+docker run -d --name live777 --rm --network host ghcr.io/binbat/live777-all:latest
+docker exec live777 smoke-test
+```
+
+See [Getting Started](/guide/getting-started) for the full verification
+flow.
+
+For production deployments, pick a slimmer image per role:
+
+| Image | Contents |
+|-------|----------|
+| `ghcr.io/binbat/live777-server` | `live777` + `liveman` |
+| `ghcr.io/binbat/liveion` | `live777` only |
+| `ghcr.io/binbat/liveman` | `liveman` only |
+| `ghcr.io/binbat/live777-client` | FFmpeg + `whipinto` + `whepfrom` client tools |
+| `ghcr.io/binbat/whipinto` / `whepfrom` / `net4mqtt` | Single-tool images |
+
 ```sh
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```
