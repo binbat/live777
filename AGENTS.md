@@ -152,7 +152,8 @@ Key feature groups defined in the root `Cargo.toml`:
   `source-wayland`).
 - `source-wayland` — Wayland compositor source: live777 acts as a headless
   Wayland display server and streams the composited desktop as H.264
-  (smithay + openh264). Linux-only; deliberately not part of `source-all`.
+  (smithay + openh264), with X11 applications supported through a built-in
+  XWayland server. Linux-only; deliberately not part of `source-all`.
 - `target`         — base feature shared by all `target-*` kinds (the
   `targets` stream config, supervisor dispatch, virtual-subscriber ids);
   enables no target kind on its own, mirroring how `source` relates to the
@@ -426,6 +427,29 @@ clients via Link headers).
   deliberately does not opt into the AIMD adaptive controller. The
   compositor socket is created under `$XDG_RUNTIME_DIR` — the source fails
   to start without it.
+  X11 clients are supported via XWayland (`xwayland=1` default, `xdisplay=N`
+  pins `DISPLAY`, needs an `Xwayland` binary on PATH — skipped with a
+  warning without one): the compositor spawns the server, and a minimal
+  built-in XWM (`XwmHandler` in `compositor.rs`) grants configure requests
+  as-is, maps fullscreen/maximize to the canvas, keeps last-mapped on top,
+  and activates only the top window (no input injection yet). The canvas
+  stack is xdg toplevels, then managed X11 windows, then X11
+  override-redirects on top; X11 windows draw 1:1 at their root-relative
+  position (no CSD offsets), xdg windows stay centered
+  (`canvas_window_pos`). X11 buffers ride the same SHM/dmabuf paths
+  (`canvas_windows()` unifies the two kinds), and
+  `CompositorHandler::client_compositor_state` must special-case the
+  XWayland client's `XWaylandClientData`. Shutdown caution: calloop source
+  closures capturing a `LoopHandle` Rc-cycle the registry (smithay's
+  X11Source does this internally), so `run()` explicitly removes every
+  source it inserted at exit — dropping the listener frees the socket file,
+  dropping the XWayland handle kills the server — while one registry
+  skeleton (epoll fd + X11 channel) still leaks per compositor lifetime
+  (smithay-0.7 limitation; bounded because restarts are rare). X11 clients
+  that paint before Xwayland realizes their window lose that early damage —
+  they must repaint on Expose (well-behaved toolkits do).
+  `LIVE777_WAYLAND_XWAYLAND_LOG=1` inherits the Xwayland stderr for
+  debugging.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

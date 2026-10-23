@@ -66,12 +66,13 @@ fs2 = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 openh264 = { version = "0.9", optional = true }
 yuvutils-rs = { version = "0.8", optional = true }
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_egl", "backend_gbm", "renderer_gl"], optional = true }
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_egl", "backend_gbm", "renderer_gl", "xwayland"], optional = true }
 
 # Wayland client bindings for the compositor integration tests (source-wayland).
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
+x11rb = "0.13"
 # GBM allocator for the dmabuf client test (compositor client_tests).
 gbm = "0.18"
 

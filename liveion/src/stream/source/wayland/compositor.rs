@@ -3,16 +3,19 @@
 //!
 //! Runs on a dedicated thread with a calloop event loop; [`spawn`] binds the
 //! Wayland socket synchronously so [`WaylandSource`](super::WaylandSource)'s
-//! `start()` fails cleanly on setup errors. Visible xdg toplevels' current
-//! buffers are composited onto a fixed-size canvas in stacking order; frames
-//! are produced on a timer only when a commit happened since the last emitted
-//! frame. Compositing uses the GL path ([`gl`]) when a GPU/EGL renderer is
-//! available (advertising `zwp_linux_dmabuf_v1` so GL clients can submit
-//! dmabuf buffers), and falls back to a CPU blit of SHM buffers otherwise.
+//! `start()` fails cleanly on setup errors. Visible windows' current buffers
+//! are composited onto a fixed-size canvas in stacking order; frames are
+//! produced on a timer only when a commit happened since the last emitted
+//! frame. Windows are xdg toplevels (native Wayland clients) or, when
+//! XWayland is enabled and available, X11 windows managed by the built-in
+//! XWM — X11 buffers flow through the same SHM/dmabuf paths. Compositing
+//! uses the GL path ([`gl`]) when a GPU/EGL renderer is available
+//! (advertising `zwp_linux_dmabuf_v1` so GL clients can submit dmabuf
+//! buffers), and falls back to a CPU blit of SHM buffers otherwise.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -50,9 +53,14 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{BufferData, ShmHandler, ShmState, with_buffer_contents};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
+use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId};
+use smithay::xwayland::{
+    X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
+};
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat,
-    delegate_shm, delegate_xdg_shell,
+    delegate_shm, delegate_xdg_shell, delegate_xwayland_shell,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -77,6 +85,12 @@ pub struct CompositorHandle {
     /// Read by the compositor integration tests.
     #[allow(dead_code)]
     gl_active: Arc<AtomicBool>,
+    /// The X11 display number once XWayland is ready (`DISPLAY=:N` for X11
+    /// clients); `None` while XWayland is starting or when it is
+    /// disabled/unavailable.
+    /// Read by the compositor integration tests.
+    #[allow(dead_code)]
+    x11_display: Arc<Mutex<Option<u32>>>,
 }
 
 impl CompositorHandle {
@@ -90,6 +104,14 @@ impl CompositorHandle {
     #[allow(dead_code)]
     pub fn gl_active(&self) -> bool {
         self.gl_active.load(Ordering::Relaxed)
+    }
+
+    /// X11 display number for X11 clients (`DISPLAY=:N`), once XWayland is
+    /// up. `None` when X11 support is off or XWayland is not ready (yet).
+    /// Read by the compositor integration tests.
+    #[allow(dead_code)]
+    pub fn x11_display(&self) -> Option<u32> {
+        *self.x11_display.lock().unwrap()
     }
 
     /// Await the compositor thread's exit.
@@ -133,6 +155,7 @@ pub fn spawn(
         Display::new().map_err(|e| anyhow::anyhow!("failed to create Wayland display: {e}"))?;
     let dh = display.handle();
     let state = WaylandState::new(&dh, config, frame_tx, repaint_request);
+    let x11_display = state.x11_display.clone();
 
     let listener = ListeningSocketSource::with_name(&config.socket_name).map_err(|e| {
         anyhow::anyhow!(
@@ -171,6 +194,7 @@ pub fn spawn(
         thread: Some(thread),
         cancel,
         gl_active,
+        x11_display,
     })
 }
 
@@ -196,7 +220,7 @@ fn run(
     let loop_signal = event_loop.get_signal();
     let loop_handle = event_loop.handle();
 
-    if let Err(e) = loop_handle.insert_source(listener, |stream, _, state| {
+    let listener_token = match loop_handle.insert_source(listener, |stream, _, state| {
         if let Err(e) = state
             .display_handle
             .insert_client(stream, Arc::new(ClientState::default()))
@@ -204,11 +228,14 @@ fn run(
             tracing::warn!("wayland compositor: failed to insert client: {e}");
         }
     }) {
-        tracing::error!("wayland compositor '{socket_name}': failed to add socket source: {e}");
-        return;
-    }
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!("wayland compositor '{socket_name}': failed to add socket source: {e}");
+            return;
+        }
+    };
 
-    if let Err(e) = loop_handle.insert_source(
+    let display_token = match loop_handle.insert_source(
         Generic::new(display, Interest::READ, LoopMode::Level),
         |_, display, state| {
             // Safety: the display lives inside the event loop source and is
@@ -223,9 +250,14 @@ fn run(
             Ok(PostAction::Continue)
         },
     ) {
-        tracing::error!("wayland compositor '{socket_name}': failed to add display source: {e}");
-        return;
-    }
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!(
+                "wayland compositor '{socket_name}': failed to add display source: {e}"
+            );
+            return;
+        }
+    };
 
     // GL compositing (GBM + EGL + GLES): enables dmabuf clients. Must happen
     // on this thread (the renderer is !Send and the GL context stays current
@@ -258,7 +290,91 @@ fn run(
     }
     gl_active.store(gl.is_some(), Ordering::Relaxed);
 
-    if let Err(e) = loop_handle.insert_source(Timer::immediate(), move |_, _, state| {
+    // X11 support: spawn XWayland as a client of this compositor. Optional —
+    // a missing `Xwayland` binary or a failed startup only disables X11
+    // clients, the Wayland side keeps running. X11 window frames ride the
+    // same buffer paths (SHM / dmabuf) as native clients, so nothing
+    // downstream of the window list knows the difference.
+    let mut xwayland_token = None;
+    if state.xwayland_enabled {
+        // The filesystem socket binds under /tmp/.X11-unix; the directory is
+        // not guaranteed to exist on servers/containers.
+        let _ = std::fs::create_dir_all("/tmp/.X11-unix");
+        match XWayland::spawn(
+            &state.display_handle,
+            state.xdisplay,
+            std::iter::empty::<(std::ffi::OsString, std::ffi::OsString)>(),
+            true,
+            std::process::Stdio::null(),
+            if std::env::var_os("LIVE777_WAYLAND_XWAYLAND_LOG").is_some() {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::null()
+            },
+            |_| {},
+        ) {
+            Ok((xwayland, xwayland_client)) => {
+                // The closure's captured LoopHandle (needed by start_wm when
+                // XWayland reports ready) forms an Rc cycle with the calloop
+                // registry — same as smithay's own X11Source — so the
+                // registry skeleton is leaked on shutdown; everything user-
+                // visible (socket file, display backend, the Xwayland
+                // process) is reclaimed by the explicit source removals at
+                // the end of this function.
+                let wm_loop_handle = loop_handle.clone();
+                match loop_handle.insert_source(xwayland, move |event, _, state| {
+                    match event {
+                        XWaylandEvent::Ready {
+                            x11_socket,
+                            display_number,
+                        } => {
+                            match X11Wm::start_wm(
+                                wm_loop_handle.clone(),
+                                x11_socket,
+                                xwayland_client.clone(),
+                            ) {
+                                Ok(wm) => {
+                                    tracing::info!(
+                                        "wayland compositor '{}': XWayland ready, X11 clients use DISPLAY=:{}",
+                                        state.socket_name,
+                                        display_number
+                                    );
+                                    *state.x11_display.lock().unwrap() = Some(display_number);
+                                    state.xwm = Some(wm);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "wayland compositor '{}': failed to start the X11 window manager: {e}",
+                                        state.socket_name
+                                    );
+                                }
+                            }
+                        }
+                        XWaylandEvent::Error => {
+                            tracing::warn!(
+                                "wayland compositor '{}': XWayland failed during startup; X11 clients unsupported",
+                                state.socket_name
+                            );
+                        }
+                    }
+                }) {
+                    Ok(token) => xwayland_token = Some(token),
+                    Err(e) => {
+                        tracing::warn!(
+                            "wayland compositor '{socket_name}': failed to add the XWayland source: {e}; X11 clients unsupported"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "wayland compositor '{socket_name}': XWayland unavailable ({e}); X11 clients unsupported"
+                );
+            }
+        }
+    }
+
+    let timer_token = match loop_handle.insert_source(Timer::immediate(), move |_, _, state| {
         if cancel.is_cancelled() {
             loop_signal.stop();
             return TimeoutAction::Drop;
@@ -277,15 +393,38 @@ fn run(
         }
         TimeoutAction::ToDuration(period)
     }) {
-        tracing::error!("wayland compositor '{socket_name}': failed to add frame timer: {e}");
-        return;
-    }
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!("wayland compositor '{socket_name}': failed to add frame timer: {e}");
+            return;
+        }
+    };
 
     tracing::info!("wayland compositor '{socket_name}': event loop started");
     if let Err(e) = event_loop.run(None, &mut state, |_| {}) {
         tracing::error!("wayland compositor '{socket_name}': event loop error: {e}");
     }
     tracing::info!("wayland compositor '{socket_name}': event loop exited");
+
+    // Shutdown ritual. smithay's X11Source closure (and our XWayland one)
+    // captures a LoopHandle, so once an XWM ran, the calloop registry sits in
+    // an Rc cycle and dropping the event loop alone would leak it — with the
+    // display backend, the listening socket (and its on-disk file), and the
+    // XWayland handle (whose Drop kills the Xwayland client) inside. Remove
+    // every source we inserted so their drops run here, deterministically;
+    // dropping the XWM closes the X11 connection, which makes Xwayland exit.
+    // The X11 source is smithay-internal and unreachable, so one registry
+    // skeleton (an epoll fd plus a channel) stays leaked per compositor
+    // lifetime — a documented smithay-0.7 limitation, harmless for the
+    // process as a whole as long as sources are not restarted at a high rate.
+    state.xwm = None;
+    if let Some(token) = xwayland_token {
+        loop_handle.remove(token);
+    }
+    loop_handle.remove(timer_token);
+    loop_handle.remove(display_token);
+    loop_handle.remove(listener_token);
+    drop(loop_handle);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +456,21 @@ struct WaylandState {
     started: bool,
     /// xdg toplevels, bottom-to-top stacking order (creation order).
     toplevels: Vec<ToplevelSurface>,
+    /// Managed X11 windows, bottom-to-top stacking order. Painted above xdg
+    /// toplevels (mixed desktops are rare; X11 override-redirect windows —
+    /// menus, tooltips — always paint on top).
+    x11_windows: Vec<X11Surface>,
+    /// Override-redirect X11 windows (unmanaged; menus/tooltips), mapped
+    /// order. Painted above everything else.
+    x11_override_redirect: Vec<X11Surface>,
+    /// Whether to spawn XWayland (`wayland://...?xwayland=`).
+    xwayland_enabled: bool,
+    /// Pinned X11 display number, if requested (`xdisplay=`).
+    xdisplay: Option<u32>,
+    /// The running X11 window manager; set when XWayland reports ready.
+    xwm: Option<X11Wm>,
+    /// The ready XWayland display number, shared with `CompositorHandle`.
+    x11_display: Arc<Mutex<Option<u32>>>,
     logged_unsupported_scale: bool,
     logged_unsupported_transform: bool,
     logged_unsupported_format: bool,
@@ -327,6 +481,7 @@ struct WaylandState {
 
     compositor_state: CompositorState,
     xdg_shell_state: XdgShellState,
+    xwayland_shell_state: XWaylandShellState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
@@ -353,6 +508,9 @@ impl WaylandState {
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(dh);
         let xdg_shell_state = XdgShellState::new::<Self>(dh);
+        // The xwayland-shell global is only visible to the XWayland client,
+        // so creating it unconditionally is invisible to normal clients.
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(dh);
         let shm_state =
             ShmState::new::<Self>(dh, vec![wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(dh);
@@ -397,6 +555,12 @@ impl WaylandState {
             force_keyframe_next: false,
             started: false,
             toplevels: Vec::new(),
+            x11_windows: Vec::new(),
+            x11_override_redirect: Vec::new(),
+            xwayland_enabled: config.xwayland,
+            xdisplay: config.xdisplay,
+            xwm: None,
+            x11_display: Arc::new(Mutex::new(None)),
             logged_unsupported_scale: false,
             logged_unsupported_transform: false,
             logged_unsupported_format: false,
@@ -404,6 +568,7 @@ impl WaylandState {
             gl_cache_cleanup: false,
             compositor_state,
             xdg_shell_state,
+            xwayland_shell_state,
             shm_state,
             seat_state,
             data_device_state,
@@ -426,12 +591,12 @@ impl WaylandState {
         }
 
         let mut canvas = vec![0u8; (self.width * self.height * 4) as usize];
-        // Bottom-to-top: later toplevels paint over earlier ones. Clone the
-        // list: compositing needs `&mut self` (log-once flags, caches).
-        let toplevels = self.toplevels.clone();
+        // Bottom-to-top: later windows paint over earlier ones. Materialize
+        // the list: compositing needs `&mut self` (log-once flags, caches).
+        let windows = self.canvas_windows();
         let mut drew_content = false;
         if let Some(gl) = gl {
-            match self.composite_all_gl(gl, &mut canvas, &toplevels) {
+            match self.composite_all_gl(gl, &mut canvas, &windows) {
                 Ok(drew) => drew_content = drew,
                 // Keep the last good frame on the wire rather than
                 // broadcasting a partial image; retry on the next tick.
@@ -444,14 +609,14 @@ impl WaylandState {
                 }
             }
         } else {
-            for toplevel in &toplevels {
-                drew_content |= self.composite_toplevel(&mut canvas, toplevel);
+            for window in &windows {
+                drew_content |= self.composite_window(&mut canvas, window);
             }
         }
         if self.dirty && !drew_content {
             tracing::debug!(
-                "produce_frame: dirty tick drew no content ({} toplevels)",
-                toplevels.len()
+                "produce_frame: dirty tick drew no content ({} windows)",
+                windows.len()
             );
         }
 
@@ -478,22 +643,57 @@ impl WaylandState {
         // retries instead of showing stale content after the next commit.
     }
 
-    /// GL path: import every toplevel's buffer (dmabuf or SHM) as a texture
+    /// The current window stack, bottom-to-top: xdg toplevels, then managed
+    /// X11 windows, then X11 override-redirect windows (menus/tooltips).
+    /// X11 windows whose wl_surface is not associated yet (created but not
+    /// committed) are skipped — there is nothing to draw anyway.
+    fn canvas_windows(&self) -> Vec<CanvasWindow> {
+        let mut out = Vec::with_capacity(
+            self.toplevels.len() + self.x11_windows.len() + self.x11_override_redirect.len(),
+        );
+        for toplevel in &self.toplevels {
+            let surface = toplevel.wl_surface().clone();
+            let geometry = with_states(&surface, |states| {
+                states
+                    .cached_state
+                    .get::<SurfaceCachedState>()
+                    .current()
+                    .geometry
+            });
+            out.push(CanvasWindow {
+                surface,
+                geometry,
+                x11: false,
+            });
+        }
+        for window in self.x11_windows.iter().chain(&self.x11_override_redirect) {
+            if let Some(surface) = window.wl_surface() {
+                out.push(CanvasWindow {
+                    surface,
+                    geometry: Some(window.geometry()),
+                    x11: true,
+                });
+            }
+        }
+        out
+    }
+
+    /// GL path: import every window's buffer (dmabuf or SHM) as a texture
     /// and render them onto the canvas. Buffer position math matches the
-    /// CPU blit exactly (`window_buffer_pos`).
+    /// CPU blit exactly (`canvas_window_pos`).
     fn composite_all_gl(
         &mut self,
         gl: &mut GlPipeline,
         canvas: &mut [u8],
-        toplevels: &[ToplevelSurface],
+        windows: &[CanvasWindow],
     ) -> Result<bool> {
         if self.gl_cache_cleanup {
             gl.cleanup_caches();
             self.gl_cache_cleanup = false;
         }
-        let mut items = Vec::with_capacity(toplevels.len());
-        for toplevel in toplevels {
-            if let Some(item) = self.gl_draw_item(gl, toplevel) {
+        let mut items = Vec::with_capacity(windows.len());
+        for window in windows {
+            if let Some(item) = self.gl_draw_item(gl, window) {
                 items.push(item);
             }
         }
@@ -502,15 +702,11 @@ impl WaylandState {
         Ok(drew)
     }
 
-    /// Import one toplevel's current buffer as a GL texture and compute its
+    /// Import one window's current buffer as a GL texture and compute its
     /// canvas position. `None` when the surface has no buffer or the import
     /// failed (logged once).
-    fn gl_draw_item(
-        &mut self,
-        gl: &mut GlPipeline,
-        toplevel: &ToplevelSurface,
-    ) -> Option<DrawItem> {
-        let surface = toplevel.wl_surface();
+    fn gl_draw_item(&mut self, gl: &mut GlPipeline, window: &CanvasWindow) -> Option<DrawItem> {
+        let surface = &window.surface;
         with_states(surface, |states| {
             let (buffer, scale, transform, damage) = {
                 let mut guard = states.cached_state.get::<SurfaceAttributes>();
@@ -536,11 +732,6 @@ impl WaylandState {
                     .collect::<Vec<_>>();
                 (buffer, attrs.buffer_scale, attrs.buffer_transform, damage)
             };
-            let geometry = states
-                .cached_state
-                .get::<SurfaceCachedState>()
-                .current()
-                .geometry;
 
             if scale != 1 && !self.logged_unsupported_scale {
                 tracing::warn!(
@@ -572,11 +763,8 @@ impl WaylandState {
                     }
                 }
             };
-            let pos = window_buffer_pos(
-                (self.width as i32, self.height as i32),
-                buffer_size,
-                geometry,
-            );
+            let pos =
+                canvas_window_pos(window, (self.width as i32, self.height as i32), buffer_size);
 
             let texture = match get_dmabuf(&buffer) {
                 Ok(dmabuf) => gl.import_dmabuf(dmabuf),
@@ -590,7 +778,7 @@ impl WaylandState {
                 Err(e) => {
                     if !self.logged_gl_import_failure {
                         tracing::warn!(
-                            "wayland compositor '{}': buffer import failed ({e:#}); skipping the toplevel",
+                            "wayland compositor '{}': buffer import failed ({e:#}); skipping the window",
                             self.socket_name
                         );
                         self.logged_gl_import_failure = true;
@@ -601,12 +789,12 @@ impl WaylandState {
         })
     }
 
-    /// Drain pending wl_callback frame callbacks of all toplevel surfaces —
+    /// Drain pending wl_callback frame callbacks of all window surfaces —
     /// clients that throttle on them would otherwise stop drawing.
     fn send_frame_callbacks(&self) {
         let time = self.origin.elapsed().as_millis() as u32;
-        for toplevel in &self.toplevels {
-            with_states(toplevel.wl_surface(), |states| {
+        for window in self.canvas_windows() {
+            with_states(&window.surface, |states| {
                 let mut guard = states.cached_state.get::<SurfaceAttributes>();
                 for callback in guard.current().frame_callbacks.drain(..) {
                     callback.done(time);
@@ -615,10 +803,10 @@ impl WaylandState {
         }
     }
 
-    /// Blit one toplevel's current buffer into the canvas. Returns true when
+    /// Blit one window's current buffer into the canvas. Returns true when
     /// any pixel was written.
-    fn composite_toplevel(&mut self, canvas: &mut [u8], toplevel: &ToplevelSurface) -> bool {
-        let surface = toplevel.wl_surface();
+    fn composite_window(&mut self, canvas: &mut [u8], window: &CanvasWindow) -> bool {
+        let surface = &window.surface;
         with_states(surface, |states| {
             let (buffer, scale, transform) = {
                 let mut guard = states.cached_state.get::<SurfaceAttributes>();
@@ -633,11 +821,6 @@ impl WaylandState {
                 };
                 (buffer, attrs.buffer_scale, attrs.buffer_transform)
             };
-            let geometry = states
-                .cached_state
-                .get::<SurfaceCachedState>()
-                .current()
-                .geometry;
 
             if scale != 1 && !self.logged_unsupported_scale {
                 tracing::warn!(
@@ -655,7 +838,7 @@ impl WaylandState {
             }
 
             with_buffer_contents(&buffer, |pool, pool_len, data| {
-                self.blit(canvas, pool, pool_len, data, geometry)
+                self.blit(canvas, pool, pool_len, data, window)
             })
             .unwrap_or_else(|e| {
                 tracing::debug!("composite skip: buffer access failed: {e}");
@@ -664,20 +847,20 @@ impl WaylandState {
         })
     }
 
-    /// Blit a client SHM buffer onto the canvas, honoring the xdg window
-    /// geometry: the canvas position is the *window's* top-left, so the
-    /// buffer lands at `position - geometry.offset` (CSD shadow margins sit
-    /// outside the window rect).
+    /// Blit a client SHM buffer onto the canvas at the window's position
+    /// (`canvas_window_pos`): xdg windows are centered and their buffer lands
+    /// at `position - geometry.offset` (CSD shadow margins sit outside the
+    /// window rect); X11 windows draw 1:1 at their root-relative position.
     fn blit(
         &mut self,
         canvas: &mut [u8],
         pool: *const u8,
         pool_len: usize,
         data: BufferData,
-        geometry: Option<Rectangle<i32, Logical>>,
+        window: &CanvasWindow,
     ) -> bool {
         let (canvas_w, canvas_h) = (self.width as i32, self.height as i32);
-        let dst = window_buffer_pos((canvas_w, canvas_h), (data.width, data.height), geometry);
+        let dst = canvas_window_pos(window, (canvas_w, canvas_h), (data.width, data.height));
 
         // The pool may be mutated by the client concurrently; this is the
         // access pattern smithay's own CPU paths use inside the guard.
@@ -706,6 +889,36 @@ impl WaylandState {
 enum PixelAlpha {
     Opaque,
     Premultiplied,
+}
+
+/// One composited window of the canvas stack (`WaylandState::canvas_windows`):
+/// the wl_surface carrying the frames, the window geometry (xdg window
+/// geometry for toplevels, the X11 root-relative rect for X11 windows), and
+/// the positioning policy.
+struct CanvasWindow {
+    surface: WlSurface,
+    geometry: Option<Rectangle<i32, Logical>>,
+    /// X11 windows paint at their requested root position; xdg toplevels
+    /// are centered on the single output.
+    x11: bool,
+}
+
+/// The canvas position of a window's buffer top-left, shared by the CPU and
+/// the GL path. X11 windows draw 1:1 at their X11 position (the buffer *is*
+/// the window contents; no CSD offsets). xdg windows follow
+/// [`window_buffer_pos`].
+fn canvas_window_pos(
+    window: &CanvasWindow,
+    canvas: (i32, i32),
+    buffer: (i32, i32),
+) -> Point<i32, Logical> {
+    if window.x11 {
+        return window
+            .geometry
+            .map(|g| g.loc)
+            .unwrap_or_else(|| Point::from((0, 0)));
+    }
+    window_buffer_pos(canvas, buffer, window.geometry)
 }
 
 /// The canvas position of a toplevel's buffer top-left, shared by the CPU
@@ -820,6 +1033,11 @@ impl CompositorHandler for WaylandState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // The XWayland server connects as a client carrying
+        // `XWaylandClientData` (smithay inserts it), not our `ClientState`.
+        if let Some(data) = client.get_data::<XWaylandClientData>() {
+            return &data.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
@@ -981,6 +1199,233 @@ impl XdgShellHandler for WaylandState {
 }
 
 delegate_xdg_shell!(WaylandState);
+
+// ---------------------------------------------------------------------------
+// XWayland (X11 clients)
+// ---------------------------------------------------------------------------
+//
+// The XWM policy is deliberately minimal — this is a headless fixed-size
+// "virtual monitor", not a desktop: managed windows keep their requested
+// root-relative geometry (configure requests are granted as-is), fullscreen
+// and maximize both mean "canvas-sized at (0,0)", and the stacking order is
+// the window list order (last mapped on top, reorder requests honored).
+// Interactive move/resize is dropped: there is no pointer input.
+
+impl XWaylandShellHandler for WaylandState {
+    fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
+        &mut self.xwayland_shell_state
+    }
+}
+
+delegate_xwayland_shell!(WaylandState);
+
+impl WaylandState {
+    /// Topmost managed X11 window gets _NET_ACTIVE_WINDOW-style activation;
+    /// there is no keyboard input to focus with yet.
+    fn activate_x11_top(&self) {
+        for window in &self.x11_windows {
+            let _ = window.set_activated(false);
+        }
+        if let Some(top) = self.x11_windows.last() {
+            let _ = top.set_activated(true);
+        }
+    }
+}
+
+impl XwmHandler for WaylandState {
+    fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
+        self.xwm
+            .as_mut()
+            .expect("XWM events only arrive after start_wm")
+    }
+
+    fn new_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::debug!(
+            "wayland compositor '{}': new X11 window {}x{} at {:?} (class '{}')",
+            self.socket_name,
+            window.geometry().size.w,
+            window.geometry().size.h,
+            window.geometry().loc,
+            window.class()
+        );
+    }
+
+    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+
+    fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        // Grant the requested geometry (clamped to something drawable), then
+        // map. XWayland hands us windows with a real size; a 0x0 fallback
+        // keeps a pathological client from poisoning the canvas math.
+        let mut geometry = window.geometry();
+        if geometry.size.w <= 0 || geometry.size.h <= 0 {
+            geometry.size = Size::from((640, 480));
+        }
+        if let Err(e) = window.configure(geometry) {
+            tracing::warn!("wayland compositor: X11 configure failed: {e}");
+        }
+        if let Err(e) = window.set_mapped(true) {
+            tracing::warn!("wayland compositor: X11 map failed: {e}");
+            return;
+        }
+        self.x11_windows.push(window);
+        self.activate_x11_top();
+        self.dirty = true;
+    }
+
+    fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.x11_override_redirect.push(window);
+        self.dirty = true;
+    }
+
+    fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        if window.is_override_redirect() {
+            self.x11_override_redirect.retain(|w| w != &window);
+        } else {
+            self.x11_windows.retain(|w| w != &window);
+            // Keep the WM state honest for a later re-map.
+            let _ = window.set_mapped(false);
+            self.activate_x11_top();
+        }
+        self.gl_cache_cleanup = true;
+        self.dirty = true;
+    }
+
+    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.x11_windows.retain(|w| w != &window);
+        self.x11_override_redirect.retain(|w| w != &window);
+        self.activate_x11_top();
+        self.gl_cache_cleanup = true;
+        self.dirty = true;
+    }
+
+    fn configure_request(
+        &mut self,
+        _xwm: XwmId,
+        window: X11Surface,
+        x: Option<i32>,
+        y: Option<i32>,
+        w: Option<u32>,
+        h: Option<u32>,
+        reorder: Option<Reorder>,
+    ) {
+        let mut geometry = window.geometry();
+        if let Some(x) = x {
+            geometry.loc.x = x;
+        }
+        if let Some(y) = y {
+            geometry.loc.y = y;
+        }
+        if let Some(w) = w {
+            geometry.size.w = w as i32;
+        }
+        if let Some(h) = h {
+            geometry.size.h = h as i32;
+        }
+        if let Err(e) = window.configure(geometry) {
+            tracing::warn!("wayland compositor: X11 configure failed: {e}");
+        }
+        if let Some(reorder) = reorder {
+            match reorder {
+                Reorder::Top => {
+                    self.x11_windows.retain(|w| w != &window);
+                    self.x11_windows.push(window.clone());
+                }
+                Reorder::Bottom => {
+                    self.x11_windows.retain(|w| w != &window);
+                    self.x11_windows.insert(0, window.clone());
+                }
+                // Relative reorders resolve against the managed stack.
+                Reorder::Above(target) => {
+                    self.x11_windows.retain(|w| w != &window);
+                    let pos = self
+                        .x11_windows
+                        .iter()
+                        .position(|w| w.window_id() == target)
+                        .map(|p| p + 1)
+                        .unwrap_or(self.x11_windows.len());
+                    self.x11_windows.insert(pos, window.clone());
+                }
+                Reorder::Below(target) => {
+                    self.x11_windows.retain(|w| w != &window);
+                    let pos = self
+                        .x11_windows
+                        .iter()
+                        .position(|w| w.window_id() == target)
+                        .unwrap_or(0);
+                    self.x11_windows.insert(pos, window.clone());
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn configure_notify(
+        &mut self,
+        _xwm: XwmId,
+        _window: X11Surface,
+        _geometry: Rectangle<i32, Logical>,
+        _above: Option<smithay::xwayland::xwm::X11Window>,
+    ) {
+        // Override-redirect windows reconfigure themselves; the composite
+        // reads `geometry()` fresh every frame, so just repaint.
+        self.dirty = true;
+    }
+
+    fn property_notify(&mut self, _xwm: XwmId, _window: X11Surface, _property: WmWindowProperty) {}
+
+    fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _ = window.configure(Rectangle::new(
+            Point::from((0, 0)),
+            Size::from((self.width as i32, self.height as i32)),
+        ));
+        let _ = window.set_fullscreen(true);
+        self.x11_windows.retain(|w| w != &window);
+        self.x11_windows.push(window);
+        self.dirty = true;
+    }
+
+    fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _ = window.set_fullscreen(false);
+        self.dirty = true;
+    }
+
+    fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _ = window.configure(Rectangle::new(
+            Point::from((0, 0)),
+            Size::from((self.width as i32, self.height as i32)),
+        ));
+        let _ = window.set_maximized(true);
+        self.dirty = true;
+    }
+
+    fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let _ = window.set_maximized(false);
+        self.dirty = true;
+    }
+
+    // No pointer input: interactive resize/move grabs cannot happen.
+    fn resize_request(
+        &mut self,
+        _xwm: XwmId,
+        _window: X11Surface,
+        _button: u32,
+        _edge: ResizeEdge,
+    ) {
+    }
+
+    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+
+    fn disconnected(&mut self, _xwm: XwmId) {
+        tracing::error!(
+            "wayland compositor '{}': lost the XWM connection (XWayland died); X11 windows dropped",
+            self.socket_name
+        );
+        self.x11_windows.clear();
+        self.x11_override_redirect.clear();
+        self.gl_cache_cleanup = true;
+        self.dirty = true;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1981,6 +2426,142 @@ mod client_tests {
                 "bottom band must follow (swapped={swapped}, flag={flag})"
             );
         }
+        cancel.cancel();
+        handle.join().await;
+    }
+
+    /// X11 clients: with XWayland up, a mapped X11 window must be composited
+    /// at its X11 position (1:1, not centered like xdg toplevels), repaints
+    /// must land, and unmapping must return the canvas to the background.
+    /// Skipped without an `Xwayland` binary (CI hosts may not have one).
+    #[tokio::test]
+    async fn x11_window_reaches_the_canvas() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{
+            ConnectionExt as _, CreateGCAux, CreateWindowAux, Rectangle as XRectangle, WindowClass,
+        };
+
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "liveion=debug".to_string()),
+            )
+            .with_test_writer()
+            .try_init();
+
+        if std::process::Command::new("Xwayland")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            eprintln!("skipping the X11 test: no Xwayland binary on PATH");
+            return;
+        }
+
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-x11");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-x11?width=320&height=240&fps=30&bitrate=500000",
+        )
+        .unwrap();
+        let (frame_tx, mut frame_rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+
+        // XWayland startup is async (a forked process); wait for the display.
+        let display = {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if let Some(display) = handle.x11_display() {
+                    break display;
+                }
+                assert!(Instant::now() < deadline, "XWayland never reported ready");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+
+        // X11 client: a 200x150 window at (20,20). Painting happens on the
+        // first Expose event — the canonical X11 pattern, and the only safe
+        // ordering: damage issued before Xwayland realizes the window (and
+        // creates its wl_surface) is silently dropped. Red window with a
+        // green left half; X11 pixels are 0xRRGGBB.
+        let (conn, screen_num) =
+            x11rb::connect(Some(&format!(":{display}"))).expect("connect to XWayland");
+        let screen = &conn.setup().roots[screen_num];
+        let win = conn.generate_id().unwrap();
+        conn.create_window(
+            screen.root_depth,
+            win,
+            screen.root,
+            20,
+            20,
+            200,
+            150,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new()
+                .background_pixel(0x00FF0000)
+                .event_mask(x11rb::protocol::xproto::EventMask::EXPOSURE),
+        )
+        .unwrap();
+        conn.map_window(win).unwrap();
+        let gc = conn.generate_id().unwrap();
+        conn.create_gc(gc, win, &CreateGCAux::new().foreground(0x0000FF00))
+            .unwrap();
+        conn.flush().unwrap();
+
+        // Wait for the first Expose, then paint the green half.
+        loop {
+            let event = conn.wait_for_event().expect("X11 event");
+            if matches!(event, x11rb::protocol::Event::Expose(_)) {
+                break;
+            }
+        }
+        conn.poly_fill_rectangle(
+            win,
+            gc,
+            &[XRectangle {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 150,
+            }],
+        )
+        .unwrap();
+        conn.flush().unwrap();
+
+        // Window rect (20,20)-(220,170) on the 320x240 canvas.
+        wait_pixel(&mut frame_rx, 70, 95, GREEN, Duration::from_secs(15)).await;
+        let frame = wait_pixel(&mut frame_rx, 170, 95, RED, Duration::from_secs(15)).await;
+        assert_eq!(frame_px(&frame, 5, 5), BACKGROUND, "outside the window");
+        assert_eq!(
+            frame_px(&frame, 20, 20),
+            GREEN,
+            "window top-left corner (X11 position honored, not centered)"
+        );
+        assert_eq!(frame_px(&frame, 219, 169), RED, "window bottom-right");
+        assert_eq!(frame_px(&frame, 220, 170), BACKGROUND, "past the window");
+
+        // Unmap: the canvas returns to background.
+        conn.unmap_window(win).unwrap();
+        conn.flush().unwrap();
+        wait_pixel(&mut frame_rx, 120, 95, BACKGROUND, Duration::from_secs(15)).await;
+
+        drop(conn);
         cancel.cancel();
         handle.join().await;
     }
