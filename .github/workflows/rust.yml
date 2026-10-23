@@ -46,8 +46,19 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
+      - name: Install Wayland compositor source dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwayland-dev libxkbcommon-dev libpipewire-0.3-dev xwayland
       - name: Generate code coverage
-        run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp --lcov --output-path lcov.info
+        shell: bash
+        run: |
+          FEATURES="source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp"
+          # The Wayland compositor source is Linux-only; its tests run
+          # headless (CPU compositing) and the X11 case needs xwayland.
+          if [ "$RUNNER_OS" == "Linux" ]; then FEATURES="$FEATURES,source-wayland"; fi
+          cargo llvm-cov nextest --profile ci --workspace --features "$FEATURES" --lcov --output-path lcov.info
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
       - name: Upload coverage to codecov.io
@@ -82,7 +93,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libcamera-dev libv4l-dev
+          sudo apt-get install -y -qq libcamera-dev libv4l-dev libwayland-dev libxkbcommon-dev libpipewire-0.3-dev
       - name: Install FFmpeg for rsmpeg
         uses: ./.github/actions/install-ffmpeg
       - name: Build

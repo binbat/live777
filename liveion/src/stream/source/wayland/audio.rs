@@ -441,3 +441,55 @@ fn run(
     running.store(false, Ordering::Relaxed);
     tracing::info!("[{stream_id}] wayland audio: capture stopped");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opus encode + packetize: 20 ms of stereo samples become one RTP
+    /// packet, advancing the 48 kHz timestamp by 960 per frame.
+    #[test]
+    fn emit_frames_packetizes_opus_at_20ms_cadence() {
+        let (rtp_tx, mut rtp_rx) = broadcast::channel(8);
+        let mut state = AudioState {
+            stream_id: "t".into(),
+            rtp_tx,
+            packetizer: Box::new(new_packetizer(
+                std::time::Instant::now(),
+                1400,
+                AUDIO_PAYLOAD_TYPE,
+                42,
+                Box::<OpusPayloader>::default(),
+                Box::new(new_random_sequencer()),
+                AUDIO_CLOCK_RATE,
+            )),
+            encoder: opus::Encoder::new(
+                AUDIO_CLOCK_RATE,
+                opus::Channels::Stereo,
+                opus::Application::Audio,
+            )
+            .unwrap(),
+            pending: Default::default(),
+            logged_frame: false,
+        };
+        // A 440 Hz stereo tone, two and a half frames worth → exactly two
+        // packets; the tail stays buffered.
+        for i in 0..FRAME_SAMPLES * 5 / 2 {
+            let t = i as f32 / AUDIO_CLOCK_RATE as f32;
+            let s = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+            state.pending.push_back(s);
+            state.pending.push_back(s);
+        }
+        state.emit_frames();
+
+        let mut timestamps = Vec::new();
+        while let Ok(MediaPacket::RtpAudioPacket(p)) = rtp_rx.try_recv() {
+            assert_eq!(p.header.payload_type, AUDIO_PAYLOAD_TYPE);
+            assert_eq!(p.header.ssrc, 42);
+            assert!(!p.payload.is_empty());
+            timestamps.push(p.header.timestamp);
+        }
+        assert_eq!(timestamps.len(), 2);
+        assert_eq!(timestamps[1].wrapping_sub(timestamps[0]), 960);
+    }
+}

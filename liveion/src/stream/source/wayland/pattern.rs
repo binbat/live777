@@ -87,7 +87,7 @@ impl Pattern {
         let bar_w = width / 8;
         let phase = (self.frame as usize) % width;
         for row in data.chunks_exact_mut(stride) {
-            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let (r, g, b) = BARS[((x + phase) / bar_w) % 8];
                 px[0] = b;
                 px[1] = g;

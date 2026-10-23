@@ -787,6 +787,28 @@ mod tests {
     }
 
     #[test]
+    fn url_audio_and_input_params() {
+        let cfg = WaylandUrlConfig::parse("cam", "wayland://d").unwrap();
+        assert!(cfg.audio);
+        assert_eq!(cfg.audio_bitrate, 64_000);
+        assert_eq!(cfg.audio_sink, None);
+        assert!(!cfg.input);
+
+        let cfg = WaylandUrlConfig::parse(
+            "cam",
+            "wayland://d?audio=0&input=1&audio_bitrate=96000&audio_sink=my-sink",
+        )
+        .unwrap();
+        assert!(!cfg.audio);
+        assert!(cfg.input);
+        assert_eq!(cfg.audio_bitrate, 96_000);
+        assert_eq!(cfg.audio_sink.as_deref(), Some("my-sink"));
+
+        assert!(WaylandUrlConfig::parse("cam", "wayland://d?audio_bitrate=100").is_err());
+        assert!(WaylandUrlConfig::parse("cam", "wayland://d?input=maybe").is_err());
+    }
+
+    #[test]
     fn url_rejects_bad_params() {
         for url in [
             "wayland://x?width=0",

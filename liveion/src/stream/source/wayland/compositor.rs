@@ -1680,7 +1680,7 @@ mod tests {
     fn blit_opaque_copy_and_clip() {
         // 2x2 red buffer drawn at (1,1) on a 4x4 canvas.
         let mut pool = vec![0u8; 2 * 2 * 4];
-        for px in pool.chunks_exact_mut(4) {
+        for px in pool.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&[0, 0, 255, 255]); // B,G,R,X
         }
         let mut out = canvas((4, 4));
@@ -1909,7 +1909,7 @@ mod client_tests {
 
     fn fill_solid(color: [u8; 4]) -> impl Fn(&mut [u8], i32, i32) {
         move |pixels, _, _| {
-            for px in pixels.chunks_exact_mut(4) {
+            for px in pixels.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&color);
             }
         }
@@ -2269,7 +2269,7 @@ mod client_tests {
         bo.map_mut(0, 0, w, h, |mapped| {
             let stride = mapped.stride() as usize;
             for row in mapped.buffer_mut().chunks_exact_mut(stride) {
-                for px in row[..w as usize * 4].chunks_exact_mut(4) {
+                for px in row[..w as usize * 4].as_chunks_mut::<4>().0 {
                     px.copy_from_slice(&color);
                 }
             }
@@ -2290,7 +2290,7 @@ mod client_tests {
             let stride = mapped.stride() as usize;
             for (y, row) in mapped.buffer_mut().chunks_exact_mut(stride).enumerate() {
                 let color = if y < h as usize / 2 { top } else { bottom };
-                for px in row[..w as usize * 4].chunks_exact_mut(4) {
+                for px in row[..w as usize * 4].as_chunks_mut::<4>().0 {
                     px.copy_from_slice(&color);
                 }
             }

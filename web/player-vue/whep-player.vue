@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { useTemplateRef, watch } from "vue";
 import { attachInputCapture } from "player-core";
+import { useTemplateRef, watch } from "vue";
 import PlayerSurface from "./player-surface.vue";
 import { useWhepPlayback } from "./use-whep-playback";
 
