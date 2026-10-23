@@ -715,8 +715,7 @@ mod integration_tests {
             vec![],
             vec![],
             true,
-            #[cfg(feature = "source")]
-            None,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
             api::strategy::Strategy::default(),
             tokio::sync::broadcast::channel(4).0,
         );

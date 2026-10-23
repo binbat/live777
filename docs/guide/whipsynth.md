@@ -11,6 +11,15 @@ endpoint without any external media source.
 - Reproduce codec-specific issues without setting up a real camera or FFmpeg
   pipeline.
 
+## Get it
+
+`whipsynth` is included in the all-in-one `live777-all` image:
+
+```bash
+docker run --rm --network host ghcr.io/binbat/live777-all:latest \
+  whipsynth -w http://localhost:7777/whip/live
+```
+
 ## Build
 
 ```bash

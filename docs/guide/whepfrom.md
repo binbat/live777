@@ -15,7 +15,8 @@ This tool has two working mode:
 | `--sdp-file` | `output.sdp` | SDP filename to write (RTP mode) |
 | `-t`, `--token` | none | Bearer token for WHEP authentication |
 | `--command` | none | Run a command as child process |
-| `--channel` | none | DataChannel &lt;-&gt; UDP forwarding URL, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-url` | none | Cable UDP bridge URL for DataChannel &lt;-&gt; UDP forwarding, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-label` | `-` | DataChannel label; joins the matching cable on the server |
 | `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 | `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
 
@@ -80,10 +81,10 @@ ffplay rtsp://localhost:8554/777 -rtsp_transport tcp
 
 ## RTSP Client
 
-`whepfrom` as a client, push stream from RTSP Server
+`whepfrom` as a client, push the stream to an RTSP server
 
 ```bash
-whepfrom -w http://localhost:7777/whip/777 -o rtsp://127.0.0.1:8554
+whepfrom -w http://localhost:7777/whep/777 -o rtsp://127.0.0.1:8554/777
 ```
 
 ### Use transport `tcp`

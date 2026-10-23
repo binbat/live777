@@ -164,9 +164,9 @@ url = "rtsp://mediamtx:8554/cam1"
 
 ## DataChannel 转发
 
-> NOTE: 关于 `createDataChannel()`
-> 1. Live777 不支持 `label`, `createDataChannel(label)` 不使用 `label`
-> 2. Live777 不支持 `negotiated`, 不支持 `{ id: 42, negotiated: true }`
+完整说明见 [Cable（DataChannel 转发）](./cable)：按 label 声明的消息管
+道（`[[stream.<name>.cables]]`）、带参数的服务器创建 channel、以及
+cable <-> UDP 桥。
 
 ![live777-datachannel](/live777-datachannel.excalidraw.svg)
 

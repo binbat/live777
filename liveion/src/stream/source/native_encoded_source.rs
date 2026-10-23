@@ -236,8 +236,15 @@ impl NativeEncodedSource {
             };
             let sequencer = Box::new(new_random_sequencer());
             let ssrc: u32 = rand::random();
-            let mut packetizer =
-                new_packetizer(1400, payload_type, ssrc, payloader, sequencer, clock_rate);
+            let mut packetizer = new_packetizer(
+                std::time::Instant::now(),
+                1400,
+                payload_type,
+                ssrc,
+                payloader,
+                sequencer,
+                clock_rate,
+            );
 
             // Track the previous RTP 90kHz timestamp so we can pass
             // *increments* to packetizer.packetize().  The webrtc
@@ -303,7 +310,7 @@ impl NativeEncodedSource {
                             }
                         }
 
-                        match packetizer.packetize(&pkt.data.into(), delta) {
+                        match packetizer.packetize(std::time::Instant::now(), &pkt.data.into(), delta) {
                             Ok(packets) => {
                                 for packet in packets {
                                     let _ = rtp_tx.send(MediaPacket::RtpPacket(

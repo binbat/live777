@@ -11,20 +11,20 @@ sources that are already encoded (IP cameras, RTP/RTSP feeds, files,
 synthetic test sources).
 :::
 
-This tool has three working mode:
+This tool has two working modes:
 - `rtp`
 - `rtsp as client`
-- `rtsp as server`
 
 ## Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-i`, `--input` | `sdp://0.0.0.0:8554` | Input source: `sdp://` (RTP/SDP file or RTSP server mode), `rtsp://` (RTSP client mode), `synth://` (generated test frames) |
+| `-i`, `--input` | `input.sdp` | Input source: SDP file path (RTP), `rtsp://` (RTSP client mode), `synth://` (generated test frames) |
 | `-w`, `--whip` | required | WHIP endpoint URL |
 | `-t`, `--token` | none | Bearer token for WHIP authentication |
 | `--command` | none | Run a command as child process |
-| `--channel` | none | DataChannel &lt;-&gt; UDP forwarding URL, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-url` | none | Cable UDP bridge URL for DataChannel &lt;-&gt; UDP forwarding, e.g. `udp://0.0.0.0:9001?host=127.0.0.1&port=9000` |
+| `--cable-label` | `-` | DataChannel label; joins the matching cable on the server |
 | `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 | `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
 
@@ -70,60 +70,6 @@ ffmpeg -re \
 -f lavfi -i testsrc=size=1280x720:rate=30 \
 -acodec libopus -vn -f rtp rtp://127.0.0.1:11111 \
 -vcodec libvpx -an -f rtp rtp://127.0.0.1:11113 -sdp_file input.sdp
-```
-
-## RTSP Server
-
-It's default mode
-
-This example is `whipinto` as RTSP Server, use `ffmpeg` as client use RTSP push stream
-
-```bash
-whipinto -w http://localhost:7777/whip/777
-```
-
-### Only video
-
-```bash
-ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
--vcodec libvpx -f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-```bash
-ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
--vcodec -pix_fmt yuv420p \
--g 60 -keyint_min 60 -crf 23 \
--preset ultrafast -tune zerolatency \
--profile:v main -level 4.1 \
--f rtsp rtsp://127.0.0.1:8554
-```
-
-### Only audio
-
-```bash
-ffmpeg -re -f lavfi -i sine=frequency=1000 \
--acodec libopus -f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-### Audio and Video
-
-```bash
-ffmpeg -re \
--f lavfi -i sine=frequency=1000 \
--f lavfi -i testsrc=size=1280x720:rate=30 \
--acodec libopus -vcodec libvpx \
--f rtsp 'rtsp://127.0.0.1:8554'
-```
-
-### Use transport `tcp`
-
-```bash
-ffmpeg -re \
--f lavfi -i sine=frequency=1000 \
--f lavfi -i testsrc=size=1280x720:rate=30 \
--acodec libopus -vcodec libvpx \
--rtsp_transport tcp \
--f rtsp 'rtsp://127.0.0.1:8554'
 ```
 
 ## RTSP Client

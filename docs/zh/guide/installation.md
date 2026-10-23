@@ -18,6 +18,26 @@ live777 --config live777.toml
 
 ## Docker
 
+快速上手推荐 all-in-one 镜像——它打包了 `live777`、`liveman`、FFmpeg、
+WHIP/WHEP 工具和 `smoke-test` 自检命令：
+
+```sh
+docker run -d --name live777 --rm --network host ghcr.io/binbat/live777-all:latest
+docker exec live777 smoke-test
+```
+
+完整的验流流程见[快速开始](/zh/guide/getting-started)。
+
+生产部署可按角色选择更精简的镜像：
+
+| 镜像 | 内容 |
+|-------|------|
+| `ghcr.io/binbat/live777-server` | `live777` + `liveman` |
+| `ghcr.io/binbat/liveion` | 仅 `live777` |
+| `ghcr.io/binbat/liveman` | 仅 `liveman` |
+| `ghcr.io/binbat/live777-client` | FFmpeg + `whipinto` + `whepfrom` 客户端工具 |
+| `ghcr.io/binbat/whipinto` / `whepfrom` / `net4mqtt` | 单工具镜像 |
+
 ```sh
 docker run --name live777-server --rm --network host ghcr.io/binbat/live777-server:latest live777
 ```

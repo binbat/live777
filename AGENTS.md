@@ -25,7 +25,7 @@ provides the embedded WebUIs.
 - **Rust** — edition 2024, workspace version `0.9.0`.
 - **Async runtime** — Tokio.
 - **HTTP/API layer** — Axum, `tower-http` (CORS, tracing).
-- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.20.1` from
+- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.21.1` from
   crates.io.
 - **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
@@ -51,7 +51,10 @@ libs/playwright-whep # Rust-callable Playwright WHEP test harness
 libs/rtsp            # RTSP client/server helpers
 libs/signal          # OS signal handling
 libs/storage         # OpenDAL-backed storage abstraction
-libs/version         # build-time version info (shadow-rs)
+libs/version         # build-time version info (shadow-rs; compile-time
+                     # LIVE777_VERSION env overrides git-derived values, which
+                     # fall back to the Cargo.toml version when .git is absent,
+                     # e.g. in Docker build contexts)
 liveion              # core SFU library
 liveman              # cluster manager / controller
 livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library
@@ -69,6 +72,10 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
   feature it also accepts a `synth://<vcodec>?...` input that publishes
   in-process generated test frames (no external encoder needed).
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
+- `whipsynth`    — synthetic WHIP publisher: generates test frames in-process
+  (requires `rsmpeg`).
+- `whepprobe`    — WHEP probe: subscribes, decodes for a bounded time and
+  reports a human/JSON result (requires `rsmpeg`).
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
@@ -294,27 +301,49 @@ clients via Link headers).
   covers stats) — live rates push every tick while media flows, a silent
   stream's zero rate flushes exactly once, and an idle server sends
   nothing.
-  DataChannel lifecycle: every channel gets a read and a write task
+  DataChannel lifecycle: every stream owns a stream-level **cable hub**
+  (`stream/cable.rs`, held by `Manager::cable_hubs`) — an anonymous default
+  bus pair plus one bus pair per declared cable — so a provisioned-stream
+  reset (which recreates the forward) never churns the buses or the cable
+  UDP bridges' listen ports; bridges die with the hub (stream delete), via
+  `Drop` cancelling a hub token. A peer channel joins the cable matching its
+  label (`CableHub::route`), else the default pair. Every channel gets a
+  read and a write task
   (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
-  the per-stream publish/subscribe broadcast buses. The webrtc driver never
-  delivers `OnClose` for a server-side `PeerConnection::close` (it aborts
-  first), so each session carries a `CancellationToken` (`dc_cancel` on
-  `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
-  `Drop`) that both loops `select!` on — without it the read loop parks on
-  `poll()` forever, and its bus sender clone keeps the bus open, which used
-  to pin the `[stream.x.channel]` UDP bridge (and its listen port) of a
-  dead stream forever. `on_data_channel` only wires a channel whose peer
-  still owns a live session (a late announce from a replaced/torn-down
-  session is dropped), and both sides gate sends on `Connected`
-  (`wait_for_peer_connected`, 15 s). The UDP bridge itself
-  (`forward/channel.rs`) is owned by the forward: `PeerForwardInternal::close`
-  cancels it and awaits the socket release, so a provisioned-stream reset
-  rebinds the same port deterministically (`bind_with_retry` covers slow
-  external holders). The client side mirrors this: whepfrom's and whipinto's
-  channel bridges (the shared `livetwo::datachannel` module — UDP bridge,
-  channel poll loop, `CancelOnDrop`) run on a session-scoped token that
-  `whep::from` / `whip::into` cancels and awaits before returning. On the
-  WHIP leg the "control" DataChannel is opt-in (`whipinto --channel`) because
+  its cable's buses; a bus send failure (no active receivers) drops the
+  message with a warn log instead of killing the loop. The webrtc driver
+  never delivers `OnClose` for a server-side `PeerConnection::close` (it
+  aborts first), so each session carries a `CancellationToken` (`dc_cancel`
+  on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
+  `Drop`) that both loops `select!` on. `on_data_channel` only wires a
+  channel whose peer still owns a live session (a late announce from a
+  replaced/torn-down session is dropped), and both sides gate sends on
+  `Connected` (`wait_for_peer_connected`, 15 s). Cables with `create = true`
+  get a server-created channel per session —
+  created on the session's first inbound channel OPEN (an inbound OPEN
+  proves the SCTP association is Established and the DTLS role resolved;
+  creating at `Connected` drops the OPEN write as non-Established and can
+  collide stream-id parity with the client's channels) — and a client-created
+  channel matching such a cable's label is closed (the server-created
+  channel wins). DC UDP endpoints are declared as `udp://` URLs on the
+  stream's `sources` (broadcast seat: inbound packets go to all subscribers,
+  replies go to the endpoint's `?host`/`?port` target) and `targets`
+  (subscriber seat: publisher messages go to the target, inbound packets go
+  to the publisher), each a `cables` entry carrying the cable `label` it
+  joins plus a `udp://` URL, attached once via
+  `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
+  reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
+  for a future dynamic API). The `udp://` authority (listen) and the
+  `host`/`port` query pair (target) are independently optional (one-way
+  endpoints; an omitted target means reply-to-sender). The client side
+  mirrors this:
+  whepfrom's and whipinto's channel bridges (the shared
+  `livetwo::datachannel` module — UDP bridge, channel poll loop,
+  `CancelOnDrop`) run on a session-scoped token that `whep::from` /
+  `whip::into` cancels and awaits before returning; both accept
+  server-created cable channels (a `CableRouter` retargets the outbound
+  queue to the currently open channel). On the
+  WHIP leg the "control" DataChannel is opt-in (`whipinto --cable-url`) because
   it adds an `m=application` section to the offer; the WHEP leg creates it
   unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
   DataChannel Prometheus metrics directly (no stats tick — messages are
@@ -652,6 +681,11 @@ Integration test binaries live in `tests/`:
   --enable-decoder=h264 --enable-parser=h264` — into `target/ffmpeg8/install`
   and export `FFMPEG_PKG_CONFIG_PATH`/`PKG_CONFIG_PATH` to its
   `lib/pkgconfig` and `LD_LIBRARY_PATH` to its `lib`.
+||||||| ee53842
+- `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
+  synthetic publish and WHEP decode probes against in-process liveion,
+  including JSON/exit-code success and failure contracts (needs `rsmpeg`)
+
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -693,10 +727,27 @@ carries the check.
 
 - **Docker**: multi-stage Dockerfiles in `docker/` for `live777-server`
   (live777 + liveman), `live777-client` (self-contained FFmpeg + whipinto +
-  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `liveion`
+  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `live777-all`
+  (all-in-one quickstart/AI-deploy image, see below), `liveion`
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
   `ghcr.io/binbat/<app>`.
+- **`live777-all` vs the slim `live777-server`/`live777-client` split**:
+  `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
+  whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check
+  in one image (`CMD ["live777"]`), trading image size for a zero-setup
+  first-run experience — run the container, then `smoke-test --standalone`
+  (or `smoke-test` against an already-running server; `SMOKE_SERVER_URL` /
+  `SMOKE_TOKEN` env tune it) publishes a synthetic WHIP stream and decodes it
+  back over WHEP. Because whepprobe/whipsynth need rsmpeg 0.18 — which cannot
+  compile against Debian's field-privatized libav*-dev — the image builds
+  upstream FFmpeg 8.1 *shared* (codec set mirrors `Dockerfile.live777-client`,
+  installed to `/opt/ffmpeg`), points the rust builder at its
+  headers/pkg-config (`FFMPEG_PKG_CONFIG_PATH`) with trixie's libclang for
+  bindgen, and registers `/opt/ffmpeg/lib` with ldconfig so the same build
+  serves the ffmpeg/ffprobe CLIs and the rsmpeg tools at runtime. The slim
+  images stay the pick for size-sensitive or production deployments;
+  `live777-all` is the fast path for evaluation and agent-driven deploys.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
 - **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana

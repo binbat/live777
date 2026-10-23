@@ -44,6 +44,33 @@ pub struct Stream {
     /// same stream across nodes, including cascade hops.
     #[serde(default)]
     pub stats_scope: StatsScope,
+    /// Declared datachannel cables of this stream (`[[stream.<id>.cables]]`).
+    /// Empty when the stream declares none.
+    #[serde(default)]
+    pub cables: Vec<Cable>,
+}
+
+/// A declared datachannel cable of a stream; see live777's `[[stream.<name>.
+/// cables]]` config.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Cable {
+    /// Cable identity: peer channels created with this label join this cable.
+    pub label: String,
+    /// Unset means the WebRTC default (ordered and reliable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retransmits: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_packet_life_time: Option<u16>,
+    #[serde(default)]
+    pub protocol: String,
+    /// Whether the server creates this cable's channel on every session
+    /// (false: endpoints create their own, the server only routes by label).
+    pub create: bool,
+    /// Broadcast capacity of the cable's two direction buses, in messages.
+    pub capacity: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -192,6 +219,7 @@ mod tests {
             on_demand: false,
             stats: StreamStats::default(),
             stats_scope: StatsScope::Node,
+            cables: vec![],
         }
     }
 

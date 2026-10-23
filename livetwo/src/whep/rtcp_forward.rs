@@ -1,111 +1,91 @@
-//! RTCP forwarder interceptor for the WHEP client peer.
+//! RTCP marker interceptor for the WHEP client peer.
 //!
-//! The rtc crate's default interceptor chain (a bare `NoopInterceptor`
-//! terminal) consumes inbound RTCP and never forwards it to the application,
-//! so `TrackRemoteEvent::OnRtcpPacket` would never fire. This interceptor is
-//! registered as the outermost layer: it re-queues every inbound RTCP packet
-//! for `poll_read()`, letting the peer connection's endpoint demux route it
-//! to the owning track. whepfrom uses this to receive Sender Reports for
-//! one-way-delay measurement.
+//! The interceptor chain terminates inbound RTCP at its `NoopInterceptor`
+//! unless an interceptor attaches `Attribute::DeliverToApplication` to the
+//! packets the application can act on. This interceptor marks every inbound
+//! RTCP packet, so `TrackRemoteEvent::OnRtcpPacket` fires and Sender Reports
+//! reach whepfrom's track readers for one-way-delay measurement.
 //!
-//! Implemented manually (no derive macros) for the same reason as liveion's
-//! `RtcpEgressProbe`: the proc-macro output references crate-internal paths
-//! that need extra direct dependencies; the manual impl is minimal.
+//! Implemented manually (no derive macros): the proc-macro output references
+//! crate-internal paths that need extra direct dependencies.
 
 use std::collections::VecDeque;
 
-use rtc::interceptor::{Interceptor, Packet, StreamInfo, TaggedPacket};
+use rtc::interceptor::{Attribute, Interceptor, Packet, StreamInfo, TaggedPacket};
 use rtc::sansio::Protocol;
 use rtc::shared::error::Error;
 
-pub struct RtcpForwarder<P> {
-    inner: P,
+pub struct RtcpForwarder {
     read_queue: VecDeque<TaggedPacket>,
+    write_queue: VecDeque<TaggedPacket>,
 }
 
-impl<P> RtcpForwarder<P> {
-    pub fn new(inner: P) -> Self {
+impl RtcpForwarder {
+    pub fn new() -> Self {
         Self {
-            inner,
             read_queue: VecDeque::new(),
+            write_queue: VecDeque::new(),
         }
     }
 }
 
-impl<P> Protocol<TaggedPacket, TaggedPacket, ()> for RtcpForwarder<P>
-where
-    P: Protocol<
-            TaggedPacket,
-            TaggedPacket,
-            (),
-            Rout = TaggedPacket,
-            Wout = TaggedPacket,
-            Eout = (),
-            Time = std::time::Instant,
-            Error = Error,
-        >,
-{
+impl Default for RtcpForwarder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpForwarder {
     type Rout = TaggedPacket;
     type Wout = TaggedPacket;
     type Eout = ();
     type Time = std::time::Instant;
     type Error = Error;
 
-    fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-        // Queue a copy of every inbound RTCP packet for the application;
-        // the original still goes down the chain for normal processing.
-        if let Packet::Rtcp(packets) = &msg.message {
-            self.read_queue.push_back(TaggedPacket {
-                now: msg.now,
-                transport: msg.transport,
-                message: Packet::Rtcp(packets.clone()),
-            });
+    fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Error> {
+        // Mark inbound RTCP for the application; the packet itself travels on
+        // down the chain in place — the belt model has no side channel for
+        // copies.
+        if matches!(msg.message.packet, Packet::Rtcp(_)) {
+            msg.message.add(Attribute::DeliverToApplication);
         }
-        self.inner.handle_read(msg)
+        self.read_queue.push_back(msg);
+        Ok(())
     }
 
     fn poll_read(&mut self) -> Option<TaggedPacket> {
-        if let Some(pkt) = self.read_queue.pop_front() {
-            return Some(pkt);
-        }
-        self.inner.poll_read()
+        self.read_queue.pop_front()
     }
 
     fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Error> {
-        self.inner.handle_write(msg)
+        self.write_queue.push_back(msg);
+        Ok(())
     }
     fn poll_write(&mut self) -> Option<TaggedPacket> {
-        self.inner.poll_write()
+        self.write_queue.pop_front()
     }
-    fn handle_event(&mut self, evt: ()) -> Result<(), Error> {
-        self.inner.handle_event(evt)
+    fn handle_event(&mut self, _evt: ()) -> Result<(), Error> {
+        Ok(())
     }
     fn poll_event(&mut self) -> Option<()> {
-        self.inner.poll_event()
+        None
     }
-    fn handle_timeout(&mut self, now: std::time::Instant) -> Result<(), Error> {
-        self.inner.handle_timeout(now)
+    fn handle_timeout(&mut self, _now: std::time::Instant) -> Result<(), Error> {
+        Ok(())
     }
     fn poll_timeout(&mut self) -> Option<std::time::Instant> {
-        self.inner.poll_timeout()
+        None
     }
     fn close(&mut self) -> Result<(), Error> {
         self.read_queue.clear();
-        self.inner.close()
+        self.write_queue.clear();
+        Ok(())
     }
 }
 
-impl<P: Interceptor> Interceptor for RtcpForwarder<P> {
-    fn bind_local_stream(&mut self, info: &StreamInfo) {
-        self.inner.bind_local_stream(info);
-    }
-    fn unbind_local_stream(&mut self, info: &StreamInfo) {
-        self.inner.unbind_local_stream(info);
-    }
-    fn bind_remote_stream(&mut self, info: &StreamInfo) {
-        self.inner.bind_remote_stream(info);
-    }
-    fn unbind_remote_stream(&mut self, info: &StreamInfo) {
-        self.inner.unbind_remote_stream(info);
-    }
+impl Interceptor for RtcpForwarder {
+    fn bind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn bind_remote_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_remote_stream(&mut self, _info: &StreamInfo) {}
 }

@@ -368,6 +368,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
     wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-b", Some(&mut handle_whip)).await;
@@ -383,6 +384,7 @@ pub async fn run_rtsp_cycle<S: Source>(source: S, transport: RtspTransport, bind
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
     wait_stream_publish_ready(&rtsp_addr, &api_addr, "cycle-c", Some(&mut handle_whep)).await;
@@ -447,6 +449,7 @@ pub async fn run_rtsp_push_mediamtx(
         None,
         None,
         None,
+        "control".to_string(),
         Vec::new(),
     ));
 
@@ -972,6 +975,7 @@ where
         liveion::config::StreamEntry {
             sources: vec![liveion::config::SourceConfig {
                 url: Some(format!("whep://{api_addr_a}{}", api::path::whep("-"))),
+                cables: vec![],
                 multicast_interface: None,
                 #[cfg(feature = "native-source")]
                 capture: None,
@@ -1474,7 +1478,17 @@ where
         // Keep the temp SDP file alive for the lifetime of the WHIP task so the
         // runner cannot read a deleted path.
         let _whip_sdp = _whip_sdp;
-        livetwo::whip::into(whip_ct, sdp_path, whip_url, None, None, None, Vec::new()).await
+        livetwo::whip::into(
+            whip_ct,
+            sdp_path,
+            whip_url,
+            None,
+            None,
+            None,
+            "control".to_string(),
+            Vec::new(),
+        )
+        .await
     });
 
     wait_for_publish_connected(&api_addr, stream, Some(&mut handle_whip)).await;

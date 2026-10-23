@@ -151,6 +151,7 @@ impl AudioState {
                 self.logged_frame = true;
             }
             match self.packetizer.packetize(
+                std::time::Instant::now(),
                 &bytes::Bytes::copy_from_slice(&out[..len]),
                 FRAME_SAMPLES as u32,
             ) {
@@ -339,6 +340,7 @@ fn run(
         stream_id: stream_id.clone(),
         rtp_tx,
         packetizer: Box::new(new_packetizer(
+            std::time::Instant::now(),
             1400,
             AUDIO_PAYLOAD_TYPE,
             ssrc,

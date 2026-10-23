@@ -44,6 +44,21 @@ impl From<crate::forward::message::ForwardInfo> for api::response::Stream {
             on_demand: false,
             stats: value.stats,
             stats_scope: api::response::StatsScope::Node,
+            cables: vec![],
+        }
+    }
+}
+
+impl From<&crate::config::CableConfig> for api::response::Cable {
+    fn from(value: &crate::config::CableConfig) -> Self {
+        api::response::Cable {
+            label: value.label.clone(),
+            ordered: value.ordered,
+            max_retransmits: value.max_retransmits,
+            max_packet_life_time: value.max_packet_life_time,
+            protocol: value.protocol.clone(),
+            create: value.create,
+            capacity: value.capacity,
         }
     }
 }
@@ -97,5 +112,8 @@ fn convert_connect_state(state: RTCPeerConnectionState) -> api::response::RTCPee
         RTCPeerConnectionState::Disconnected => api::response::RTCPeerConnectionState::Disconnected,
         RTCPeerConnectionState::Failed => api::response::RTCPeerConnectionState::Failed,
         RTCPeerConnectionState::Closed => api::response::RTCPeerConnectionState::Closed,
+        // States added upstream after this mapping (the enum is
+        // non-exhaustive) report as not-yet-connected.
+        _ => api::response::RTCPeerConnectionState::New,
     }
 }

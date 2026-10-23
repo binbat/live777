@@ -129,6 +129,13 @@ async fn merged_streams(state: &mut AppState, nodes: &[String]) -> Vec<Stream> {
                                     subscribe: merge_stats(&s.stats.subscribe, &v.stats.subscribe),
                                 },
                                 stats_scope: api::response::StatsScope::ClusterNodeWork,
+                                // Cable declarations are config-level and
+                                // identical on every node; keep either side's.
+                                cables: if s.cables.is_empty() {
+                                    v.cables.clone()
+                                } else {
+                                    s.cables.clone()
+                                },
                             }
                         }
                         None => {

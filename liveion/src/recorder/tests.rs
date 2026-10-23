@@ -196,6 +196,7 @@ mod on_demand {
             StreamEntry {
                 sources: vec![crate::config::SourceConfig {
                     url: Some(format!("file://{}", sdp_path.to_string_lossy())),
+                    cables: vec![],
                     multicast_interface: None,
                     #[cfg(feature = "native-source")]
                     capture: None,

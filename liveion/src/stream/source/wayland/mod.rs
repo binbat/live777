@@ -335,6 +335,7 @@ async fn pipeline_loop(
     let sequencer = Box::new(new_random_sequencer());
     let ssrc: u32 = rand::random();
     let mut packetizer = new_packetizer(
+        std::time::Instant::now(),
         1400,
         VIDEO_PAYLOAD_TYPE,
         ssrc,
@@ -433,7 +434,7 @@ async fn pipeline_loop(
             tracing::debug!("[{}] encoded IDR ({} bytes)", stream_id, au.data.len());
         }
 
-        match packetizer.packetize(&au.data.into(), delta) {
+        match packetizer.packetize(std::time::Instant::now(), &au.data.into(), delta) {
             Ok(packets) => {
                 for packet in packets {
                     let _ = rtp_tx.send(MediaPacket::RtpPacket(Arc::new(packet)));
