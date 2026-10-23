@@ -59,7 +59,7 @@ jobs:
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           sudo chown -R "$USER" "$XDG_RUNTIME_DIR"
           # pipewire wants a session bus for some modules; wireplumber needs one too.
-          dbus-run-session -- sh -c 'pipewire & sleep 1; wireplumber & sleep 2; pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=live777-ci-sink media.class=Audio/Sink }"; sleep infinity' &
+          dbus-run-session -- sh -c 'pipewire & sleep 1; wireplumber & sleep 2; pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=live777-ci-sink media.class=Audio/Sink object.linger=true }"; sleep infinity' &
           sleep 8
           pw-dump >/dev/null && echo "pipewire daemon is up"
       - name: Generate code coverage
