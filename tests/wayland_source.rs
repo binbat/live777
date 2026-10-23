@@ -818,7 +818,9 @@ mod client_content_e2e {
         // window and a key). The media path must be undisturbed.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if input_dc.ready_state().await.unwrap() == webrtc::data_channel::RTCDataChannelState::Open {
+            if input_dc.ready_state().await.unwrap()
+                == webrtc::data_channel::RTCDataChannelState::Open
+            {
                 break;
             }
             assert!(Instant::now() < deadline, "input channel never opened");
