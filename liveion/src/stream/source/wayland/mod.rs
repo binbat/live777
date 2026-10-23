@@ -60,6 +60,13 @@ pub struct WaylandUrlConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate: u32,
+    /// Spawn an XWayland server attached to the compositor so X11 clients can
+    /// connect (needs an `Xwayland` binary on PATH; gracefully off without
+    /// one). `xwayland=0` disables.
+    pub xwayland: bool,
+    /// Pinned X11 display number for XWayland (`xdisplay=3` → `DISPLAY=:3`).
+    /// Unset picks the lowest free display.
+    pub xdisplay: Option<u32>,
 }
 
 impl WaylandUrlConfig {
@@ -93,6 +100,8 @@ impl WaylandUrlConfig {
             height: Self::DEFAULT_HEIGHT,
             fps: Self::DEFAULT_FPS,
             bitrate: Self::DEFAULT_BITRATE,
+            xwayland: true,
+            xdisplay: None,
         };
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             let parsed = || {
@@ -105,6 +114,16 @@ impl WaylandUrlConfig {
                 "height" => config.height = parsed()?,
                 "fps" => config.fps = parsed()?,
                 "bitrate" => config.bitrate = parsed()?,
+                "xwayland" => {
+                    config.xwayland = match value.as_ref() {
+                        "1" | "true" | "on" => true,
+                        "0" | "false" | "off" => false,
+                        _ => anyhow::bail!(
+                            "wayland URL: invalid xwayland '{value}' (expected 0/1/true/false)"
+                        ),
+                    };
+                }
+                "xdisplay" => config.xdisplay = Some(parsed()?),
                 _ => {}
             }
         }
@@ -646,13 +665,15 @@ mod tests {
         assert_eq!(cfg.height, 720);
         assert_eq!(cfg.fps, 30);
         assert_eq!(cfg.bitrate, 2_000_000);
+        assert!(cfg.xwayland);
+        assert_eq!(cfg.xdisplay, None);
     }
 
     #[test]
     fn url_full_params() {
         let cfg = WaylandUrlConfig::parse(
             "cam",
-            "wayland://my-display?width=1920&height=1080&fps=60&bitrate=4000000",
+            "wayland://my-display?width=1920&height=1080&fps=60&bitrate=4000000&xwayland=0&xdisplay=3",
         )
         .unwrap();
         assert_eq!(cfg.socket_name, "my-display");
@@ -660,6 +681,8 @@ mod tests {
             (cfg.width, cfg.height, cfg.fps, cfg.bitrate),
             (1920, 1080, 60, 4_000_000)
         );
+        assert!(!cfg.xwayland);
+        assert_eq!(cfg.xdisplay, Some(3));
     }
 
     #[test]
@@ -675,6 +698,8 @@ mod tests {
             "wayland://x?bitrate=3000000000", // exceeds the encoder's i32 control
             "wayland://x?width=4000&height=3000",
             "wayland://x?width=abc",
+            "wayland://x?xwayland=maybe",
+            "wayland://x?xdisplay=abc",
         ] {
             assert!(WaylandUrlConfig::parse("cam", url).is_err(), "{url}");
         }
