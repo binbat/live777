@@ -21,6 +21,7 @@ use std::{
 use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
+use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -142,6 +143,7 @@ async fn start_whep_subscriber(
     Arc<dyn PeerConnection>,
     watch::Receiver<RTCPeerConnectionState>,
     mpsc::UnboundedReceiver<InboundRtp>,
+    Arc<dyn DataChannel>,
 ) {
     let (sub_state_tx, sub_state_rx) = watch::channel(RTCPeerConnectionState::New);
     let (payload_tx, payload_rx) = mpsc::unbounded_channel::<InboundRtp>();
@@ -161,6 +163,9 @@ async fn start_whep_subscriber(
             .await
             .unwrap(),
     );
+    // The "input" datachannel must exist before the offer to be
+    // negotiated; sources without input=1 ignore it.
+    let input_dc = sub_peer.create_data_channel("input", None).await.unwrap();
     sub_peer
         .add_transceiver_from_kind(
             RtpCodecKind::Video,
@@ -197,7 +202,7 @@ async fn start_whep_subscriber(
         .await
         .unwrap();
 
-    (sub_peer, sub_state_rx, payload_rx)
+    (sub_peer, sub_state_rx, payload_rx, input_dc)
 }
 
 /// H.264 NAL bookkeeping over RTP payloads: single NAL units, FU-A
@@ -262,7 +267,7 @@ async fn wayland_source_streams_h264_over_whep() {
         "wayland://test-display?width=320&height=240&fps=15&bitrate=500000",
     )
     .await;
-    let (sub_peer, sub_state_rx, mut payload_rx) =
+    let (sub_peer, sub_state_rx, mut payload_rx, _input_dc) =
         start_whep_subscriber(addr, "wayland-test").await;
 
     assert!(
@@ -793,15 +798,41 @@ mod client_content_e2e {
         let (width, height) = (320u32, 240u32);
         let addr = boot_liveion_with_wayland_stream(
             stream,
-            &format!("wayland://{socket_name}?width={width}&height={height}&fps=15&bitrate=500000"),
+            &format!(
+                "wayland://{socket_name}?width={width}&height={height}&fps=15&bitrate=500000&input=1"
+            ),
         )
         .await;
-        let (sub_peer, sub_state_rx, mut payload_rx) = start_whep_subscriber(addr, stream).await;
+        let (sub_peer, sub_state_rx, mut payload_rx, input_dc) =
+            start_whep_subscriber(addr, stream).await;
         assert!(
             wait_connected(sub_state_rx.clone()).await,
             "WHEP subscriber did not reach Connected; last state: {:?}",
             sub_state_rx.borrow()
         );
+
+        // Remote input (input=1): drive the input cable end to end — the
+        // subscriber's "input" datachannel lands on the stream's cable bus,
+        // the bridge pumps it into the source's input sink, and the
+        // compositor injects it into the seat (a move+click over the client
+        // window and a key). The media path must be undisturbed.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if input_dc.ready_state().await.unwrap() == webrtc::data_channel::RTCDataChannelState::Open {
+                break;
+            }
+            assert!(Instant::now() < deadline, "input channel never opened");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        for msg in [
+            r#"{"t":"move","x":160,"y":120}"#,
+            r#"{"t":"button","b":0,"down":1}"#,
+            r#"{"t":"button","b":0,"down":0}"#,
+            r#"{"t":"key","code":"KeyA","down":1}"#,
+            r#"{"t":"key","code":"KeyA","down":0}"#,
+        ] {
+            input_dc.send_text(msg).await.unwrap();
+        }
 
         let mut depacker = H264Depacketizer::default();
         let mut decoder = H264Decoder::new().expect("an FFmpeg H.264 decoder");
