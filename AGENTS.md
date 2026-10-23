@@ -107,7 +107,9 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
   `libxkbcommon` shared library to link against (`libxkbcommon.so`, e.g. the
   `libxkbcommon-dev` package on Debian/Ubuntu; pulled in by smithay's seat
   keyboard handling — no headers needed, the crate carries its own FFI
-  bindings).
+  bindings), plus `libpipewire-0.3-dev` and `libopus-dev` for the desktop
+  audio capture. Runtime: an `Xwayland` binary for X11 clients, and a
+  PipeWire daemon (+ session manager) for audio.
 - For GStreamer-based tests: `gstreamer`, `gstreamer-rtsp-server`.
 - For cross-compilation: `cross` from <https://github.com/cross-rs/cross>.
 
@@ -153,7 +155,8 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-wayland` — Wayland compositor source: live777 acts as a headless
   Wayland display server and streams the composited desktop as H.264
   (smithay + openh264), with X11 applications supported through a built-in
-  XWayland server. Linux-only; deliberately not part of `source-all`.
+  XWayland server and desktop audio captured from PipeWire as Opus.
+  Linux-only; deliberately not part of `source-all`.
 - `target`         — base feature shared by all `target-*` kinds (the
   `targets` stream config, supervisor dispatch, virtual-subscriber ids);
   enables no target kind on its own, mirroring how `source` relates to the
@@ -450,6 +453,17 @@ clients via Link headers).
   they must repaint on Expose (well-behaved toolkits do).
   `LIVE777_WAYLAND_XWAYLAND_LOG=1` inherits the Xwayland stderr for
   debugging.
+  Desktop audio (`audio=1` default, `audio_bitrate=`, `audio_sink=` name
+  filter) is PipeWire capture (`wayland/audio.rs`): one thread runs a
+  PipeWire main loop, handshakes synchronously at `start()` (daemon
+  unreachable → video-only with a warning), taps the monitor of an
+  `Audio/Sink` node (session manager such as wireplumber must be running to
+  link it), encodes 20 ms Opus frames and broadcasts
+  `MediaPacket::RtpAudioPacket` — a pre-packetized variant the bridge
+  injects into the audio track via `PeerForward::inject_audio_rtp_packet`
+  (`RtpPacket` stays video). `get_audio_codec` is gated on the video codec
+  being known because the bridge adds tracks in a single pass once any
+  codec is ready.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

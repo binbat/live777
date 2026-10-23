@@ -67,6 +67,10 @@ fs2 = "0.4"
 openh264 = { version = "0.9", optional = true }
 yuvutils-rs = { version = "0.8", optional = true }
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_egl", "backend_gbm", "renderer_gl", "xwayland"], optional = true }
+# Desktop-audio capture for the wayland source: PipeWire monitor of an audio
+# sink (system libpipewire) encoded to Opus (system libopus).
+pipewire = { version = "0.10", optional = true }
+opus = { version = "0.4", optional = true }
 
 # Wayland client bindings for the compositor integration tests (source-wayland).
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -98,7 +102,14 @@ source-whep = ["source", "dep:libwish"]
 source-all = ["source-sdp", "source-rtsp", "source-whep"]
 # Wayland compositor source (headless display server + synthetic frames,
 # H.264 via openh264). Linux-only; intentionally not part of source-all.
-source-wayland = ["source", "dep:openh264", "dep:yuvutils-rs", "dep:smithay"]
+source-wayland = [
+    "source",
+    "dep:openh264",
+    "dep:yuvutils-rs",
+    "dep:smithay",
+    "dep:pipewire",
+    "dep:opus",
+]
 
 # Static output targets: base feature shared by all target-* kinds (the
 # `targets` stream config, supervisor dispatch, virtual-subscriber ids).

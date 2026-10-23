@@ -158,13 +158,15 @@ impl SourceBridge {
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "source-whep"
+                feature = "source-whep",
+                feature = "source-wayland"
             ))]
             let mut audio_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "source-whep"
+                feature = "source-whep",
+                feature = "source-wayland"
             )))]
             let audio_count = 0u64;
             #[cfg(any(
@@ -209,6 +211,14 @@ impl SourceBridge {
                                         }
                                         forward_clone
                                             .inject_video_rtp_packet(packet)
+                                            .await
+                                            .map_err(|e| anyhow::anyhow!("{:?}", e))
+                                    }
+                                    #[cfg(feature = "source-wayland")]
+                                    MediaPacket::RtpAudioPacket(packet) => {
+                                        audio_count += 1;
+                                        forward_clone
+                                            .inject_audio_rtp_packet(packet)
                                             .await
                                             .map_err(|e| anyhow::anyhow!("{:?}", e))
                                     }

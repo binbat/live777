@@ -80,6 +80,29 @@ docker run -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0 ...
 Set `LIVE777_WAYLAND_XWAYLAND_LOG=1` to inherit XWayland's stderr instead of
 discarding it (useful when an X11 client stays black).
 
+## Desktop audio
+
+With `audio=1` (the default) the stream also carries the desktop's sound:
+live777 connects to **PipeWire** (the daemon socket at
+`$XDG_RUNTIME_DIR/pipewire-0`), taps the monitor of an `Audio/Sink` node and
+publishes it as an Opus track (48 kHz stereo, `audio_bitrate=` in bps,
+default 64000). If no PipeWire daemon is reachable the stream stays
+video-only with a warning.
+
+In a headless container there is no audio server by default; run PipeWire
+plus a session manager and a virtual sink:
+
+```bash
+pipewire & wireplumber & pipewire-pulse &
+pw-cli create-node adapter '{ factory.name=support.null-audio-sink
+  node.name="live777-out" media.class=Audio/Sink }'
+# applications now play sound as usual (default sink) and it lands in the stream
+```
+
+With several sinks, pick the one to capture by name substring:
+`audio_sink=live777-out`. A session manager (wireplumber) is required — it is
+what links the capture stream to the sink's monitor ports.
+
 ## Running as a systemd service
 
 System services have no `XDG_RUNTIME_DIR` by default. Give the service a
@@ -107,7 +130,8 @@ WAYLAND_DISPLAY=desktop-0`.
 - **No input injection** — a seat with keyboard/pointer exists so clients can
   bind it, but no input events are generated. X11 windows are therefore not
   focusable/movable; keyboard focus stays with the last mapped X11 window.
-- **No audio** — the stream is video-only.
+- **Audio needs PipeWire** — desktop sound is captured from a PipeWire
+  sink monitor; without a daemon the stream is video-only.
 - **Subsurfaces and xdg popups are not composited** — only xdg toplevels are
   drawn (popups are configured but skipped). X11 override-redirect windows
   *are* composited, so X11 menus/tooltips show up.
