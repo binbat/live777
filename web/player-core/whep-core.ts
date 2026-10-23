@@ -17,6 +17,7 @@ export type WhepPlaybackCoreState = {
     stream: MediaStream | null;
     peerConnection: RTCPeerConnection | null;
     datachannel: RTCDataChannel | null;
+    inputChannel: RTCDataChannel | null;
     status: WhepPlaybackStatus;
     error: Error | null;
     audioTrackCount: number;
@@ -31,6 +32,9 @@ export type WhepPlaybackCoreOptions = {
     // > 0 schedules a reconnect after that many milliseconds.
     reconnectMs?: () => number | undefined;
     createDataChannel?: boolean;
+    // Create an "input" datachannel for remote input (keyboard/pointer)
+    // passthrough; pair with attachInputCapture from input-capture.ts.
+    input?: boolean;
     log?: (message: string) => void;
 };
 
@@ -70,6 +74,7 @@ export class WhepPlaybackCore {
         stream: null,
         peerConnection: null,
         datachannel: null,
+        inputChannel: null,
         status: "idle",
         error: null,
         audioTrackCount: 0,
@@ -122,6 +127,9 @@ export class WhepPlaybackCore {
 
         if (this.options.createDataChannel) {
             this.setState({ datachannel: pc.createDataChannel("") });
+        }
+        if (this.options.input) {
+            this.setState({ inputChannel: pc.createDataChannel("input") });
         }
 
         pc.addTransceiver("video", { direction: "recvonly" });
@@ -316,6 +324,7 @@ export class WhepPlaybackCore {
             stream: null,
             peerConnection: null,
             datachannel: null,
+            inputChannel: null,
             audioTrackCount: 0,
             videoTrackCount: 0,
         });

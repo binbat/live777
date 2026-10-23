@@ -403,6 +403,17 @@ impl SourceManager {
             );
         }
 
+        // Remote input: a source exposing an input sink (wayland source with
+        // `input=1`) gets the stream's `input` cable bus pumped into it.
+        #[cfg(feature = "source")]
+        {
+            let sink = source.lock().await.input_sink();
+            if let Some(sink) = sink {
+                info!("Input sink connected for {}", stream_id);
+                bridge.set_input_sink(sink);
+            }
+        }
+
         bridge.start_bridging(rtp_rx, state_rx).await?;
 
         let mut bridges = self.bridges.write().await;

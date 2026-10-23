@@ -493,6 +493,17 @@ clients via Link headers).
   (`RtpPacket` stays video). `get_audio_codec` is gated on the video codec
   being known because the bridge adds tracks in a single pass once any
   codec is ready.
+  Remote input (`input=1`, off by default — every subscriber can then drive
+  the desktop): browser-side JSON events (`web/player-core/input-capture.ts`,
+  `WhepPlayer`'s `input` prop, standalone player `&input`) ride the stream's
+  `input` datachannel cable; the bridge pumps `cables.route("input").to_publisher`
+  into the source's `StreamSource::input_sink()` (a raw-bytes closure so the
+  trait stays format-agnostic), `wayland/input.rs` parses them, and a calloop
+  channel crosses into the compositor thread where `handle_input` injects
+  into the seat: hit-tested pointer focus over the unified window stack,
+  focus-follows-click keyboard focus, X11 windows raise+activate on click.
+  DomCode→evdev translation is a static table in `input.rs` (xkb keycodes are
+  evdev+8 at the smithay boundary).
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the

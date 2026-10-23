@@ -17,6 +17,7 @@ mod compositor;
 mod convert;
 mod encoder;
 mod gl;
+pub mod input;
 mod pattern;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -80,6 +81,11 @@ pub struct WaylandUrlConfig {
     /// Only capture from the sink whose PipeWire `node.name` contains this
     /// substring (`audio_sink=`); unset captures the first `Audio/Sink`.
     pub audio_sink: Option<String>,
+    /// Accept remote keyboard/pointer input from subscribers (`input=1`):
+    /// datachannel messages on the stream's `input` cable (or the anonymous
+    /// default bus) are injected into the compositor's seat. Off by default:
+    /// any subscriber can then drive the desktop.
+    pub input: bool,
 }
 
 impl WaylandUrlConfig {
@@ -119,6 +125,7 @@ impl WaylandUrlConfig {
             audio: true,
             audio_bitrate: Self::DEFAULT_AUDIO_BITRATE,
             audio_sink: None,
+            input: false,
         };
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             let parsed = || {
@@ -140,6 +147,9 @@ impl WaylandUrlConfig {
                 }
                 "audio_bitrate" => config.audio_bitrate = parsed()?,
                 "audio_sink" => config.audio_sink = Some(value.into_owned()),
+                "input" => {
+                    config.input = parse_bool(&key, &value)?;
+                }
                 _ => {}
             }
         }
@@ -652,6 +662,18 @@ impl StreamSource for WaylandSource {
 
     fn subscribe_state(&self) -> broadcast::Receiver<StateChangeEvent> {
         self.state_tx.subscribe()
+    }
+
+    fn input_sink(&self) -> Option<Box<dyn Fn(Vec<u8>) + Send + Sync>> {
+        if !self.config.input {
+            return None;
+        }
+        let tx = self.compositor.as_ref()?.input_sender()?;
+        Some(Box::new(move |msg: Vec<u8>| {
+            if let Some(event) = input::parse(&msg) {
+                let _ = tx.send(event);
+            }
+        }))
     }
 
     async fn get_video_codec(

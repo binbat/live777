@@ -271,6 +271,14 @@ pub trait StreamSource: Send + Sync {
         None
     }
 
+    /// Sink for remote-input messages from subscribers' datachannels on the
+    /// stream's `input` cable (only the wayland source with `input=1`
+    /// returns a sink). The bridge pumps cable messages into it raw.
+    #[cfg(feature = "source")]
+    fn input_sink(&self) -> Option<Box<dyn Fn(Vec<u8>) + Send + Sync>> {
+        None
+    }
+
     #[cfg(feature = "source")]
     async fn get_rtcp_sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>> {
         None

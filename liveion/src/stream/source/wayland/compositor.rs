@@ -22,18 +22,21 @@ use anyhow::Result;
 use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::format::FormatSet;
+use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
+use smithay::input::keyboard::{FilterResult, Keycode};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay::reexports::calloop::{EventLoop, Interest, Mode as LoopMode, PostAction};
+use smithay::reexports::calloop::{EventLoop, Interest, Mode as LoopMode, PostAction, channel};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_output, wl_shm};
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle};
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, Damage,
@@ -66,6 +69,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::gl::{DrawItem, GlPipeline};
+use super::input::InputEvent;
 use super::{ArgbFrame, WaylandUrlConfig};
 
 /// How long the compositor may stay silent once it has taken over from the
@@ -91,6 +95,9 @@ pub struct CompositorHandle {
     /// Read by the compositor integration tests.
     #[allow(dead_code)]
     x11_display: Arc<Mutex<Option<u32>>>,
+    /// Remote-input sink (`input=1`): parsed events from subscriber
+    /// datachannels are injected into the seat by the event loop.
+    input_tx: Option<channel::Sender<InputEvent>>,
 }
 
 impl CompositorHandle {
@@ -112,6 +119,11 @@ impl CompositorHandle {
     #[allow(dead_code)]
     pub fn x11_display(&self) -> Option<u32> {
         *self.x11_display.lock().unwrap()
+    }
+
+    /// Remote-input event sink; `Some` only when the source has `input=1`.
+    pub fn input_sender(&self) -> Option<channel::Sender<InputEvent>> {
+        self.input_tx.clone()
     }
 
     /// Await the compositor thread's exit.
@@ -170,6 +182,13 @@ pub fn spawn(
     let thread_cancel = cancel.clone();
     let gl_active = Arc::new(AtomicBool::new(false));
     let thread_gl_active = gl_active.clone();
+    let (input_tx, input_rx) = match config.input {
+        true => {
+            let (tx, rx) = channel::channel();
+            (Some(tx), Some(rx))
+        }
+        false => (None, None),
+    };
     let thread = std::thread::Builder::new()
         .name(format!("wayland-comp-{}", config.socket_name))
         .spawn(move || {
@@ -180,6 +199,7 @@ pub fn spawn(
                 period,
                 thread_cancel,
                 thread_gl_active,
+                input_rx,
             )
         })
         .map_err(|e| anyhow::anyhow!("failed to spawn compositor thread: {e}"))?;
@@ -195,6 +215,7 @@ pub fn spawn(
         cancel,
         gl_active,
         x11_display,
+        input_tx,
     })
 }
 
@@ -208,6 +229,7 @@ fn run(
     period: Duration,
     cancel: CancellationToken,
     gl_active: Arc<AtomicBool>,
+    input_rx: Option<channel::Channel<InputEvent>>,
 ) {
     let socket_name = state.socket_name.clone();
     let mut event_loop: EventLoop<WaylandState> = match EventLoop::try_new() {
@@ -374,6 +396,25 @@ fn run(
         }
     }
 
+    // Remote input (input=1): parsed datachannel events injected into the
+    // seat, dispatched immediately (not on the frame tick — 33 ms of input
+    // latency would be noticeable).
+    let input_token = input_rx.and_then(|rx| {
+        match loop_handle.insert_source(rx, |event, _, state| {
+            if let channel::Event::Msg(event) = event {
+                state.handle_input(event);
+            }
+        }) {
+            Ok(token) => Some(token),
+            Err(e) => {
+                tracing::error!(
+                    "wayland compositor '{socket_name}': failed to add input source: {e}"
+                );
+                None
+            }
+        }
+    });
+
     let timer_token = match loop_handle.insert_source(Timer::immediate(), move |_, _, state| {
         if cancel.is_cancelled() {
             loop_signal.stop();
@@ -419,6 +460,9 @@ fn run(
     // process as a whole as long as sources are not restarted at a high rate.
     state.xwm = None;
     if let Some(token) = xwayland_token {
+        loop_handle.remove(token);
+    }
+    if let Some(token) = input_token {
         loop_handle.remove(token);
     }
     loop_handle.remove(timer_token);
@@ -495,8 +539,12 @@ struct WaylandState {
     dmabuf_formats: Option<FormatSet>,
     // Kept alive for their globals/objects; not otherwise read.
     _output_manager_state: OutputManagerState,
-    _seat: Seat<Self>,
+    /// The seat is read for remote input injection (`handle_input`).
+    seat: Seat<Self>,
     _output: Output,
+    /// Last known pointer position in canvas coordinates (button events
+    /// reference it; browsers send moves and clicks as separate messages).
+    pointer_pos: Point<f64, Logical>,
 }
 
 impl WaylandState {
@@ -576,8 +624,9 @@ impl WaylandState {
             dmabuf_global: None,
             dmabuf_formats: None,
             _output_manager_state: output_manager_state,
-            _seat: seat,
+            seat,
             _output: output,
+            pointer_pos: Point::from((0.0, 0.0)),
         }
     }
 
@@ -882,6 +931,179 @@ impl WaylandState {
         };
 
         blit_buffer(canvas, (canvas_w, canvas_h), pool, &data, dst, alpha)
+    }
+
+    // ------------------------------------------------------------------
+    // Remote input (input=1)
+    // ------------------------------------------------------------------
+
+    /// Buffer size of a surface's current buffer (None when unmapped).
+    fn surface_buffer_size(&self, surface: &WlSurface) -> Option<(i32, i32)> {
+        with_states(surface, |states| {
+            let mut guard = states.cached_state.get::<SurfaceAttributes>();
+            let buffer = match guard.current().buffer.as_ref() {
+                Some(BufferAssignment::NewBuffer(b)) => b.clone(),
+                _ => return None,
+            };
+            if let Ok(dmabuf) = get_dmabuf(&buffer) {
+                let size = dmabuf.size();
+                Some((size.w, size.h))
+            } else {
+                with_buffer_contents(&buffer, |_, _, data| (data.width, data.height)).ok()
+            }
+        })
+    }
+
+    /// A window's clickable canvas rect: xdg uses the *window* geometry
+    /// (CSD shadow margins are not clickable), X11 the root-relative window
+    /// rect (the buffer is the window there).
+    fn canvas_window_rect(&self, window: &CanvasWindow) -> Option<Rectangle<f64, Logical>> {
+        if window.x11 {
+            return window.geometry.map(|g| {
+                Rectangle::new(
+                    Point::from((g.loc.x as f64, g.loc.y as f64)),
+                    Size::from((g.size.w as f64, g.size.h as f64)),
+                )
+            });
+        }
+        let buffer = self.surface_buffer_size(&window.surface)?;
+        let (canvas_w, canvas_h) = (self.width as i32, self.height as i32);
+        let (win_w, win_h) = match window.geometry {
+            Some(rect) if rect.size.w > 0 && rect.size.h > 0 => (rect.size.w, rect.size.h),
+            _ => buffer,
+        };
+        Some(Rectangle::new(
+            Point::from((
+                ((canvas_w - win_w) / 2) as f64,
+                ((canvas_h - win_h) / 2) as f64,
+            )),
+            Size::from((win_w as f64, win_h as f64)),
+        ))
+    }
+
+    /// Topmost window under a canvas point, with surface-local coordinates
+    /// (the focus form wl_pointer motion expects).
+    fn hit_test(&self, x: f64, y: f64) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let windows = self.canvas_windows();
+        for window in windows.iter().rev() {
+            let Some(rect) = self.canvas_window_rect(window) else {
+                continue;
+            };
+            if x < rect.loc.x
+                || y < rect.loc.y
+                || x >= rect.loc.x + rect.size.w
+                || y >= rect.loc.y + rect.size.h
+            {
+                continue;
+            }
+            let buffer_size = self.surface_buffer_size(&window.surface)?;
+            let pos =
+                canvas_window_pos(window, (self.width as i32, self.height as i32), buffer_size);
+            return Some((
+                window.surface.clone(),
+                Point::from((x - pos.x as f64, y - pos.y as f64)),
+            ));
+        }
+        None
+    }
+
+    /// Raise and activate an X11 window by its wl_surface (click-to-raise).
+    fn raise_x11_at(&mut self, surface: &WlSurface) {
+        if let Some(pos) = self
+            .x11_windows
+            .iter()
+            .position(|w| w.wl_surface().as_ref() == Some(surface))
+        {
+            let window = self.x11_windows.remove(pos);
+            self.x11_windows.push(window);
+            self.activate_x11_top();
+            self.dirty = true;
+        }
+    }
+
+    /// Inject one remote-input event into the seat.
+    fn handle_input(&mut self, event: InputEvent) {
+        let time = self.origin.elapsed().as_millis() as u32;
+        match event {
+            InputEvent::PointerMove { x, y } => {
+                self.pointer_pos = Point::from((x, y));
+                let focus = self.hit_test(x, y);
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.motion(
+                        self,
+                        focus,
+                        &MotionEvent {
+                            location: Point::from((x, y)),
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time,
+                        },
+                    );
+                }
+            }
+            InputEvent::PointerButton { button, down } => {
+                let serial = SERIAL_COUNTER.next_serial();
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            serial,
+                            time,
+                            button,
+                            state: if down {
+                                ButtonState::Pressed
+                            } else {
+                                ButtonState::Released
+                            },
+                        },
+                    );
+                }
+                if down {
+                    // Focus follows click; X11 windows also raise.
+                    let hit = self.hit_test(self.pointer_pos.x, self.pointer_pos.y);
+                    if let Some((surface, _)) = hit {
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(self, Some(surface.clone()), serial);
+                        }
+                        self.raise_x11_at(&surface);
+                    }
+                }
+            }
+            InputEvent::Wheel { dx, dy } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    // dy/dx arrive in wheel notches (lines); wl_pointer
+                    // wants a continuous value plus v120 discrete steps.
+                    let mut frame = AxisFrame::new(time).source(AxisSource::Wheel);
+                    if dy != 0.0 {
+                        frame = frame
+                            .value(Axis::Vertical, dy * 15.0)
+                            .v120(Axis::Vertical, dy.round() as i32 * 120);
+                    }
+                    if dx != 0.0 {
+                        frame = frame
+                            .value(Axis::Horizontal, dx * 15.0)
+                            .v120(Axis::Horizontal, dx.round() as i32 * 120);
+                    }
+                    pointer.axis(self, frame);
+                }
+            }
+            InputEvent::Key { keycode, down } => {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.input(
+                        self,
+                        // XKB keycodes are evdev + 8.
+                        Keycode::new(keycode + 8),
+                        if down {
+                            KeyState::Pressed
+                        } else {
+                            KeyState::Released
+                        },
+                        SERIAL_COUNTER.next_serial(),
+                        time,
+                        |_, _, _| FilterResult::<()>::Forward,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -2562,6 +2784,285 @@ mod client_tests {
         wait_pixel(&mut frame_rx, 120, 95, BACKGROUND, Duration::from_secs(15)).await;
 
         drop(conn);
+        cancel.cancel();
+        handle.join().await;
+    }
+
+    /// Remote input: events pushed through the source's input sink must come
+    /// out as seat events at the focused client (pointer enter/motion,
+    /// button, key). Uses a dedicated client that records seat events.
+    #[tokio::test]
+    async fn input_events_reach_the_focused_client() {
+        use std::sync::Mutex as StdMutex;
+
+        use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat};
+
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "liveion=debug".to_string()),
+            )
+            .with_test_writer()
+            .try_init();
+
+        #[derive(Default)]
+        struct InputClientState {
+            configured: bool,
+            surface: Option<wl_surface::WlSurface>,
+            buffer: Option<wl_buffer::WlBuffer>,
+            got_keyboard: bool,
+            got_pointer: bool,
+            /// (kind, value) — e.g. ("enter", serial), ("motion-x*1000", ..),
+            /// ("button", state), ("key", evdev keycode).
+            events: Arc<StdMutex<Vec<(String, u32)>>>,
+        }
+
+        impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for InputClientState {
+            fn event(
+                _state: &mut Self,
+                _registry: &wl_registry::WlRegistry,
+                _event: wl_registry::Event,
+                _data: &GlobalListContents,
+                _conn: &Connection,
+                _qh: &QueueHandle<Self>,
+            ) {
+            }
+        }
+
+        impl Dispatch<xdg_surface::XdgSurface, ()> for InputClientState {
+            fn event(
+                state: &mut Self,
+                xdg: &xdg_surface::XdgSurface,
+                event: xdg_surface::Event,
+                _data: &(),
+                _conn: &Connection,
+                _qh: &QueueHandle<Self>,
+            ) {
+                if let xdg_surface::Event::Configure { serial } = event {
+                    xdg.ack_configure(serial);
+                    if let (Some(surface), Some(buffer)) = (&state.surface, &state.buffer) {
+                        surface.attach(Some(buffer), 0, 0);
+                        surface.commit();
+                    }
+                    state.configured = true;
+                }
+            }
+        }
+
+        impl Dispatch<wl_seat::WlSeat, ()> for InputClientState {
+            fn event(
+                state: &mut Self,
+                seat: &wl_seat::WlSeat,
+                event: wl_seat::Event,
+                _data: &(),
+                _conn: &Connection,
+                qh: &QueueHandle<Self>,
+            ) {
+                if let wl_seat::Event::Capabilities { capabilities } = event {
+                    let caps = match capabilities {
+                        wayland_client::WEnum::Value(c) => c,
+                        wayland_client::WEnum::Unknown(_) => return,
+                    };
+                    if caps.contains(wl_seat::Capability::Keyboard) {
+                        state.got_keyboard = true;
+                        seat.get_keyboard(qh, ());
+                    }
+                    if caps.contains(wl_seat::Capability::Pointer) {
+                        state.got_pointer = true;
+                        seat.get_pointer(qh, ());
+                    }
+                }
+            }
+        }
+
+        impl Dispatch<wl_keyboard::WlKeyboard, ()> for InputClientState {
+            fn event(
+                state: &mut Self,
+                _kb: &wl_keyboard::WlKeyboard,
+                event: wl_keyboard::Event,
+                _data: &(),
+                _conn: &Connection,
+                _qh: &QueueHandle<Self>,
+            ) {
+                if let wl_keyboard::Event::Key { key, state: s, .. } = event {
+                    let s = match s {
+                        wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed) => 1,
+                        _ => 0,
+                    };
+                    state
+                        .events
+                        .lock()
+                        .unwrap()
+                        .push(("key".into(), key + s * 100000));
+                }
+            }
+        }
+
+        impl Dispatch<wl_pointer::WlPointer, ()> for InputClientState {
+            fn event(
+                state: &mut Self,
+                _ptr: &wl_pointer::WlPointer,
+                event: wl_pointer::Event,
+                _data: &(),
+                _conn: &Connection,
+                _qh: &QueueHandle<Self>,
+            ) {
+                match event {
+                    wl_pointer::Event::Enter { .. } => {
+                        state.events.lock().unwrap().push(("enter".into(), 1));
+                    }
+                    wl_pointer::Event::Motion {
+                        surface_x,
+                        surface_y,
+                        ..
+                    } => {
+                        state
+                            .events
+                            .lock()
+                            .unwrap()
+                            .push(("motion".into(), (surface_x * 1000.0 + surface_y) as u32));
+                    }
+                    wl_pointer::Event::Button { state: s, .. } => {
+                        let s = match s {
+                            wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => 1,
+                            _ => 0,
+                        };
+                        state.events.lock().unwrap().push(("button".into(), s));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        delegate_noop!(InputClientState: wl_compositor::WlCompositor);
+        delegate_noop!(InputClientState: wl_shm_pool::WlShmPool);
+        delegate_noop!(InputClientState: ignore wl_shm::WlShm);
+        delegate_noop!(InputClientState: ignore wl_buffer::WlBuffer);
+        delegate_noop!(InputClientState: ignore wl_surface::WlSurface);
+        delegate_noop!(InputClientState: ignore xdg_wm_base::XdgWmBase);
+        delegate_noop!(InputClientState: ignore xdg_toplevel::XdgToplevel);
+
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Safe in this test: nextest isolates test processes.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", runtime_dir.path());
+            std::env::set_var("WAYLAND_DISPLAY", "live777-test-input");
+        }
+
+        let config = WaylandUrlConfig::parse(
+            "test",
+            "wayland://live777-test-input?width=320&height=240&fps=30&bitrate=500000&input=1",
+        )
+        .unwrap();
+        let (frame_tx, _frame_rx) = mpsc::channel(4);
+        let cancel = CancellationToken::new();
+        let handle = spawn(
+            &config,
+            frame_tx,
+            cancel.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let input_tx = handle
+            .input_sender()
+            .expect("input=1 must expose the input sink");
+
+        // Client: 100x100 window, centered on the 320x240 canvas → window
+        // rect (110,70)-(210,170).
+        let events: Arc<StdMutex<Vec<(String, u32)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let conn = Connection::connect_to_env().expect("connect to the compositor");
+        let (globals, mut queue) =
+            registry_queue_init::<InputClientState>(&conn).expect("registry init");
+        let qh = queue.handle();
+
+        let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=5, ()).unwrap();
+        let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
+        let wm_base: xdg_wm_base::XdgWmBase = globals.bind(&qh, 1..=6, ()).unwrap();
+        let _seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).unwrap();
+
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+        let _toplevel = xdg.get_toplevel(&qh, ());
+
+        let (w, h) = (100, 100);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        fill_solid(RED)(&mut pixels, w, h);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&pixels).unwrap();
+        let pool = shm.create_pool(file.as_fd(), w * h * 4, &qh, ());
+        let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Xrgb8888, &qh, ());
+
+        let mut state = InputClientState {
+            events: events.clone(),
+            ..Default::default()
+        };
+        state.surface = Some(surface);
+        state.buffer = Some(buffer);
+        state.surface.as_ref().unwrap().commit();
+        while !state.configured {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        conn.flush().unwrap();
+
+        // Wait for the seat's capabilities to arrive, then the events.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !state.got_keyboard || !state.got_pointer {
+            assert!(Instant::now() < deadline, "seat capabilities never arrived");
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+
+        // Pointer move into the window center (160,120 canvas).
+        input_tx
+            .send(super::super::input::InputEvent::PointerMove { x: 160.0, y: 120.0 })
+            .unwrap();
+        // Click: button press sets the keyboard focus.
+        input_tx
+            .send(super::super::input::InputEvent::PointerButton {
+                button: 0x110,
+                down: true,
+            })
+            .unwrap();
+        input_tx
+            .send(super::super::input::InputEvent::PointerButton {
+                button: 0x110,
+                down: false,
+            })
+            .unwrap();
+        // Key press + release (KeyA = evdev 30).
+        input_tx
+            .send(super::super::input::InputEvent::Key {
+                keycode: 30,
+                down: true,
+            })
+            .unwrap();
+        input_tx
+            .send(super::super::input::InputEvent::Key {
+                keycode: 30,
+                down: false,
+            })
+            .unwrap();
+
+        // Drain client events until all expected ones arrived.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            {
+                let evs = events.lock().unwrap();
+                let has = |k: &str, v: u32| evs.iter().any(|(kk, vv)| kk == k && *vv == v);
+                if has("enter", 1)
+                    && has("button", 1)
+                    && has("button", 0)
+                    && has("key", 30 + 100000)
+                    && has("key", 30)
+                {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "input events never arrived: {events:?}"
+            );
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+
         cancel.cancel();
         handle.join().await;
     }
