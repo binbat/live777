@@ -550,7 +550,7 @@ mod client_content_e2e {
             let ys = plane_row(frame, 0, row, width);
             let us = plane_row(frame, 1, row / 2, width / 2);
             let vs = plane_row(frame, 2, row / 2, width / 2);
-            for (col, px) in out_row.chunks_exact_mut(3).enumerate() {
+            for (col, px) in out_row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
                 let c = i32::from(ys[col]) - 16;
                 let d = i32::from(us[col / 2]) - 128;
                 let e = i32::from(vs[col / 2]) - 128;
@@ -564,7 +564,7 @@ mod client_content_e2e {
 
     fn average_rgb(rgb: &[u8]) -> (f64, f64, f64) {
         let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
-        for px in rgb.chunks_exact(3) {
+        for px in rgb.as_chunks::<3>().0 {
             r += u64::from(px[0]);
             g += u64::from(px[1]);
             b += u64::from(px[2]);
@@ -701,7 +701,7 @@ mod client_content_e2e {
 
         // Solid red XRGB8888 (LE byte order B,G,R,X).
         let mut pixels = vec![0u8; (width * height * 4) as usize];
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&[RED.2, RED.1, RED.0, 255]);
         }
         let mut file = tempfile::tempfile().unwrap();
