@@ -159,14 +159,16 @@ impl SourceBridge {
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             let mut audio_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             )))]
             let audio_count = 0u64;
             #[cfg(any(
@@ -214,7 +216,7 @@ impl SourceBridge {
                                             .await
                                             .map_err(|e| anyhow::anyhow!("{:?}", e))
                                     }
-                                    #[cfg(feature = "native-source")]
+                                    #[cfg(any(feature = "native-source", feature = "source-wayland"))]
                                     MediaPacket::AudioRtpPacket(packet) => {
                                         audio_count += 1;
                                         if audio_count % LOG_PACKET_INTERVAL == 1 {

@@ -4,12 +4,15 @@
 //! the compositor ([`compositor`], smithay-based) and the composited image
 //! is H.264-encoded and published as a WebRTC stream. Until the first real
 //! client content arrives, a synthetic pattern generator ([`pattern`]) feeds
-//! the pipeline so the stream is alive immediately.
+//! the pipeline so the stream is alive immediately. Desktop audio is
+//! captured from a PipeWire sink monitor and published as Opus ([`audio`]).
 //!
 //! Data flow:
 //!   frame producer → mpsc<ArgbFrame> → XRGB8888→I420 ([`convert`]) →
 //!   OpenH264 ([`encoder`]) → H264 RTP packetize → broadcast
+//!   PipeWire monitor → Opus → RTP packetize → broadcast (audio track)
 
+mod audio;
 mod compositor;
 mod convert;
 mod encoder;
@@ -67,6 +70,16 @@ pub struct WaylandUrlConfig {
     /// Pinned X11 display number for XWayland (`xdisplay=3` → `DISPLAY=:3`).
     /// Unset picks the lowest free display.
     pub xdisplay: Option<u32>,
+    /// Capture desktop audio from a PipeWire sink monitor and publish it as
+    /// an Opus track (`audio=0` disables). Needs a PipeWire daemon reachable
+    /// at `$XDG_RUNTIME_DIR/pipewire-0`; without one the stream stays
+    /// video-only with a warning.
+    pub audio: bool,
+    /// Opus bitrate in bps (`audio_bitrate=`), default 64k.
+    pub audio_bitrate: u32,
+    /// Only capture from the sink whose PipeWire `node.name` contains this
+    /// substring (`audio_sink=`); unset captures the first `Audio/Sink`.
+    pub audio_sink: Option<String>,
 }
 
 impl WaylandUrlConfig {
@@ -74,6 +87,7 @@ impl WaylandUrlConfig {
     pub const DEFAULT_HEIGHT: u32 = 720;
     pub const DEFAULT_FPS: u32 = 30;
     pub const DEFAULT_BITRATE: u32 = 2_000_000;
+    pub const DEFAULT_AUDIO_BITRATE: u32 = 64_000;
 
     /// OpenH264 encodes up to 3840x2160 (or 2160x3840) and takes the target
     /// bitrate as a signed 32-bit value.
@@ -102,6 +116,9 @@ impl WaylandUrlConfig {
             bitrate: Self::DEFAULT_BITRATE,
             xwayland: true,
             xdisplay: None,
+            audio: true,
+            audio_bitrate: Self::DEFAULT_AUDIO_BITRATE,
+            audio_sink: None,
         };
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             let parsed = || {
@@ -115,15 +132,14 @@ impl WaylandUrlConfig {
                 "fps" => config.fps = parsed()?,
                 "bitrate" => config.bitrate = parsed()?,
                 "xwayland" => {
-                    config.xwayland = match value.as_ref() {
-                        "1" | "true" | "on" => true,
-                        "0" | "false" | "off" => false,
-                        _ => anyhow::bail!(
-                            "wayland URL: invalid xwayland '{value}' (expected 0/1/true/false)"
-                        ),
-                    };
+                    config.xwayland = parse_bool(&key, &value)?;
                 }
                 "xdisplay" => config.xdisplay = Some(parsed()?),
+                "audio" => {
+                    config.audio = parse_bool(&key, &value)?;
+                }
+                "audio_bitrate" => config.audio_bitrate = parsed()?,
+                "audio_sink" => config.audio_sink = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -162,7 +178,19 @@ impl WaylandUrlConfig {
         if self.bitrate == 0 || self.bitrate > i32::MAX as u32 {
             anyhow::bail!("wayland URL: bitrate must be in 1..={}", i32::MAX);
         }
+        if self.audio_bitrate < 500 || self.audio_bitrate > 512_000 {
+            anyhow::bail!("wayland URL: audio_bitrate must be in 500..=512000 (Opus limits)");
+        }
         Ok(())
+    }
+}
+
+/// `1/true/on` vs `0/false/off` for boolean URL parameters.
+fn parse_bool(key: &str, value: &str) -> Result<bool> {
+    match value {
+        "1" | "true" | "on" => Ok(true),
+        "0" | "false" | "off" => Ok(false),
+        _ => anyhow::bail!("wayland URL: invalid {key} '{value}' (expected 0/1/true/false)"),
     }
 }
 
@@ -176,6 +204,9 @@ pub struct WaylandSource {
     /// pipeline); recreated on each `start()` so a restarted source works.
     cancel: Option<CancellationToken>,
     compositor: Option<compositor::CompositorHandle>,
+    /// PipeWire desktop-audio capture; `Some` only when `audio=1` and the
+    /// daemon handshake succeeded (otherwise the stream is video-only).
+    audio: Option<audio::AudioHandle>,
     generator_handle: Option<tokio::task::JoinHandle<()>>,
     mux_handle: Option<tokio::task::JoinHandle<()>>,
     pipeline_handle: Option<tokio::task::JoinHandle<()>>,
@@ -212,6 +243,7 @@ impl WaylandSource {
             state_tx,
             cancel: None,
             compositor: None,
+            audio: None,
             generator_handle: None,
             mux_handle: None,
             pipeline_handle: None,
@@ -535,6 +567,25 @@ impl StreamSource for WaylandSource {
         );
         self.compositor = Some(compositor);
 
+        // Desktop audio: PipeWire sink monitor → Opus. Optional — a missing
+        // daemon or any handshake failure keeps the stream video-only.
+        if self.config.audio {
+            match audio::spawn(
+                &self.stream_id,
+                &self.config,
+                self.rtp_tx.clone(),
+                cancel.child_token(),
+            ) {
+                Ok(handle) => self.audio = Some(handle),
+                Err(e) => {
+                    tracing::warn!(
+                        "[{}] wayland audio unavailable ({e:#}); continuing video-only",
+                        self.stream_id
+                    );
+                }
+            }
+        }
+
         self.mux_handle = Some(tokio::spawn(frame_mux(
             self.stream_id.clone(),
             frame_tx,
@@ -567,6 +618,8 @@ impl StreamSource for WaylandSource {
         if let Some(cancel) = self.cancel.take() {
             cancel.cancel();
         }
+        // The audio capture thread runs on a child token; drop joins it.
+        self.audio = None;
         if let Some(compositor) = self.compositor.take() {
             compositor.join().await;
         }
@@ -633,6 +686,31 @@ impl StreamSource for WaylandSource {
                 ],
             },
             payload_type: VIDEO_PAYLOAD_TYPE,
+        })
+    }
+
+    async fn get_audio_codec(
+        &self,
+    ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
+        use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
+
+        // Gate on the video codec being known: the bridge adds tracks in a
+        // single pass once any codec is ready, so audio must not become
+        // available *before* video or the video track would be missed.
+        self.dynamic_profile.read().await.as_ref()?;
+        if !self.audio.as_ref().is_some_and(|a| a.running()) {
+            return None;
+        }
+
+        Some(RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: "audio/opus".into(),
+                clock_rate: audio::AUDIO_CLOCK_RATE,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: audio::AUDIO_PAYLOAD_TYPE,
         })
     }
 

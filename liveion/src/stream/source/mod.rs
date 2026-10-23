@@ -73,8 +73,10 @@ pub enum MediaPacket {
     Rtp { channel: u8, data: Bytes },
     #[cfg(any(feature = "native-source", feature = "source-wayland"))]
     RtpPacket(Arc<Packet>),
-    /// Packetized audio (Opus) from a native source's audio leg.
-    #[cfg(feature = "native-source")]
+    /// Packetized audio (Opus) from a native source's audio leg or the
+    /// Wayland source's PipeWire leg, separated at the type level so the
+    /// bridge injects it into the audio track without inspecting payloads.
+    #[cfg(any(feature = "native-source", feature = "source-wayland"))]
     AudioRtpPacket(Arc<Packet>),
     // Placeholder when no concrete source implementation is enabled.
     // The `source` feature alone has no active source types, so this
