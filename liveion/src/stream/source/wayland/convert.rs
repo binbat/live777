@@ -74,3 +74,43 @@ impl I420Converter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stream::source::wayland::ArgbFrame;
+
+    /// A solid red XRGB8888 frame converts to BT.601 limited-range I420:
+    /// Y≈81, U≈90, V≈240, in correctly sized planes.
+    #[test]
+    fn red_frame_converts_to_expected_i420() {
+        let (w, h) = (4, 4);
+        let mut data = vec![0u8; w * h * 4];
+        for px in data.as_chunks_mut::<4>().0 {
+            px.copy_from_slice(&[0, 0, 255, 255]); // B,G,R,X
+        }
+        let frame = ArgbFrame {
+            width: w as u32,
+            height: h as u32,
+            stride: w as u32 * 4,
+            data,
+            pts_us: 0,
+            force_keyframe: false,
+        };
+        let mut converter = I420Converter::new(w as u32, h as u32);
+        converter.convert(&frame).unwrap();
+        let planes = converter.planes();
+        assert_eq!(planes.y.len(), 16);
+        assert_eq!(planes.u.len(), 4);
+        assert_eq!(planes.v.len(), 4);
+        for &y in planes.y {
+            assert!((71..=91).contains(&y), "Y {y} near 81");
+        }
+        for &u in planes.u {
+            assert!((80..=100).contains(&u), "U {u} near 90");
+        }
+        for &v in planes.v {
+            assert!((230..=250).contains(&v), "V {v} near 240");
+        }
+    }
+}

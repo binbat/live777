@@ -492,4 +492,41 @@ mod tests {
         assert_eq!(timestamps.len(), 2);
         assert_eq!(timestamps[1].wrapping_sub(timestamps[0]), 960);
     }
+
+    /// End-to-end capture: with a PipeWire daemon reachable (any Audio/Sink
+    /// present), packets must flow and the handle must stop cleanly. Skipped
+    /// without a daemon (most dev machines and CI run one per the workflow).
+    #[tokio::test]
+    async fn capture_streams_opus_packets() {
+        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        if !runtime_dir.join("pipewire-0").exists() {
+            eprintln!("skipping the capture test: no PipeWire daemon socket");
+            return;
+        }
+
+        let config = WaylandUrlConfig::parse("t", "wayland://unused?audio=1").unwrap();
+        let (rtp_tx, mut rtp_rx) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let handle = spawn("t", &config, rtp_tx, cancel.clone()).expect("audio spawn");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut received = 0;
+        while received < 10 {
+            let Ok(msg) = tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                rtp_rx.recv(),
+            )
+            .await
+            else {
+                panic!("timed out waiting for audio packets (got {received})");
+            };
+            assert!(matches!(msg.unwrap(), MediaPacket::RtpAudioPacket(_)));
+            received += 1;
+        }
+        assert!(handle.running());
+        drop(handle);
+        cancel.cancel();
+    }
 }

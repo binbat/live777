@@ -50,7 +50,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libegl-dev libgles2-mesa-dev xwayland
+          sudo apt-get install -y -qq libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libgbm-dev libegl-dev libgles2-mesa-dev xwayland pipewire wireplumber
+      - name: Start a PipeWire daemon with a null sink (wayland audio tests)
+        if: runner.os == 'Linux'
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/live777-ci-runtime
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          sudo chown -R "$USER" "$XDG_RUNTIME_DIR"
+          # pipewire wants a session bus for some modules; wireplumber needs one too.
+          dbus-run-session -- sh -c 'pipewire & sleep 1; wireplumber & sleep 2; pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=live777-ci-sink media.class=Audio/Sink }"; sleep infinity' &
+          sleep 8
+          pw-dump >/dev/null && echo "pipewire daemon is up"
       - name: Generate code coverage
         shell: bash
         run: |

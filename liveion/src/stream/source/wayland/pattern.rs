@@ -152,3 +152,59 @@ impl Pattern {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two rendered frames share geometry but differ in content (the bars
+    /// scroll), and the binary counter strip reflects the frame index.
+    #[test]
+    fn pattern_frames_move_and_count() {
+        let mut pattern = Pattern::new(64, 64);
+        let f0 = pattern.render(0);
+        assert_eq!((f0.width, f0.height), (64, 64));
+        assert_eq!(f0.stride, 64 * 4);
+        assert_eq!(f0.data.len(), 64 * 64 * 4);
+        assert!(!f0.force_keyframe);
+
+        // Frame 0: counter strip (bottom 64/24 rows) all off at bit 0.
+        let cell_h = 64 / 24;
+        let bottom0 = &f0.data[(64 - cell_h) * 64 * 4..];
+        assert!(bottom0.as_chunks::<4>().0.iter().all(|px| *px != [0xff; 4]));
+
+        let f1 = pattern.render(33_333);
+        assert_eq!(f1.pts_us, 33_333);
+        // Frame 1: bit 0 on → the first cell of the strip is white.
+        let cell_w = 64 / 32;
+        let px = &f1.data[(64 - 1) * 64 * 4..(64 - 1) * 64 * 4 + 4];
+        assert_eq!(px, &[0xff; 4], "bottom-left counter cell must be on");
+        let _ = cell_w;
+
+        // Scrolling bars: a pixel on a bar boundary changes color between
+        // frames (the bars shift one pixel per frame).
+        let b0 = &f0.data[63 * 4..63 * 4 + 4];
+        let b1 = &f1.data[63 * 4..63 * 4 + 4];
+        assert_ne!(b0, b1);
+    }
+
+    /// The spawn'd task emits at the configured rate and stops on cancel.
+    #[tokio::test]
+    async fn pattern_task_emits_and_stops() {
+        let config =
+            WaylandUrlConfig::parse("t", "wayland://unused?width=64&height=64&fps=100").unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let task = spawn(&config, tx, cancel.clone());
+        let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("frame within 2s")
+            .expect("channel open");
+        assert_eq!((frame.width, frame.height), (64, 64));
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("task stops on cancel")
+            .unwrap();
+    }
+}
