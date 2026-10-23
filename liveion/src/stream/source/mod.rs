@@ -6,10 +6,10 @@ use async_trait::async_trait;
     feature = "source-whep"
 ))]
 use bytes::Bytes;
-#[cfg(feature = "native-source")]
+#[cfg(any(feature = "native-source", feature = "source-wayland"))]
 use rtc::rtp::packet::Packet;
 use std::net::SocketAddr;
-#[cfg(feature = "native-source")]
+#[cfg(any(feature = "native-source", feature = "source-wayland"))]
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use webrtc::peer_connection::RTCIceServer;
@@ -18,6 +18,8 @@ use webrtc::peer_connection::RTCIceServer;
 mod rtsp_source;
 #[cfg(feature = "source-sdp")]
 mod sdp_source;
+#[cfg(all(feature = "source-wayland", target_os = "linux"))]
+pub mod wayland;
 #[cfg(feature = "source-whep")]
 mod whep_source;
 
@@ -69,8 +71,12 @@ pub enum MediaPacket {
         feature = "source-whep"
     ))]
     Rtp { channel: u8, data: Bytes },
-    #[cfg(feature = "native-source")]
+    #[cfg(any(feature = "native-source", feature = "source-wayland"))]
     RtpPacket(Arc<Packet>),
+    /// Pre-packetized audio (opus), separated at the type level so the
+    /// bridge injects it into the audio track without inspecting payloads.
+    #[cfg(feature = "source-wayland")]
+    RtpAudioPacket(Arc<Packet>),
     // Placeholder when no concrete source implementation is enabled.
     // The `source` feature alone has no active source types, so this
     // variant keeps the enum non-empty without exposing real data.
@@ -78,7 +84,8 @@ pub enum MediaPacket {
         feature = "source-rtsp",
         feature = "source-sdp",
         feature = "source-whep",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     )))]
     _Unused,
 }
@@ -172,6 +179,8 @@ pub(crate) fn url_source_kind(url: &str) -> &'static str {
         "rtsp"
     } else if url.starts_with("whep://") || url.starts_with("wheps://") {
         "whep"
+    } else if url.starts_with("wayland://") {
+        "wayland"
     } else {
         "sdp"
     }
@@ -259,6 +268,14 @@ pub trait StreamSource: Send + Sync {
     async fn get_audio_codec(
         &self,
     ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
+        None
+    }
+
+    /// Sink for remote-input messages from subscribers' datachannels on the
+    /// stream's `input` cable (only the wayland source with `input=1`
+    /// returns a sink). The bridge pumps cable messages into it raw.
+    #[cfg(feature = "source")]
+    fn input_sink(&self) -> Option<Box<dyn Fn(Vec<u8>) + Send + Sync>> {
         None
     }
 
@@ -358,7 +375,8 @@ pub async fn create_source_from_spec(
 #[cfg(any(
     feature = "source-rtsp",
     feature = "source-sdp",
-    feature = "source-whep"
+    feature = "source-whep",
+    feature = "source-wayland"
 ))]
 pub(crate) async fn create_url_source(
     stream_id: &str,
@@ -366,7 +384,18 @@ pub(crate) async fn create_url_source(
     config: &crate::config::SourceConfig,
     net: SourceNetConfig,
 ) -> Result<Box<dyn StreamSource>> {
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep"
+    ))]
     let internal_config = InternalSourceConfig::from_config(stream_id, config);
+    #[cfg(not(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep"
+    )))]
+    let _ = config;
 
     // Only the WHEP source consumes the server-wide network settings; keep
     // other feature combinations warning-free.
@@ -399,6 +428,19 @@ pub(crate) async fn create_url_source(
         {
             anyhow::bail!("WHEP source support not enabled. Enable 'source-whep' feature.");
         }
+    } else if url_lower.starts_with("wayland://") {
+        #[cfg(all(feature = "source-wayland", target_os = "linux"))]
+        {
+            let source = wayland::WaylandSource::new(stream_id, url)?;
+            Ok(Box::new(source))
+        }
+
+        #[cfg(not(all(feature = "source-wayland", target_os = "linux")))]
+        {
+            anyhow::bail!(
+                "Wayland source support not enabled. Enable the 'source-wayland' feature (Linux only)."
+            );
+        }
     } else if url_lower.starts_with("file://") || url_lower.ends_with(".sdp") {
         #[cfg(feature = "source-sdp")]
         {
@@ -419,10 +461,73 @@ pub(crate) async fn create_url_source(
         }
     } else {
         anyhow::bail!(
-            "Unsupported URL format: {}. Use rtsp://, whep://, file:// or .sdp file path",
+            "Unsupported URL format: {}. Use rtsp://, whep://, wayland://, file:// or .sdp file path",
             redact_url(url)
         );
     }
+}
+
+/// Minimal H.264 Annex-B SPS scanner — only used for H.264 dynamic
+/// profile-level-id detection in get_video_codec() (native and wayland
+/// sources).
+#[cfg(any(
+    feature = "native-source",
+    all(feature = "source-wayland", target_os = "linux")
+))]
+pub(crate) fn scan_sps_profile(data: &[u8]) -> Option<String> {
+    let mut pos = 0;
+    while pos + 3 < data.len() {
+        let start_len = if data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1 {
+            3
+        } else if pos + 4 <= data.len()
+            && data[pos] == 0
+            && data[pos + 1] == 0
+            && data[pos + 2] == 0
+            && data[pos + 3] == 1
+        {
+            4
+        } else {
+            pos += 1;
+            continue;
+        };
+        let nal_start = pos + start_len;
+        if nal_start < data.len() {
+            let nal_type = data[nal_start] & 0x1F;
+            if nal_type == 7 {
+                // Copy the SPS NAL payload into a small buffer while removing
+                // H.264 emulation prevention bytes (0x00 0x00 0x03). The
+                // profile-level-id follows the NAL header byte, so we need the
+                // next three de-escaped bytes.
+                let mut buf = [0u8; 4];
+                let mut src = nal_start;
+                let mut dst = 0;
+                while src < data.len() && dst < 4 {
+                    if src + 2 < data.len()
+                        && data[src] == 0
+                        && data[src + 1] == 0
+                        && data[src + 2] == 3
+                    {
+                        buf[dst] = 0;
+                        dst += 1;
+                        if dst < 4 {
+                            buf[dst] = 0;
+                            dst += 1;
+                        }
+                        src += 3;
+                    } else {
+                        buf[dst] = data[src];
+                        dst += 1;
+                        src += 1;
+                    }
+                }
+                if dst == 4 {
+                    return Some(format!("{:02x}{:02x}{:02x}", buf[1], buf[2], buf[3]));
+                }
+            }
+        }
+        pos += start_len;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -462,9 +567,11 @@ mod tests {
         assert_eq!(url_source_kind("wheps://h/whep/s"), "whep");
         assert_eq!(url_source_kind("file://cam.sdp"), "sdp");
         assert_eq!(url_source_kind("cam.sdp"), "sdp");
+        assert_eq!(url_source_kind("wayland://display-0"), "wayland");
         // Schemes are case-insensitive, same as the factory dispatch.
         assert_eq!(url_source_kind("WHEP://h/whep/s"), "whep");
         assert_eq!(url_source_kind("RTSP://h/s"), "rtsp");
+        assert_eq!(url_source_kind("WAYLAND://display-0"), "wayland");
     }
 
     #[cfg(any(feature = "source-rtsp", feature = "source-whep"))]

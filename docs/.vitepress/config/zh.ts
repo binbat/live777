@@ -31,7 +31,9 @@ export const zh: LocaleConfig = {
                         items: [
                             { text: 'Live777', link: 'live777' },
                             { text: 'livehal', link: 'livehal' },
+                            { text: 'Wayland 信源', link: 'wayland' },
                             { text: 'Cable', link: 'cable' },
+
                             { text: 'Web UI', link: 'webui' },
                             { text: 'Recorder', link: 'recorder' },
                             { text: 'LiveMan', link: 'liveman' },

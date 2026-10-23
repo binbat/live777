@@ -110,6 +110,13 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
 - Node.js (CI uses `latest`).
 - For WebUI builds: `pnpm install`.
 - For native source features on Linux: `libcamera-dev`, `libv4l-dev`.
+- For the Wayland compositor source (`source-wayland`, Linux-only): the
+  `libxkbcommon` shared library to link against (`libxkbcommon.so`, e.g. the
+  `libxkbcommon-dev` package on Debian/Ubuntu; pulled in by smithay's seat
+  keyboard handling — no headers needed, the crate carries its own FFI
+  bindings), plus `libpipewire-0.3-dev` and `libopus-dev` for the desktop
+  audio capture. Runtime: an `Xwayland` binary for X11 clients, and a
+  PipeWire daemon (+ session manager) for audio.
 - For GStreamer-based tests: `gstreamer`, `gstreamer-rtsp-server`.
 - For cross-compilation: `cross` from <https://github.com/cross-rs/cross>.
 
@@ -150,7 +157,13 @@ Key feature groups defined in the root `Cargo.toml`:
 - `source-sdp`     — SDP-file sources.
 - `source-rtsp`    — RTSP sources.
 - `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
-- `source-all`     — enables all source types.
+- `source-all`     — enables all source types (except the Linux-only
+  `source-wayland`).
+- `source-wayland` — Wayland compositor source: live777 acts as a headless
+  Wayland display server and streams the composited desktop as H.264
+  (smithay + openh264), with X11 applications supported through a built-in
+  XWayland server and desktop audio captured from PipeWire as Opus.
+  Linux-only; deliberately not part of `source-all`.
 - `target`         — base feature shared by all `target-*` kinds (the
   `targets` stream config, supervisor dispatch, virtual-subscriber ids);
   enables no target kind on its own, mirroring how `source` relates to the
@@ -409,6 +422,88 @@ clients via Link headers).
   becomes the AIMD's rung ceiling and resume seed without suspending
   it, and an external-change generation counter guarantees the
   controller re-seeds even for applies shorter than its 1 s tick.
+  The Wayland compositor source (`wayland://<socket>?width=&height=&fps=&bitrate=`;
+  `source-wayland` feature, Linux-only) lives in
+  `liveion/src/stream/source/wayland/{mod,compositor,encoder,convert,pattern,gl}.rs`.
+  A smithay headless compositor runs on a dedicated calloop thread
+  (no GPU output; wl_compositor/wl_shm/xdg-shell/wl_output/wl_seat/
+  data-device globals, plus `zwp_linux_dmabuf_v1` when GL is up) and
+  composites visible xdg toplevels onto a fixed-size canvas, emitting
+  frames only when a commit made the canvas dirty (plus PLI-repaint and a
+  2 s keepalive so late-joining subscribers always get an IDR).
+  Compositing has two paths (`gl.rs` vs the CPU blit): when a GPU/EGL
+  renderer initializes (GBM device on `/dev/dri/renderD128` → `card0`,
+  `LIVE777_WAYLAND_DRM_DEVICE` overrides; EGL + `GlesRenderer`; a probe
+  render+readback must succeed), every toplevel buffer — dmabuf via
+  `ImportDma`, SHM via `ImportMemWl` — is imported as a texture and drawn
+  into one persistent offscreen target, then read back through
+  `ExportMem::copy_framebuffer` (rendered `Flipped180` so the bottom-up
+  readback lands top-down, BGRA so the byte order matches the canvas);
+  without a renderer the CPU alpha-over SHM blit handles everything and no
+  dmabuf global is advertised. GL state is `!Send` and lives on the
+  event-loop thread inside the frame timer; `dmabuf_imported` can only
+  sanity-check against the advertised format set (protocol dispatch never
+  touches the renderer), and the real import happens per frame.
+  Frames cross into the encode pipeline as
+  `ArgbFrame` over an mpsc channel — the seam between frame producer and
+  encoder: a synthetic pattern generator feeds it until the compositor's
+  first contentful frame, then a `frame_mux` task permanently switches over
+  (an all-clients-disconnected desktop keeps streaming the background
+  canvas; the pattern never resumes). The pipeline converts XRGB8888→I420
+  (`yuvutils-rs`, BT.601 limited) and encodes with `openh264`
+  (`UsageType::ScreenContentRealTime`, in-band SPS/PPS ahead of every IDR
+  via `SpsPpsStrategy::IncreasingId`, periodic IDR ≈ every 2 s). PLI/FIR
+  from subscribers forces an IDR (`force_intra_frame`) and nudges a
+  repaint; the crate has no runtime bitrate API, so `set_bitrate` recreates
+  the encoder (sub-ms, the fresh encoder starts with an IDR). The source
+  deliberately does not opt into the AIMD adaptive controller. The
+  compositor socket is created under `$XDG_RUNTIME_DIR` — the source fails
+  to start without it.
+  X11 clients are supported via XWayland (`xwayland=1` default, `xdisplay=N`
+  pins `DISPLAY`, needs an `Xwayland` binary on PATH — skipped with a
+  warning without one): the compositor spawns the server, and a minimal
+  built-in XWM (`XwmHandler` in `compositor.rs`) grants configure requests
+  as-is, maps fullscreen/maximize to the canvas, keeps last-mapped on top,
+  and activates only the top window (no input injection yet). The canvas
+  stack is xdg toplevels, then managed X11 windows, then X11
+  override-redirects on top; X11 windows draw 1:1 at their root-relative
+  position (no CSD offsets), xdg windows stay centered
+  (`canvas_window_pos`). X11 buffers ride the same SHM/dmabuf paths
+  (`canvas_windows()` unifies the two kinds), and
+  `CompositorHandler::client_compositor_state` must special-case the
+  XWayland client's `XWaylandClientData`. Shutdown caution: calloop source
+  closures capturing a `LoopHandle` Rc-cycle the registry (smithay's
+  X11Source does this internally), so `run()` explicitly removes every
+  source it inserted at exit — dropping the listener frees the socket file,
+  dropping the XWayland handle kills the server — while one registry
+  skeleton (epoll fd + X11 channel) still leaks per compositor lifetime
+  (smithay-0.7 limitation; bounded because restarts are rare). X11 clients
+  that paint before Xwayland realizes their window lose that early damage —
+  they must repaint on Expose (well-behaved toolkits do).
+  `LIVE777_WAYLAND_XWAYLAND_LOG=1` inherits the Xwayland stderr for
+  debugging.
+  Desktop audio (`audio=1` default, `audio_bitrate=`, `audio_sink=` name
+  filter) is PipeWire capture (`wayland/audio.rs`): one thread runs a
+  PipeWire main loop, handshakes synchronously at `start()` (daemon
+  unreachable → video-only with a warning), taps the monitor of an
+  `Audio/Sink` node (session manager such as wireplumber must be running to
+  link it), encodes 20 ms Opus frames and broadcasts
+  `MediaPacket::RtpAudioPacket` — a pre-packetized variant the bridge
+  injects into the audio track via `PeerForward::inject_audio_rtp_packet`
+  (`RtpPacket` stays video). `get_audio_codec` is gated on the video codec
+  being known because the bridge adds tracks in a single pass once any
+  codec is ready.
+  Remote input (`input=1`, off by default — every subscriber can then drive
+  the desktop): browser-side JSON events (`web/player-core/input-capture.ts`,
+  `WhepPlayer`'s `input` prop, standalone player `&input`) ride the stream's
+  `input` datachannel cable; the bridge pumps `cables.route("input").to_publisher`
+  into the source's `StreamSource::input_sink()` (a raw-bytes closure so the
+  trait stays format-agnostic), `wayland/input.rs` parses them, and a calloop
+  channel crosses into the compositor thread where `handle_input` injects
+  into the seat: hit-tested pointer focus over the unified window stack,
+  focus-follows-click keyboard focus, X11 windows raise+activate on click.
+  DomCode→evdev translation is a static table in `input.rs` (xkb keycodes are
+  evdev+8 at the smithay boundary).
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
@@ -585,9 +680,23 @@ Integration test binaries live in `tests/`:
 - `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
   subprocesses against in-process liveion, including the rotating decode
   verification (needs the `rsmpeg` feature)
+- `tests/wayland_source.rs` — Wayland compositor source end-to-end (Linux
+  only, needs `source-wayland`; the pattern-flow WHEP test needs nothing
+  else). The client-content test additionally needs `rsmpeg`: a real
+  Wayland client paints a solid-color toplevel, and the WHEP subscriber
+  depacketizes + decodes (FFmpeg) the pattern→client switch and the
+  background after the client disconnects. rsmpeg 0.18 only compiles
+  against FFmpeg ≤ 8 headers (FFmpeg 9 privatized the AVCodec/
+  AVFormatContext fields it touches), so on newer distros build a minimal
+  n8.0 locally — all 7 av libs, `--disable-everything
+  --enable-decoder=h264 --enable-parser=h264` — into `target/ffmpeg8/install`
+  and export `FFMPEG_PKG_CONFIG_PATH`/`PKG_CONFIG_PATH` to its
+  `lib/pkgconfig` and `LD_LIBRARY_PATH` to its `lib`.
+||||||| ee53842
 - `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
   synthetic publish and WHEP decode probes against in-process liveion,
   including JSON/exit-code success and failure contracts (needs `rsmpeg`)
+
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

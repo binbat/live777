@@ -36,7 +36,8 @@ use tracing::{debug, error, info, trace, warn};
     feature = "source-rtsp",
     feature = "source-sdp",
     feature = "source-whep",
-    feature = "native-source"
+    feature = "native-source",
+    feature = "source-wayland"
 ))]
 const LOG_PACKET_INTERVAL: u64 = 100;
 
@@ -56,6 +57,11 @@ pub struct SourceBridge {
 
     #[cfg(feature = "source")]
     rtcp_to_source_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+
+    /// Remote-input sink (wayland source with `input=1`): raw datachannel
+    /// messages from the stream's `input` cable are pumped into it.
+    #[cfg(feature = "source")]
+    input_sink: Option<Box<dyn Fn(Vec<u8>) + Send + Sync>>,
 }
 
 impl SourceBridge {
@@ -97,6 +103,8 @@ impl SourceBridge {
             av1_repacketizer,
             #[cfg(feature = "source")]
             rtcp_to_source_tx: None,
+            #[cfg(feature = "source")]
+            input_sink: None,
         }
     }
 
@@ -104,6 +112,11 @@ impl SourceBridge {
     pub fn set_rtcp_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
         self.rtcp_to_source_tx = Some(tx);
         info!("[{}] RTCP sender set", self.source_id);
+    }
+
+    #[cfg(feature = "source")]
+    pub fn set_input_sink(&mut self, sink: Box<dyn Fn(Vec<u8>) + Send + Sync>) {
+        self.input_sink = Some(sink);
     }
 
     pub async fn start_bridging(
@@ -118,7 +131,8 @@ impl SourceBridge {
             feature = "source-rtsp",
             feature = "source-sdp",
             feature = "source-whep",
-            feature = "native-source"
+            feature = "native-source",
+            feature = "source-wayland"
         ))]
         let forward_clone = self.forward.clone();
         let source_id_clone = self.source_id.clone();
@@ -141,26 +155,30 @@ impl SourceBridge {
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             ))]
             let mut video_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
                 feature = "source-whep",
-                feature = "native-source"
+                feature = "native-source",
+                feature = "source-wayland"
             )))]
             let video_count = 0u64;
             #[cfg(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "source-whep"
+                feature = "source-whep",
+                feature = "source-wayland"
             ))]
             let mut audio_count = 0u64;
             #[cfg(not(any(
                 feature = "source-rtsp",
                 feature = "source-sdp",
-                feature = "source-whep"
+                feature = "source-whep",
+                feature = "source-wayland"
             )))]
             let audio_count = 0u64;
             #[cfg(any(
@@ -191,7 +209,10 @@ impl SourceBridge {
                                 packet_count += 1;
 
                                 let inject_result: anyhow::Result<()> = match packet {
-                                    #[cfg(feature = "native-source")]
+                                    #[cfg(any(
+                                        feature = "native-source",
+                                        feature = "source-wayland"
+                                    ))]
                                     MediaPacket::RtpPacket(packet) => {
                                         video_count += 1;
                                         if video_count % LOG_PACKET_INTERVAL == 1 {
@@ -202,6 +223,14 @@ impl SourceBridge {
                                         }
                                         forward_clone
                                             .inject_video_rtp_packet(packet)
+                                            .await
+                                            .map_err(|e| anyhow::anyhow!("{:?}", e))
+                                    }
+                                    #[cfg(feature = "source-wayland")]
+                                    MediaPacket::RtpAudioPacket(packet) => {
+                                        audio_count += 1;
+                                        forward_clone
+                                            .inject_audio_rtp_packet(packet)
                                             .await
                                             .map_err(|e| anyhow::anyhow!("{:?}", e))
                                     }
@@ -294,7 +323,8 @@ impl SourceBridge {
                                         feature = "source-rtsp",
                                         feature = "source-sdp",
                                         feature = "source-whep",
-                                        feature = "native-source"
+                                        feature = "native-source",
+                                        feature = "source-wayland"
                                     )))]
                                     _ => Ok(()),
                                 };
@@ -389,6 +419,38 @@ impl SourceBridge {
             })
         };
 
+        // Remote input: pump the stream's `input` cable bus (messages from
+        // any subscriber, towards the publisher side) into the source's
+        // input sink. Undeclared `input` channels land on the anonymous
+        // default bus (route falls back), so no cable config is needed.
+        #[cfg(feature = "source")]
+        let input_task = self.input_sink.take().map(|sink| {
+            let source_id_clone = self.source_id.clone();
+            let mut shutdown_rx5 = shutdown_tx.subscribe();
+            let mut input_rx = self
+                .forward
+                .cables()
+                .route("input")
+                .to_publisher
+                .subscribe();
+            tokio::spawn(async move {
+                info!("[{}] input pump started (cable 'input')", source_id_clone);
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx5.recv() => break,
+                        msg = input_rx.recv() => match msg {
+                            Ok(msg) => sink(msg),
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!("[{}] input pump lagged by {} messages", source_id_clone, n);
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+                info!("[{}] input pump stopped", source_id_clone);
+            })
+        });
+
         let mut tasks = self.tasks.lock().await;
         tasks.push(rtp_task);
         tasks.push(state_task);
@@ -397,6 +459,9 @@ impl SourceBridge {
         {
             tasks.push(rtcp_task);
             tasks.push(sender_report_task);
+            if let Some(input_task) = input_task {
+                tasks.push(input_task);
+            }
         }
 
         info!(

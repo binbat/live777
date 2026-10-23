@@ -1,0 +1,40 @@
+# PX4 v1.17 SITL + Gazebo Jetty on Ubuntu 26.04 (resolute)
+# Built once, run many times (the OSRF mirror is slow — don't pay it per run).
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+      git wget ca-certificates gnupg sudo lsb-release \
+      build-essential cmake ninja-build ccache pkg-config \
+      python3 python3-pip python3-setuptools python3-venv \
+      libeigen3-dev libxml2-utils libunwind-dev protobuf-compiler \
+      libopencv-dev \
+      >/dev/null && \
+    rm -rf /var/lib/apt/lists/*
+
+# Keep this layer's text/parents byte-identical: the OSRF mirror is slow.
+RUN wget -q https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable resolute main" \
+      > /etc/apt/sources.list.d/gazebo-stable.list && \
+    apt-get update -qq && \
+    apt-get install -y -qq gz-jetty qt6-wayland qtwayland5 >/dev/null && \
+    rm -rf /var/lib/apt/lists/*
+
+# PX4's empy templates need the 3.x API (RAW_OPT); install it pinned first so
+# nothing drags in empy 4.x.
+RUN pip3 install --break-system-packages -q "empy>=3.3,<4"
+RUN pip3 install --break-system-packages -q \
+      jinja2 pyYAML toml packaging kconfiglib jsonschema \
+      pyros-genmsg pyserial pymavlink six wheel setuptools lark pygments
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+      gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+      >/dev/null && \
+    rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]
