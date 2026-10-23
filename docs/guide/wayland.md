@@ -80,6 +80,28 @@ docker run -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0 ...
 Set `LIVE777_WAYLAND_XWAYLAND_LOG=1` to inherit XWayland's stderr instead of
 discarding it (useful when an X11 client stays black).
 
+## Remote input (keyboard & mouse)
+
+With `input=1` on the wayland URL, viewers can drive the desktop: the browser
+player sends JSON events over an `input` datachannel cable, and the
+compositor injects them into the seat — pointer moves/buttons with hit-tested
+focus, keys to the last-clicked window, wheel as wl_pointer axis frames.
+
+```toml
+url = "wayland://desktop-0?input=1"
+```
+
+Watch and control in a browser with the standalone player
+(`http://localhost:7777/tools/player.html?id=desktop-0&input`) — click the
+video once to give it keyboard focus, then type and click as usual. Any WHEP
+client can do the same with a datachannel labeled `input`; see
+`web/player-core/input-capture.ts` for the wire format
+(`{"t":"key"|"move"|"button"|"wheel", ...}`).
+
+**Security**: off by default. When enabled, *every* subscriber of the stream
+can control the desktop — combine with auth tokens and only enable where
+remote control is intended.
+
 ## Desktop audio
 
 With `audio=1` (the default) the stream also carries the desktop's sound:
@@ -127,9 +149,10 @@ WAYLAND_DISPLAY=desktop-0`.
   device defaults to `/dev/dri/renderD128` then `/dev/dri/card0`, overridable
   with `LIVE777_WAYLAND_DRM_DEVICE`. The same applies to X11 GL applications
   (XWayland glamor → DRI3 → dmabuf).
-- **No input injection** — a seat with keyboard/pointer exists so clients can
-  bind it, but no input events are generated. X11 windows are therefore not
-  focusable/movable; keyboard focus stays with the last mapped X11 window.
+- **No input injection** — unless `input=1` is set on the wayland URL: then
+  datachannel events (the `input` cable) inject into the seat with
+  focus-follows-click; X11 windows raise+activate on click. Without it the
+  desktop is view-only.
 - **Audio needs PipeWire** — desktop sound is captured from a PipeWire
   sink monitor; without a daemon the stream is video-only.
 - **Subsurfaces and xdg popups are not composited** — only xdg toplevels are

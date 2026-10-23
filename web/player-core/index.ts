@@ -1,3 +1,8 @@
+export {
+    attachInputCapture,
+    type InputCaptureOptions,
+    type InputChannelSource,
+} from "./input-capture";
 export type { StatsNerds } from "./types";
 export {
     collectVideoRtpFps,
