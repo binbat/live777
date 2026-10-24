@@ -53,7 +53,7 @@ export default defineConfig({
         ['meta', { name: 'theme-color', content: '#5f67ee' }],
         ['meta', { property: 'og:type', content: 'website' }],
         ['meta', { property: 'og:locale', content: 'en' }],
-        ['meta', { property: 'og:title', content: 'Live777 | A very simple, high performance, edge WebRTC SFU' }],
+        ['meta', { property: 'og:title', content: 'Live777 | A low-latency WebRTC platform for audio, video and data' }],
         ['meta', { property: 'og:site_name', content: 'VitePress' }],
         ['meta', { property: 'og:image', content: 'https://live777.binbat.com/logo.svg' }],
         ['meta', { property: 'og:url', content: 'https://live777.binbat.com/' }],

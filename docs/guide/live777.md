@@ -1,12 +1,13 @@
 # Live777 Core (liveion)
 
-A Pure Single SFU Server for WebRTC.
+The core media server node of Live777 — a WebRTC SFU at its heart, with
+protocol conversion, recording and native camera capture built in.
 
 `WHIP` / `WHEP` protocols are supported by default. When built with the `rtsp`
 feature, liveion can also act as an RTSP server: push media in via
 `ANNOUNCE/RECORD` and pull media out via `DESCRIBE/PLAY`.
 
-a core SFU server, If you need a single server, use this
+If you only need a single server node, this is the binary to run.
 
 ## Current support codecs {#codec}
 

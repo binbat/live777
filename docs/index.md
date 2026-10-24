@@ -4,8 +4,8 @@ layout: home
 
 hero:
   name: "Live777"
-  text: "A Real-time Audio and Video Streaming Media Server"
-  tagline: A very simple, high performance, lightweight, verge WebRTC SFU
+  text: "A Low-latency WebRTC Platform for Audio, Video and Data"
+  tagline: SFU core with a two-way RTP/RTSP gateway, WHIP/WHEP first-class
   image:
     src: logo.svg
     alt: Live777

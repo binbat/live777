@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  <b>A real-time audio and video streaming media server</b>
+  <b>A low-latency WebRTC platform for audio, video and data</b>
 </p>
 
 <div align="center">
@@ -43,9 +43,9 @@
 
 ---
 
-**Live777** is a very simple, high performance, lightweight WebRTC SFU (**Selective Forwarding Unit**) server, with `WHIP`/`WHEP` as its first-class protocols.
+**Live777** is a low-latency WebRTC platform for audio, video and data — a very simple, high performance, lightweight SFU (**Selective Forwarding Unit**) core with a two-way RTP/RTSP gateway, and `WHIP`/`WHEP` as its first-class protocols.
 
-Live777 works with [GStreamer](https://gstreamer.freedesktop.org/), [FFmpeg](https://ffmpeg.org/), [OBS Studio](https://obsproject.com/), [VLC](https://www.videolan.org/), [WebRTC](https://webrtc.org/) and other clients to receive and distribute streams — a typical publish (push) / subscribe (play) server model. It also converts between the audio and video protocols widely used on the Internet, such as RTP/RTSP to `WHIP` and `WHEP`.
+Live777 works with [GStreamer](https://gstreamer.freedesktop.org/), [FFmpeg](https://ffmpeg.org/), [OBS Studio](https://obsproject.com/), [VLC](https://www.videolan.org/), [WebRTC](https://webrtc.org/) and other clients to receive and distribute streams — a typical publish (push) / subscribe (play) server model. Around the SFU core it records streams, bridges DataChannels, and captures hardware-encoded camera video on ARM boards.
 
 ![live777-arch](./docs/public/live777-arch.excalidraw.svg)
 
