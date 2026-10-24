@@ -4,8 +4,8 @@ layout: home
 
 hero:
   name: "Live777"
-  text: "一个实时流媒体服务器"
-  tagline: 简单，高性能，WebRTC SFU Server
+  text: "基于 WebRTC 的低延时音视频/数据传输套件"
+  tagline: SFU 内核 + RTP/RTSP 双向网关，WHIP/WHEP 协议优先
   image:
     src: ../logo.svg
     alt: Live777

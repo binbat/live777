@@ -3,7 +3,7 @@ import { type LocaleConfig } from './types';
 export const en: LocaleConfig = {
     lang: 'en-US',
     label: 'English',
-    description: 'A very simple, high performance, edge WebRTC SFU',
+    description: 'A low-latency WebRTC platform for audio, video and data — SFU core with a two-way RTP/RTSP gateway',
 
     themeConfig: {
         nav: [

@@ -1,6 +1,6 @@
 [package]
 name = "liveion"
-description = "A very simple, high performance, edge WebRTC SFU"
+description = "The core SFU media server library of the Live777 streaming platform"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

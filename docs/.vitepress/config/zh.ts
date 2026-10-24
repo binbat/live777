@@ -3,7 +3,7 @@ import { type LocaleConfig } from './types';
 export const zh: LocaleConfig = {
     lang: 'zh-Hans',
     label: '简体中文',
-    description: '简单，高性能，WebRTC SFU',
+    description: '基于 WebRTC 的低延时音视频/数据传输套件——SFU 内核 + RTP/RTSP 双向网关',
 
     themeConfig: {
         nav: [

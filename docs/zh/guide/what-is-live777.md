@@ -1,6 +1,8 @@
 # Live777 是什么？
 
-简单，高性能的 `WHIP`/`WHEP` 协议优先的流媒体服务器
+基于 WebRTC 的低延时音视频/数据传输套件——以 SFU（选择性转发单元）为内核，自带 RTP/RTSP 双向网关，`WHIP`/`WHEP` 协议优先。
+
+SFU 内核只转发媒体，不混流、不转码；围绕内核，网关在 RTP/RTSP 与 WHIP/WHEP 之间双向转换（通过 `whipinto`/`whepfrom` 以及静态 source/target），Cable 则将 WebRTC DataChannel 桥接到 UDP 端点。
 
 对于更大规模的部署，配套的 `liveman` 管理器可以将多个 Live777 节点组成集群：它将客户端请求代理到各个节点，管理节点之间的级联状态，并协调整个集群的录制。
 

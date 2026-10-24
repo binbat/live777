@@ -6,10 +6,11 @@ conflicts with the code, the code wins.
 
 ## Project Overview
 
-Live777 is a lightweight, high-performance WebRTC SFU (Selective Forwarding
-Unit) that uses the `WHIP`/`WHEP` protocols as its primary interface. It is
-designed for real-time audio/video streaming and interoperates with clients
-such as GStreamer, FFmpeg, OBS Studio, VLC, and browsers.
+Live777 is a low-latency WebRTC platform for audio, video and data: a
+lightweight, high-performance SFU (Selective Forwarding Unit) core with a
+two-way RTP/RTSP gateway, using the `WHIP`/`WHEP` protocols as its primary
+interface. It interoperates with clients such as GStreamer, FFmpeg, OBS
+Studio, VLC, and browsers.
 
 The repository is a mixed Rust + TypeScript/Vue project. Rust provides
 the media server, protocol conversion, and command-line tools. TypeScript/Vite

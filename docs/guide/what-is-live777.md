@@ -1,8 +1,8 @@
 # What is Live777 ?
 
-A very simple, high performance, edge WebRTC SFU(**Selective Forwarding Unit**) Server
+A low-latency WebRTC platform for audio, video and data — a very simple, high performance SFU (**Selective Forwarding Unit**) core with a two-way RTP/RTSP gateway, and `WHIP`/`WHEP` as its first-class protocols.
 
-Live777 is an SFU server for real-time video streaming for the `WHIP`/`WHEP` as first protocol.
+The SFU core only forwards media — no mixing, no transcoding. Around it, the gateway converts between RTP/RTSP and WHIP/WHEP in both directions (via `whipinto`/`whepfrom` and static sources/targets), and Cables bridge WebRTC DataChannels to UDP endpoints.
 
 For larger deployments, the companion `liveman` manager turns multiple Live777 nodes into a cluster: it proxies client requests to the nodes, manages cascade state between them, and coordinates recording across the cluster.
 

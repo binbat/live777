@@ -1,6 +1,6 @@
 [package]
 name = "live777"
-description = "A very simple, high performance, edge WebRTC SFU"
+description = "A low-latency WebRTC platform for audio, video and data — SFU core with a two-way RTP/RTSP gateway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

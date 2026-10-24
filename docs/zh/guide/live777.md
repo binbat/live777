@@ -1,11 +1,11 @@
 # Live777 Core (liveion)
 
-一个为 WebRTC 而生的 SFU 服务器。
+Live777 的核心媒体服务器节点——内核是 WebRTC SFU，同时内置协议转换、录制与原生摄像头采集能力。
 
 默认支持 `WHIP` / `WHEP` 协议。启用 `rtsp` feature 后，liveion 还可以作为
 RTSP 服务器运行：通过 `ANNOUNCE/RECORD` 推流，通过 `DESCRIBE/PLAY` 拉流。
 
-a core SFU server, If you need a single server, use this
+如果只需要单节点服务器，用这个二进制即可。
 
 ## 目前支持的编码 {#codec}
 
