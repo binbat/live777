@@ -25,7 +25,7 @@ docker exec live777 smoke-test
 ```
 
 `smoke-test` 会通过 WHIP 发布一路合成测试流，再通过 WHEP 订阅回来，并
-用 FFmpeg 解码收到的视频——验证包括服务器在内的整条
+用 FFmpeg 解码收到的音频和视频——验证包括服务器在内的整条
 `WHIP → live777 → WHEP` 媒体通路。
 
 **成功**：命令打印一份 `whepprobe` JSON 报告（编码格式、解码帧数、耗时
@@ -78,9 +78,47 @@ docker stop live777
 docker run --rm --network host ghcr.io/binbat/live777-all:latest smoke-test --standalone
 ```
 
+standalone 模式使用独立的临时配置和仅限 loopback 的 ICE；可通过
+`SMOKE_PORT` 修改 HTTP 端口（默认 `7777`）。
+
+## 用三个终端验证 RTP 桥接闭环
+
+要权威验证本机 `FFmpeg → WHIP → WHEP → ffplay` 全链路，请先安装
+`live777`、`whipinto`、`whepfrom`、FFmpeg 和 ffplay（见
+[安装指南](/zh/guide/installation)）。如果 Docker 服务器已占用 7777 端口，
+先停止它，然后在同一工作目录的三个终端分别执行以下命令。
+
+**终端 1——启动 SFU：**
+
+```sh
+live777
+```
+
+**终端 2——生成 H264 RTP，并用 whipinto 发布：**
+
+```sh
+whipinto -i input.sdp -w http://127.0.0.1:7777/whip/777 --command \
+  "ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 \
+  -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency \
+  -f rtp rtp://127.0.0.1:5002 -sdp_file input.sdp"
+```
+
+**终端 3——用 whepfrom 订阅，并通过生成的 SDP 播放：**
+
+```sh
+whepfrom -w http://127.0.0.1:7777/whep/777 \
+  -o rtp://127.0.0.1:9000 --sdp-file output.sdp --command \
+  "ffplay -protocol_whitelist rtp,file,udp -i output.sdp"
+```
+
+RTP 输出 URL 将视频发送到 9000 端口（有音频时发送到 9002），
+`--sdp-file` 生成的 SDP 向 ffplay 描述接收端。结束后在各终端按 Ctrl-C。
+认证、其他编码和 RTSP 用法见 [whipinto](/zh/guide/whipinto)、
+[whepfrom](/zh/guide/whepfrom) 和 [FFmpeg 指南](/zh/guide/ffmpeg)。
+
 ## 自检不覆盖的内容
 
-`smoke-test` 验证的是 `WHIP → live777 → WHEP` 视频通路及 FFmpeg 解码。
+`smoke-test` 验证的是 `WHIP → live777 → WHEP` 音视频通路及 FFmpeg 解码。
 在此之外：
 
 - 要验证**浏览器**渲染，请使用 [WhepWright](/zh/guide/whepwright)，它

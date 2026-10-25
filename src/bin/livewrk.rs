@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, info};
 
@@ -22,12 +22,61 @@ mod log;
 #[path = "../utils.rs"]
 mod utils;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, clap::Args)]
+struct AcceptanceArgs {
+    /// Output format: human, json
+    #[arg(long, value_enum, default_value = "human", global = true)]
+    output: OutputFormat,
+
+    /// Minimum connected sessions required for success
+    #[arg(long, default_value_t = 0, global = true)]
+    min_connected: u64,
+
+    /// Minimum aggregate packets required for success
+    #[arg(long, default_value_t = 0, global = true)]
+    min_packets: u64,
+
+    /// Minimum aggregate bytes required for success
+    #[arg(long, default_value_t = 0, global = true)]
+    min_bytes: u64,
+
+    /// Fail if any session fails or is aborted
+    #[arg(long, global = true)]
+    fail_on_any_session: bool,
+}
+
+impl AcceptanceArgs {
+    fn criteria(
+        self,
+        verification_requested: bool,
+        verification_tolerant: bool,
+    ) -> livetwo::loadtest::acceptance::AcceptanceCriteria {
+        livetwo::loadtest::acceptance::AcceptanceCriteria {
+            min_connected: self.min_connected,
+            min_packets: self.min_packets,
+            min_bytes: self.min_bytes,
+            fail_on_any_session: self.fail_on_any_session,
+            verification_requested,
+            verification_tolerant,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "livewrk", version = version::version_with_features!())]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]
     #[arg(short = 'v', action = ArgAction::Count, default_value_t = 0, global = true)]
     verbose: u8,
+
+    #[command(flatten)]
+    acceptance: AcceptanceArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -132,17 +181,27 @@ struct WhepArgs {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    if let Err(e) = run().await {
-        eprintln!("Error: {e:?}");
-        std::process::exit(1);
-    }
-    Ok(())
+async fn main() {
+    let args = Args::parse();
+    let output = args.acceptance.output;
+    let code = match run(args).await {
+        Ok(true) => 0,
+        Ok(false) => 1,
+        Err(e) => {
+            if matches!(output, OutputFormat::Json) {
+                let report =
+                    livetwo::loadtest::acceptance::RunReport::operational_failure(format!("{e:?}"));
+                print_report("", &report, output);
+            } else {
+                eprintln!("Error: {e:?}");
+            }
+            1
+        }
+    };
+    std::process::exit(code);
 }
 
-async fn run() -> Result<()> {
-    let args = Args::parse();
-
+async fn run(args: Args) -> Result<bool> {
     let (log_level, webrtc_level) = match args.verbose {
         0 => (Level::WARN, Level::ERROR),
         1 => (Level::INFO, Level::WARN),
@@ -150,18 +209,24 @@ async fn run() -> Result<()> {
         _ => (Level::TRACE, Level::DEBUG),
     };
 
-    log::set(format!(
+    let filter = format!(
         "livewrk={},livetwo={},webrtc={}",
         log_level, log_level, webrtc_level,
-    ));
-
-    match args.command {
-        Command::Whip(whip_args) => run_whip(whip_args).await?,
-        Command::Whep(whep_args) => run_whep(whep_args).await?,
+    );
+    if matches!(args.acceptance.output, OutputFormat::Json) {
+        log::set_stderr(filter);
+    } else {
+        log::set(filter);
     }
 
+    let acceptance = args.acceptance;
+    let success = match args.command {
+        Command::Whip(whip_args) => run_whip(whip_args, acceptance).await?,
+        Command::Whep(whep_args) => run_whep(whep_args, acceptance).await?,
+    };
+
     info!("=== Graceful shutdown completed ===");
-    Ok(())
+    Ok(success)
 }
 
 /// Cancel `ct` on the first SIGINT/SIGTERM so a running loadtest drains and
@@ -223,8 +288,34 @@ fn print_stats(kind: &str, stats: &livetwo::loadtest::LoadtestStats) {
     println!("══════════════════════════════════════════════\n");
 }
 
+fn print_report(
+    kind: &str,
+    report: &livetwo::loadtest::acceptance::RunReport,
+    output: OutputFormat,
+) {
+    match output {
+        OutputFormat::Human => {
+            print_stats(kind, &report.stats);
+            if let Some(verify) = &report.verification {
+                print_verify_stats(verify);
+            }
+            for warning in &report.warnings {
+                eprintln!("WARNING: {warning}");
+            }
+            for failure in &report.failures {
+                eprintln!("ERROR: {failure}");
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(report)
+                .expect("loadtest report should always be serializable");
+            println!("{json}");
+        }
+    }
+}
+
 #[cfg(feature = "rsmpeg")]
-async fn run_whip(args: WhipArgs) -> Result<()> {
+async fn run_whip(args: WhipArgs, acceptance: AcceptanceArgs) -> Result<bool> {
     use anyhow::{Context, anyhow};
 
     let video_codec_cli = cli::codec_from_str(&args.video_codec)
@@ -265,19 +356,26 @@ async fn run_whip(args: WhipArgs) -> Result<()> {
     let ct = CancellationToken::new();
     spawn_signal_handler(ct.clone());
 
-    let stats = livetwo::loadtest::whip::run(&config, publisher_config, ct).await?;
-    print_stats("WHIP publish", &stats);
-    Ok(())
+    let stats = livetwo::loadtest::whip::collect(&config, publisher_config, ct).await?;
+    let report = livetwo::loadtest::acceptance::RunReport::new(
+        stats,
+        None,
+        acceptance.criteria(false, false),
+    );
+    let success = report.success;
+    print_report("WHIP publish", &report, acceptance.output);
+    Ok(success)
 }
 
 #[cfg(not(feature = "rsmpeg"))]
-async fn run_whip(_args: WhipArgs) -> Result<()> {
+async fn run_whip(_args: WhipArgs, _acceptance: AcceptanceArgs) -> Result<bool> {
     anyhow::bail!(
         "the `whip` subcommand requires the `rsmpeg` feature; rebuild with --features rsmpeg"
     )
 }
 
-async fn run_whep(args: WhepArgs) -> Result<()> {
+async fn run_whep(args: WhepArgs, acceptance: AcceptanceArgs) -> Result<bool> {
+    let verification_requested = args.verify_window.is_some();
     let params = livetwo::loadtest::whep::WhepLoadParams {
         whep_url: args.whep,
         token: args.token,
@@ -294,38 +392,15 @@ async fn run_whep(args: WhepArgs) -> Result<()> {
     let ct = CancellationToken::new();
     spawn_signal_handler(ct.clone());
 
-    let (stats, verify) = livetwo::loadtest::whep::run(&config, params, ct).await?;
-    print_stats("WHEP subscribe", &stats);
-    if args.verify_window.is_some() {
-        match &verify {
-            Some(verify) => {
-                print_verify_stats(verify);
-                if verify.windows_total == 0 {
-                    // Verification was requested but never completed a single
-                    // full window: a vacuous pass must not succeed silently.
-                    let msg = "verification enabled but no full decode window completed";
-                    if args.verify_tolerant {
-                        eprintln!("WARNING: {msg}");
-                    } else {
-                        anyhow::bail!(msg);
-                    }
-                }
-                if verify.windows_failed > 0 && !args.verify_tolerant {
-                    anyhow::bail!("{} verification window(s) failed", verify.windows_failed);
-                }
-            }
-            // The verifier task panicked and its results were lost.
-            None => {
-                let msg = "decode verification did not produce results";
-                if args.verify_tolerant {
-                    eprintln!("WARNING: {msg}");
-                } else {
-                    anyhow::bail!(msg);
-                }
-            }
-        }
-    }
-    Ok(())
+    let (stats, verification) = livetwo::loadtest::whep::collect(&config, params, ct).await?;
+    let report = livetwo::loadtest::acceptance::RunReport::new(
+        stats,
+        verification,
+        acceptance.criteria(verification_requested, args.verify_tolerant),
+    );
+    let success = report.success;
+    print_report("WHEP subscribe", &report, acceptance.output);
+    Ok(success)
 }
 
 fn print_verify_stats(verify: &livetwo::loadtest::whep::VerifyStats) {

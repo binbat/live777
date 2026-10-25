@@ -62,7 +62,7 @@ pub struct WhepLoadParams {
 }
 
 /// Aggregate stats of the rotating decode verifier.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct VerifyStats {
     /// Windows that ran to completion; windows cut short by shutdown are not
     /// counted.
@@ -83,11 +83,20 @@ pub struct VerifyStats {
     pub last_error: Option<String>,
 }
 
-/// Run `config.session_count` WHEP subscribers against `params.whep_url`.
-///
-/// Returns the aggregate loadtest stats and, when `params.verify_window` is
-/// set, the stats of the rotating decode verifier.
+/// Run subscribers with the original all-failed error contract.
 pub async fn run(
+    config: &LoadtestConfig,
+    params: WhepLoadParams,
+    ct: CancellationToken,
+) -> Result<(LoadtestStats, Option<VerifyStats>)> {
+    let (stats, verification) = collect(config, params, ct).await?;
+    super::ensure_legacy_success(&stats)?;
+    Ok((stats, verification))
+}
+
+/// Collect subscriber and optional verifier stats without applying acceptance
+/// rules, so callers can report even an all-failed run.
+pub async fn collect(
     config: &LoadtestConfig,
     params: WhepLoadParams,
     ct: CancellationToken,
@@ -105,8 +114,6 @@ pub async fn run(
     })
     .await;
 
-    // Stop the verifier however the sessions ended, and collect its stats
-    // before propagating any session error.
     session_ct.cancel();
     let verify_stats = verifier.finish().await;
     let stats = result?;

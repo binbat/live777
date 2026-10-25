@@ -10,7 +10,8 @@
 # its own throwaway live777 first and stops only the processes it started.
 #
 # Env:
-#   SMOKE_SERVER_URL     live777 base URL (default http://127.0.0.1:7777)
+#   SMOKE_SERVER_URL     live777 base URL in server mode (default http://127.0.0.1:7777)
+#   SMOKE_PORT           standalone HTTP port (default 7777)
 #   SMOKE_TOKEN          Bearer token, passed as -t to both tools
 #   SMOKE_STREAM         stream name (default smoke-<epoch>-<pid>)
 #   SMOKE_ATTEMPTS       bounded probe attempts (default 5)
@@ -41,7 +42,22 @@ for arg in "$@"; do
     esac
 done
 
-SERVER_URL="${SMOKE_SERVER_URL:-http://127.0.0.1:7777}"
+PORT="${SMOKE_PORT:-7777}"
+case "$PORT" in
+    '' | *[!0-9]*)
+        echo "smoke-test: SMOKE_PORT must be an integer from 1 to 65535" >&2
+        exit 2
+        ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "smoke-test: SMOKE_PORT must be an integer from 1 to 65535" >&2
+    exit 2
+fi
+if [ "$STANDALONE" -eq 1 ]; then
+    SERVER_URL="http://127.0.0.1:$PORT"
+else
+    SERVER_URL="${SMOKE_SERVER_URL:-http://127.0.0.1:$PORT}"
+fi
 STREAM="${SMOKE_STREAM:-smoke-$(date +%s)-$$}"
 ATTEMPTS="${SMOKE_ATTEMPTS:-5}"
 READY_TIMEOUT="${SMOKE_READY_TIMEOUT:-30}"
@@ -85,11 +101,41 @@ wait_http_ready() {
 }
 
 if [ "$STANDALONE" -eq 1 ]; then
-    live777 -v >"$LOG_DIR/live777.log" 2>&1 &
+    if curl -s --max-time 2 -o /dev/null "$SERVER_URL/api/info"; then
+        echo "smoke-test: $SERVER_URL is already serving HTTP; refusing to start or publish standalone smoke" >&2
+        exit 1
+    fi
+    cat >"$LOG_DIR/live777.toml" <<EOF
+[http]
+listen = "127.0.0.1:$PORT"
+
+[rtsp]
+listen = "127.0.0.1:0"
+
+[webrtc]
+ice_udp_addrs = ["127.0.0.1:0"]
+EOF
+    LIVE777_WEBRTC_ICE_UDP_ADDRS="127.0.0.1:0"
+    export LIVE777_WEBRTC_ICE_UDP_ADDRS
+    live777 -v -c "$LOG_DIR/live777.toml" >"$LOG_DIR/live777.log" 2>&1 &
     LIVE777_PID=$!
     echo "smoke-test: started live777 (pid $LIVE777_PID), waiting for $SERVER_URL" >&2
-    if ! wait_http_ready "$SERVER_URL" "$READY_TIMEOUT"; then
-        echo "smoke-test: live777 did not become ready within ${READY_TIMEOUT}s; log:" >&2
+    i=0
+    READY=0
+    while [ "$i" -lt "$READY_TIMEOUT" ]; do
+        if ! kill -0 "$LIVE777_PID" 2>/dev/null; then
+            break
+        fi
+        if grep -q "Server listening on" "$LOG_DIR/live777.log" &&
+            curl -s --max-time 2 -o /dev/null "$SERVER_URL/api/info"; then
+            READY=1
+            break
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    if [ "$READY" -ne 1 ]; then
+        echo "smoke-test: own live777 did not become ready within ${READY_TIMEOUT}s; log:" >&2
         cat "$LOG_DIR/live777.log" >&2
         exit 1
     fi
@@ -102,7 +148,7 @@ fi
 # tools default to no ICE servers (host candidates only), so the check stays
 # off the internet. $TOKEN_OPT intentionally expands to two words.
 # shellcheck disable=SC2086
-whipsynth -v --whip "$SERVER_URL/whip/$STREAM" --ice-server "" $TOKEN_OPT \
+whipsynth -v --whip "$SERVER_URL/whip/$STREAM" --acodec opus --ice-server "" $TOKEN_OPT \
     >"$LOG_DIR/whipsynth.log" 2>&1 &
 SYNTH_PID=$!
 echo "smoke-test: publishing stream '$STREAM' with whipsynth (pid $SYNTH_PID)" >&2

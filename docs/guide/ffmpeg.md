@@ -1,3 +1,9 @@
+---
+description: >-
+  Publish and play H264, H265, VP8, VP9, AV1, and audio streams with FFmpeg,
+  whipinto, whepfrom, and ffplay.
+---
+
 # FFmpeg
 
 We have tools [whipinto](/guide/whipinto) and [whepfrom](/guide/whepfrom) for support `rtp` <-> `whip`/`whep` convert
@@ -67,7 +73,8 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 ```
 
 ```bash
-whepfrom -o output.sdp -w http://localhost:7777/whep/777
+whepfrom -o rtp://127.0.0.1:9000 --sdp-file output.sdp \
+  -w http://localhost:7777/whep/777
 ```
 
 For ffplay. You Need a sdp file
@@ -107,15 +114,14 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 
 ## AV1
 
-::: warning
-- Please set `-strict experimental`
-:::
+Current FFmpeg releases do not normally need `-strict experimental` for this
+example. Add it only if an older FFmpeg build explicitly requires it for AV1
+RTP packetization.
 
 ```bash
 ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p \
 -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 \
--strict experimental \
 -f rtp "rtp://127.0.0.1:5002" -sdp_file input.sdp
 ```
 

@@ -52,6 +52,52 @@ whepwright -w http://localhost:7777/whep/live \
 | `--headless` | `true` | Run the browser in headless mode (`true` or `false`) |
 | `--output` | `human` | Output format: `human`, `json` |
 | `--timeout` | `30` | Overall timeout in seconds |
+| `--diagnostics-dir` | `whepwright-diagnostics` | Parent directory for per-run diagnostics |
+| `--trace` | off | Capture a Playwright trace on failure; cannot be combined with `--token` |
+
+## JSON output
+
+`--output json` writes exactly one JSON result to stdout. Logs, including verbose
+Playwright runner logs, go to stderr so stdout can be piped directly to `jq` or
+another program. The exit code remains non-zero on playback failure.
+
+The result's `artifacts` object reports the diagnostics `directory`, whether it
+was `retained`, the paths of captured files, and any `capture_errors`. A capture
+error does not replace the original playback error.
+
+```bash
+whepwright -w http://localhost:7777/whep/live --output json
+```
+
+## Failure diagnostics
+
+Every invocation uses its own `run-*` directory below `--diagnostics-dir`.
+Successful runs remove that directory. Failed runs retain:
+
+- `screenshot.png`: the browser page at the point of failure;
+- `console.log`: browser console messages, uncaught page errors, and runner
+  messages;
+- `sdp-ice.json`: connection state timeline, ICE candidate type counts, the
+  selected candidate pair and round-trip time when available, and RTP summaries;
+- `trace.zip`: a Playwright trace, only when `--trace` was requested.
+
+`sdp-ice.json` contains summaries, not the offer or answer SDP. Neither
+authentication tokens nor complete SDP are written to that file. Capture failures
+are listed in the result's `artifacts.capture_errors` array. If the Rust runner
+times out, it asks Node to finish capture and close the browser, then cleans up
+any remaining runner processes; the retained diagnostics may be incomplete.
+
+Playwright traces can contain evaluated arguments and network authorization
+headers. For that reason `--trace --token ...` is rejected before a browser or
+diagnostics directory is created. When a bearer token is required, run without
+`--trace`.
+
+To retain a trace for a failing run:
+
+```bash
+whepwright -w http://localhost:7777/whep/live \
+  --output json --trace --diagnostics-dir ./diagnostics
+```
 
 ## Exit code
 

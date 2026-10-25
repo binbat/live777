@@ -8,6 +8,47 @@
 ./live777
 ```
 
+### 诊断工具包
+
+Release 同时发布 `live777-diagnostics-<版本>-<目标>` 压缩包，包含使用
+`rsmpeg` 构建的 `whipsynth`、`whepprobe` 和 `livewrk`。工具包已包含动态
+FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。
+
+| 平台 | 目标 |
+|------|------|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple silicon | `aarch64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+在 Linux 和 macOS 上解压 `.tar.gz` 后，请运行 `bin/` 中的启动脚本。脚本会
+相对于解压目录定位随包的 `lib/`，因此整个目录可以移动；不要直接运行
+`.real` 二进制文件。
+
+```bash
+TAG=v0.11.0
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+cd "live777-diagnostics-${TAG}-${TARGET}"
+./bin/whipsynth --version
+./bin/whepprobe --version
+./bin/livewrk --version
+```
+
+在 Windows 上解压 `.zip` 后，工具、FFmpeg/编解码器 DLL 和 x64 MSVC 运行时
+DLL（`vcruntime140*`、`msvcp140*`、`concrt140*`，以及存在时的
+`vccorlib140*`）均位于 `bin/`，无需另外安装 Visual C++ Redistributable：
+
+```powershell
+Expand-Archive .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc.zip
+cd .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc
+.\bin\whipsynth.exe --version
+.\bin\whepprobe.exe --version
+.\bin\livewrk.exe --version
+```
+
 ### 使用配置
 
 ```bash

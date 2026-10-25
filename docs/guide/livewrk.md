@@ -60,7 +60,18 @@ Both subcommands share these options:
 | `--sessions` | `100` | Number of concurrent sessions |
 | `--ramp-ms` | `10` | Milliseconds between spawning each session (ramp-up) |
 | `--duration` | `60` | Overall run duration in seconds; sessions stop afterwards |
+| `--output` | `human` | Report format: `human` or `json` |
+| `--min-connected` | `0` | Minimum connected sessions required for success |
+| `--min-packets` | `0` | Minimum aggregate packets required for success |
+| `--min-bytes` | `0` | Minimum aggregate bytes required for success |
+| `--fail-on-any-session` | `false` | Fail if any session fails or is aborted |
 | `-v`, `-vv`, `-vvv` | `warn` | Log verbosity: `info`, `debug`, `trace` |
+
+The three thresholds apply to the final aggregate report, not to each session.
+Without them, a run with at least one connected session keeps the original
+partial-failure behavior and exits successfully; failed and aborted sessions
+are listed as warnings. All sessions failing is always an error. Cleanly
+cancelled sessions do not count as failures.
 
 ## `whip` options
 
@@ -110,10 +121,51 @@ At the end of a run `livewrk` prints a summary:
 Media write errors and RTCP feedback (NACK/PLI) are shown when non-zero;
 `whip` runs report sent packets, `whep` runs received ones.
 
+With `--output json`, stdout contains only one JSON report and logs go to
+stderr. Schema version 1 has the following top-level fields (the same fields
+are emitted for successful and failed runs):
+
+```json
+{
+  "schema_version": 1,
+  "stats": {
+    "sessions_total": 2,
+    "sessions_connected": 2,
+    "sessions_failed": 0,
+    "sessions_cancelled": 0,
+    "sessions_aborted": 0,
+    "total_packets": 152340,
+    "total_bytes": 52428800,
+    "total_errors": 0,
+    "total_nack_count": 0,
+    "total_pli_count": 0,
+    "total_connected_duration": { "secs": 20, "nanos": 0 }
+  },
+  "verification": null,
+  "failures": [],
+  "warnings": [],
+  "success": true
+}
+```
+
+`verification` is `null` when verification was not requested or its results
+were lost; otherwise it contains the rotating verifier's window, session,
+frame, note, and error statistics. `failures` explains unsuccessful acceptance
+checks, while `warnings` records tolerated verification problems, partial
+session failures, and runs where every session was cleanly cancelled. Even an
+all-failed run emits this report before exiting non-zero. Runtime errors that
+occur before collection (for example, an invalid WHIP URL or unavailable decode
+verification support) also emit this envelope in JSON mode: `success` is
+`false`, `failures` contains the error, and `stats` and `verification` use their
+default empty values. Command-line parsing errors happen before JSON mode is
+established and retain the standard CLI error output.
+
 ## Exit code
 
-- `0`: run completed (or interrupted by the first Ctrl-C, after graceful
-  shutdown) with at least one connected session and no failed verification.
-- `1`: an error occurred, every session failed, or decode verification
-  failed without `--verify-tolerant`.
+- `0`: all configured acceptance checks passed (or the first Ctrl-C triggered
+  a graceful shutdown whose final report passed). Partial session failures are
+  allowed by default; verification failures can be tolerated explicitly.
+- `1`: an operational error occurred, every session failed, a configured
+  minimum was not met, `--fail-on-any-session` observed a failed/aborted
+  session, or decode verification failed without `--verify-tolerant`.
 - `130`: a second Ctrl-C forced an immediate quit during shutdown.

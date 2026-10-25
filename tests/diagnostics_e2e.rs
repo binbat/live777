@@ -234,50 +234,63 @@ fn parse_probe_json(stdout: &str, stderr: &str) -> serde_json::Value {
     })
 }
 
-/// The default smoke flow closes the loop: whipsynth publishes VP8 video with
-/// opus audio, and whepprobe connects, decodes frames, and reports success.
-///
 /// Multi-threaded runtime: the in-process server handles ICE/DTLS/SRTP for
 /// both sessions, and a single-threaded runtime can stall ICE consent checks
 /// long enough to drop connections under load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn whipsynth_vp8_av_stream_probes_successfully() {
+async fn whipsynth_vp8_opus_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", Some("opus")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_vp8_g722_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", Some("g722")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_av1_opus_stream_probes_successfully() {
+    assert_whipsynth_probe("av1", Some("opus")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_vp8_video_only_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", None).await;
+}
+
+async fn assert_whipsynth_probe(video_codec: &str, audio_codec: Option<&str>) {
     init_test_environment();
     let addr = start_liveion().await;
     let base = format!("http://{addr}");
-    let stream = format!("smoke-av-{}", std::process::id());
-
-    // Publish in the background until the cleanup below kills the publisher.
-    // `--ice-server ""` disables ICE servers on both peers, so the test sends
-    // no STUN/TURN traffic and passes on CI runners without UDP egress: every
-    // peer connects over loopback host candidates.
-    let mut publisher = spawn_tool(
-        whipsynth_path(),
-        &[
-            "-v",
-            "--whip",
-            &format!("{base}/whip/{stream}"),
-            "--vcodec",
-            "vp8",
-            "--acodec",
-            "opus",
-            "--ice-server",
-            "",
-        ],
+    let stream = format!(
+        "probe-{video_codec}-{}-{}",
+        audio_codec.unwrap_or("video-only"),
+        std::process::id()
     );
+    let whip_url = format!("{base}/whip/{stream}");
+    let whep_url = format!("{base}/whep/{stream}");
+    let mut publisher_args = vec![
+        "-v",
+        "--whip",
+        &whip_url,
+        "--vcodec",
+        video_codec,
+        "--ice-server",
+        "",
+    ];
+    if let Some(audio_codec) = audio_codec {
+        publisher_args.extend(["--acodec", audio_codec]);
+    }
+    let mut publisher = spawn_tool(whipsynth_path(), &publisher_args);
 
-    // Probe only once the publish session is up.
     wait_stream_connected(&addr, &stream, &mut publisher).await;
 
     let mut probe = tool(
         whepprobe_path(),
         &[
             "--whep",
-            &format!("{base}/whep/{stream}"),
+            &whep_url,
             "--output",
             "json",
-            // whipsynth emits one keyframe per second; leave one full GOP of
-            // slack instead of ending the decode window exactly at one GOP.
             "--decode-duration",
             "2",
             "--timeout",
@@ -286,7 +299,6 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
             "",
         ],
     );
-    // The probe's own timeout is 30s; give the process twice that to exit.
     let probe = tokio::time::timeout(Duration::from_secs(60), probe.output())
         .await
         .expect("whepprobe did not exit within 60s")
@@ -303,54 +315,41 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
     }
 
     let report = parse_probe_json(&probe_stdout, &probe_stderr);
-    assert_eq!(
-        Some(true),
-        report["success"].as_bool(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some(true),
-        report["connected"].as_bool(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert!(
-        report["frame_count"].as_u64().unwrap_or(0) > 0,
-        "probe decoded no frames:\n{probe_stdout}"
-    );
-    assert!(
-        report["width"].as_u64().unwrap_or(0) > 0,
-        "probe report has no width:\n{probe_stdout}"
-    );
-    assert!(
-        report["height"].as_u64().unwrap_or(0) > 0,
-        "probe report has no height:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some("vp8"),
-        report["video_codec"].as_str(),
-        "probe report:\n{probe_stdout}"
-    );
-    // The rsmpeg probe does not decode audio; it only reports the codec
-    // negotiated once the first audio RTP packet arrives and the bytes it
-    // drained. Assert on those reported fields only -- nothing here claims
-    // the audio was decoded.
-    assert_eq!(
-        Some("opus"),
-        report["audio_codec"].as_str(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some(1),
-        report["audio_tracks"].as_u64(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert!(
-        report["audio_bytes_received"].as_u64().unwrap_or(0) > 0,
-        "probe received no audio bytes:\n{probe_stdout}"
-    );
+    assert_eq!(Some(true), report["success"].as_bool());
+    assert_eq!(Some(true), report["connected"].as_bool());
+    assert!(report["frame_count"].as_u64().unwrap_or(0) > 0);
+    assert!(report["width"].as_u64().unwrap_or(0) > 0);
+    assert!(report["height"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(Some(video_codec), report["video_codec"].as_str());
 
-    // The publisher must have survived the whole probe; a publisher that died
-    // mid-run would have silenced the stream underneath it.
+    if let Some(audio_codec) = audio_codec {
+        assert_eq!(Some(audio_codec), report["audio_codec"].as_str());
+        assert_eq!(Some(1), report["audio_tracks"].as_u64());
+        assert!(report["audio_bytes_received"].as_u64().unwrap_or(0) > 0);
+        assert!(
+            report["audio_frame_count"].as_u64().unwrap_or(0) > 0,
+            "probe received audio but decoded no audio frames:\n{probe_stdout}"
+        );
+        assert_eq!(
+            Some(if audio_codec == "opus" {
+                48_000
+            } else {
+                16_000
+            }),
+            report["audio_sample_rate"].as_u64()
+        );
+        assert_eq!(
+            Some(if audio_codec == "opus" { 2 } else { 1 }),
+            report["audio_channels"].as_u64()
+        );
+    } else {
+        assert!(report["audio_codec"].is_null());
+        assert_eq!(Some(0), report["audio_tracks"].as_u64());
+        assert_eq!(Some(0), report["audio_frame_count"].as_u64());
+        assert_eq!(Some(0), report["audio_sample_rate"].as_u64());
+        assert_eq!(Some(0), report["audio_channels"].as_u64());
+    }
+
     let alive = !publisher.has_exited();
     let (pub_stdout, pub_stderr) = publisher.captured_output();
     assert!(
@@ -358,16 +357,8 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
         "publisher exited during the probe:\nstdout:\n{pub_stdout}\nstderr:\n{pub_stderr}"
     );
 
-    // Cleanup: kill the publisher and wait for it and its drain tasks so no
-    // child process or tokio task leaks out of the test.
     let publisher = publisher.kill_and_wait().await;
-    let pub_stdout = String::from_utf8_lossy(&publisher.stdout);
-    let pub_stderr = String::from_utf8_lossy(&publisher.stderr);
-    assert!(
-        !publisher.status.success(),
-        "killed publisher should report a non-success status, got {:?}:\nstdout:\n{pub_stdout}\nstderr:\n{pub_stderr}",
-        publisher.status
-    );
+    assert!(!publisher.status.success());
 }
 
 /// The probe reports a structured failure for an endpoint that never delivers
@@ -413,4 +404,11 @@ async fn whepprobe_reports_failure_without_media() {
         report["success"].as_bool(),
         "probe report:\n{probe_stdout}"
     );
+    for field in ["audio_frame_count", "audio_sample_rate", "audio_channels"] {
+        assert_eq!(
+            Some(0),
+            report[field].as_u64(),
+            "failure report must contain a stable zero {field}:\n{probe_stdout}"
+        );
+    }
 }

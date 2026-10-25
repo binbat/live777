@@ -140,6 +140,79 @@
         return new Promise((resolve) => setTimeout(resolve, ms));
       }
 
+      window.__LIVE777_DIAGNOSTICS__ = {
+        stateTimeline: [],
+        candidateTypeCounts: {},
+        selectedPair: null,
+        rtp: [],
+      };
+
+      function instrumentPeerConnection(pc, peer) {
+        const record = (kind, state) => {
+          window.__LIVE777_DIAGNOSTICS__.stateTimeline.push({
+            timestamp: new Date().toISOString(),
+            peer,
+            kind,
+            state,
+          });
+        };
+        for (const [event, kind, property] of [
+          ["signalingstatechange", "signaling", "signalingState"],
+          ["icegatheringstatechange", "iceGathering", "iceGatheringState"],
+          ["iceconnectionstatechange", "iceConnection", "iceConnectionState"],
+          ["connectionstatechange", "connection", "connectionState"],
+        ]) {
+          pc.addEventListener(event, () => record(kind, pc[property]));
+          record(kind, pc[property]);
+        }
+      }
+
+      async function capturePeerDiagnostics(pc, peer) {
+        const stats = await pc.getStats();
+        const diagnostics = window.__LIVE777_DIAGNOSTICS__;
+        const localCandidates = new Map();
+        const remoteCandidates = new Map();
+        const pairs = [];
+        const rtp = diagnostics.rtp.filter((item) => item.peer !== peer);
+        stats.forEach((report) => {
+          if (report.type === "local-candidate" || report.type === "remote-candidate") {
+            const candidates = report.type === "local-candidate" ? localCandidates : remoteCandidates;
+            candidates.set(report.id, report);
+            const type = report.candidateType || "unknown";
+            diagnostics.candidateTypeCounts[type] =
+              (diagnostics.candidateTypeCounts[type] || 0) + 1;
+          } else if (report.type === "candidate-pair") {
+            pairs.push(report);
+          } else if (report.type === "inbound-rtp" || report.type === "outbound-rtp") {
+            rtp.push({
+              peer,
+              direction: report.type === "inbound-rtp" ? "inbound" : "outbound",
+              mediaType: report.mediaType || report.kind || "unknown",
+              packets: report.type === "inbound-rtp" ? report.packetsReceived || 0 : report.packetsSent || 0,
+              bytes: report.type === "inbound-rtp" ? report.bytesReceived || 0 : report.bytesSent || 0,
+              packetsLost: report.packetsLost || 0,
+              framesDecoded: report.framesDecoded || 0,
+              framesEncoded: report.framesEncoded || 0,
+            });
+          }
+        });
+        diagnostics.rtp = rtp;
+        const pair = pairs.find(
+          (report) =>
+            report.selected ||
+            (report.nominated && report.state === "succeeded") ||
+            report.state === "succeeded",
+        );
+        if (pair) {
+          diagnostics.selectedPair = {
+            peer,
+            localCandidateType: localCandidates.get(pair.localCandidateId)?.candidateType || "unknown",
+            remoteCandidateType: remoteCandidates.get(pair.remoteCandidateId)?.candidateType || "unknown",
+            currentRoundTripTime: pair.currentRoundTripTime ?? null,
+          };
+        }
+      }
+
       async function fetchSdp(url, offer, token) {
         const headers = {
           "Content-Type": "application/sdp",
@@ -223,6 +296,7 @@
         log(`Starting WHEP subscribe: ${whepUrl}`);
 
         const pc = new RTCPeerConnection();
+        instrumentPeerConnection(pc, "subscribe");
         const video = document.getElementById("video");
         const stream = new MediaStream();
         video.srcObject = stream;
@@ -283,6 +357,9 @@
             error: null,
           };
         } finally {
+          await capturePeerDiagnostics(pc, "subscribe").catch((err) =>
+            log(`Diagnostics capture error: ${err.message || err}`),
+          );
           pc.close();
         }
       }
@@ -292,6 +369,7 @@
         log(`Starting WHIP publish: ${whipUrl}`);
 
         const pc = new RTCPeerConnection();
+        instrumentPeerConnection(pc, "publish");
         const { stream, cleanup } = await acquireStream(source);
         for (const track of stream.getTracks()) {
           pc.addTrack(track, stream);
@@ -345,6 +423,9 @@
             error: null,
           };
         } finally {
+          await capturePeerDiagnostics(pc, "publish").catch((err) =>
+            log(`Diagnostics capture error: ${err.message || err}`),
+          );
           pc.close();
           cleanup();
         }
@@ -419,6 +500,7 @@
 
         try {
           publishPc = new RTCPeerConnection();
+          instrumentPeerConnection(publishPc, "publish");
           const publishInfo = await runPublishInternal(
             publishPc,
             whipUrl,
@@ -465,7 +547,12 @@
             error: err.message || String(err),
           };
         } finally {
-          if (publishPc) publishPc.close();
+          if (publishPc) {
+            await capturePeerDiagnostics(publishPc, "publish").catch((err) =>
+              log(`Diagnostics capture error: ${err.message || err}`),
+            );
+            publishPc.close();
+          }
         }
 
         return {

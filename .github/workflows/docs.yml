@@ -1,0 +1,29 @@
+name: docs
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Deployed documentation base URL
+        required: true
+        default: https://live777.pages.dev
+
+jobs:
+  llms-txt-check:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       github.event.deployment_status.target_url != '')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check deployed llms.txt and key pages
+        env:
+          DOCS_BASE_URL: ${{ github.event.deployment_status.target_url || inputs.base_url }}
+        run: bash docs/scripts/llms-txt-check.sh "$DOCS_BASE_URL"

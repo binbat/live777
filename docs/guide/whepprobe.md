@@ -2,7 +2,10 @@
 
 `whepprobe` is a diagnostic tool similar to `ffprobe` for WHEP endpoints. It
 subscribes to a WHEP stream and verifies that the stream is reachable and that
-video can be decoded with FFmpeg via the `rsmpeg` crate.
+its media can be decoded with FFmpeg via the `rsmpeg` crate. It decodes VP8,
+VP9, H.264, H.265 and AV1 video, plus Opus, G.722, PCMU and PCMA audio. Video-only streams
+keep the original success semantics; whenever audio RTP is received, at least
+one audio frame must also decode successfully.
 
 For browser-based playback verification, see [`WhepWright`](whepwright).
 
@@ -24,6 +27,10 @@ verification step — see [Getting Started](/guide/getting-started).
 # Requires FFmpeg development libraries
 cargo build --bin whepprobe --features rsmpeg
 ```
+
+AV1 software decoding requires an FFmpeg build with `libdav1d` or `libaom`
+enabled. The probe prefers those decoders over FFmpeg's hardware-oriented
+native AV1 decoder.
 
 ## Usage
 
@@ -59,9 +66,17 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `--timeout` | `30` | Overall timeout in seconds |
 | `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |
 
+## JSON audio fields
+
+Every report contains `audio_frame_count`, `audio_sample_rate` and
+`audio_channels`, including failure reports and streams without audio. Their
+zero values mean that no audio frame was decoded. For a successfully decoded
+track they report the decoded frame count, actual sample rate (G.722 is
+16,000 Hz even though its RTP clock is 8,000 Hz) and channel count.
+
 ## Exit code
 
-- `0`: probe succeeded (WHEP connected and video was decoded).
+- `0`: WHEP connected and video was decoded; if audio RTP was received, audio was decoded too.
 - `1`: probe failed or an error occurred.
 
 ## Core library

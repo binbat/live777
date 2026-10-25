@@ -50,6 +50,16 @@ jobs:
         run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp --lcov --output-path lcov.info
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
+      - name: Run host smoke scripts
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --features rsmpeg --bin live777 --bin whipsynth --bin whepprobe --bin whipinto --bin whepfrom
+          PATH="$PWD/target/debug:$PATH" ./docker/smoke-test.sh --standalone
+          LIVE777_BIN="$PWD/target/debug/live777" \
+            WHIPINTO_BIN="$PWD/target/debug/whipinto" \
+            WHEPFROM_BIN="$PWD/target/debug/whepfrom" \
+            ./scripts/smoke-bridge.sh
+          ./tests/smoke_port_conflict.sh
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:

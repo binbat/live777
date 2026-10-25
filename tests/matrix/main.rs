@@ -157,6 +157,9 @@ where
     [
         FfmpegSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
         FfmpegSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::G722)),
+        FfmpegSource::new(MediaProfile::av(VideoCodec::Av1, AudioCodec::Opus)),
     ],
     [RsmpegWhepReceiver::default()]
 )]
@@ -312,13 +315,15 @@ where
     run_whep_test_with_host(source, player, IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1").await;
 }
 
-/// Synthetic sources decoded in-process with rsmpeg (video tracks only —
-/// the rsmpeg probe does not decode audio).
+/// Synthetic sources decoded in-process with rsmpeg, including real audio decoding.
 #[cfg(feature = "rsmpeg")]
 #[test_matrix(
     [
         SynthSource::new(MediaProfile::video_only(VideoCodec::Vp8)),
         SynthSource::new(MediaProfile::video_only(VideoCodec::H264)),
+        SynthSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::Opus)),
+        SynthSource::new(MediaProfile::av(VideoCodec::Vp8, AudioCodec::G722)),
+        SynthSource::new(MediaProfile::av(VideoCodec::Av1, AudioCodec::Opus)),
     ],
     [RsmpegWhepReceiver::default()]
 )]

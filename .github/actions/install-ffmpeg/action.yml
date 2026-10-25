@@ -3,6 +3,11 @@ description: Install FFmpeg libraries and headers on Linux, macOS, or Windows (v
 runs:
   using: composite
   steps:
+    - name: Identify runner image
+      id: runner-image
+      shell: bash
+      run: echo "image=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
     # ── Windows ───────────────────────────────────────────────────────────
     - name: Install LLVM and Clang (Windows)
       if: runner.os == 'Windows'
@@ -17,7 +22,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/vcpkg
-        key: vcpkg-2026.07.29-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml', '.github/vcpkg-overlays/x264/**') }}
+        key: vcpkg-2026.07.29-${{ runner.os }}-${{ steps.runner-image.outputs.image }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml', '.github/vcpkg-overlays/x264/**') }}
 
     - name: Build vcpkg (Windows)
       if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
@@ -116,7 +121,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/ffmpeg-install
-        key: ffmpeg-n8.1.2-macos-${{ runner.arch }}-${{ steps.macos-ffmpeg-fingerprint.outputs.digest }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: ffmpeg-n8.1.2-macos-${{ steps.runner-image.outputs.image }}-${{ runner.arch }}-${{ steps.macos-ffmpeg-fingerprint.outputs.digest }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Install build dependencies (macOS)
       if: runner.os == 'macOS' && steps.cache-ffmpeg-macos.outputs.cache-hit != 'true'
@@ -192,7 +197,7 @@ runs:
       uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/ffmpeg-install
-        key: ffmpeg-n8.0-${{ runner.os }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
+        key: ffmpeg-n8.0-${{ runner.os }}-${{ steps.runner-image.outputs.image }}-${{ runner.arch }}-${{ hashFiles('.github/actions/install-ffmpeg/action.yml') }}
 
     - name: Build FFmpeg 8.0 from source (Linux)
       if: runner.os == 'Linux' && steps.cache-ffmpeg.outputs.cache-hit != 'true'
