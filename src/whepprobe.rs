@@ -166,7 +166,14 @@ fn print_result(result: &ProbeResult, format: OutputFormat) {
                 println!("Resolution:     {}x{}", result.width, result.height);
             }
             if result.frame_count > 0 {
-                println!("Frames decoded: {}", result.frame_count);
+                println!("Video frames:   {}", result.frame_count);
+            }
+            if result.audio_frame_count > 0 {
+                println!("Audio frames:   {}", result.audio_frame_count);
+                println!(
+                    "Audio format:   {} Hz, {} channels",
+                    result.audio_sample_rate, result.audio_channels
+                );
             }
             if result.video_tracks > 0 {
                 println!("Video tracks:   {}", result.video_tracks);

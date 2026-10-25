@@ -55,7 +55,16 @@ just livewrk-whep 100 60 load-0
 | `--sessions` | `100` | 并发会话数 |
 | `--ramp-ms` | `10` | 每个会话启动之间的间隔（毫秒，爬坡） |
 | `--duration` | `60` | 总运行时长（秒），到期后会话停止 |
+| `--output` | `human` | 报告格式：`human` 或 `json` |
+| `--min-connected` | `0` | 成功所需的最少已连接会话数 |
+| `--min-packets` | `0` | 成功所需的最少聚合包数 |
+| `--min-bytes` | `0` | 成功所需的最少聚合字节数 |
+| `--fail-on-any-session` | `false` | 任一会话失败或被中止时判定运行失败 |
 | `-v`, `-vv`, `-vvv` | `warn` | 日志级别：`info`、`debug`、`trace` |
+
+三个阈值都针对运行结束时的聚合报告，而不是每个会话。未设置这些选项时，
+只要至少一个会话连接成功，就保留原有的部分失败语义并以成功退出；失败或被
+中止的会话会列为警告。全部会话失败始终是错误，正常取消的会话不算失败。
 
 ## `whip` 选项
 
@@ -103,9 +112,45 @@ just livewrk-whep 100 60 load-0
 媒体写入错误和 RTCP 反馈（NACK/PLI）在非零时显示；`whip` 运行统计发送的包数，
 `whep` 运行统计接收的包数。
 
+使用 `--output json` 时，stdout 只包含一个 JSON 报告，日志写入 stderr。schema
+第 1 版包含以下顶层字段（成功和失败的运行都会输出相同字段）：
+
+```json
+{
+  "schema_version": 1,
+  "stats": {
+    "sessions_total": 2,
+    "sessions_connected": 2,
+    "sessions_failed": 0,
+    "sessions_cancelled": 0,
+    "sessions_aborted": 0,
+    "total_packets": 152340,
+    "total_bytes": 52428800,
+    "total_errors": 0,
+    "total_nack_count": 0,
+    "total_pli_count": 0,
+    "total_connected_duration": { "secs": 20, "nanos": 0 }
+  },
+  "verification": null,
+  "failures": [],
+  "warnings": [],
+  "success": true
+}
+```
+
+未请求验证或验证结果丢失时，`verification` 为 `null`；否则包含旋转验证器的
+窗口、会话、帧、备注和错误统计。`failures` 说明未通过的验收检查；`warnings`
+记录被容忍的验证问题、部分会话失败，以及全部会话均正常取消的运行。即使全部
+会话失败，也会先输出此报告，再以非零退出码结束。收集开始前发生的运行错误
+（例如非法 WHIP URL 或构建不支持解码验证）在 JSON 模式下同样输出此结构：
+`success` 为 `false`，`failures` 包含错误，`stats` 和 `verification` 使用默认
+空值。命令行参数解析错误发生在确定 JSON 模式之前，仍使用标准 CLI 错误输出。
+
 ## 退出码
 
-- `0`：运行完成（或被第一次 Ctrl-C 中断并完成优雅停机），至少有一个会话连接
-  成功且验证未失败。
-- `1`：发生错误、全部会话失败，或解码验证失败且未指定 `--verify-tolerant`。
+- `0`：所有已配置的验收检查通过（或第一次 Ctrl-C 触发优雅停机后，最终报告
+  通过）。默认允许部分会话失败；验证失败可通过 `--verify-tolerant` 明确容忍。
+- `1`：发生运行错误、全部会话失败、未达到已配置的最小阈值、
+  `--fail-on-any-session` 检测到失败/中止会话，或解码验证失败且未指定
+  `--verify-tolerant`。
 - `130`：停机过程中第二次 Ctrl-C 强制立即退出。

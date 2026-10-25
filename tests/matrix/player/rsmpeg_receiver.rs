@@ -100,15 +100,14 @@ impl From<ProbeResult> for PlayResult {
             video_height: result.height,
             video_tracks: result.video_tracks,
             audio_tracks: result.audio_tracks,
+            audio_channels: result.audio_channels,
             duration_ms: result.duration_ms,
-            // Both the decoded video codec and the negotiated audio codec are
-            // reported so AV profiles can assert on each.
+            // Both codec names are reported so AV profiles can assert on each.
             codecs: [result.video_codec, result.audio_codec]
                 .into_iter()
                 .flatten()
                 .collect(),
             error: result.error,
-            ..Default::default()
         }
     }
 }

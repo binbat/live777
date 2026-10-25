@@ -1,3 +1,9 @@
+---
+description: >-
+  Build Live777 from source, run its services and bridges, and use the
+  development and debugging workflows.
+---
+
 # For developer
 
 Depends:
@@ -169,8 +175,9 @@ cargo run --bin=whipinto -- -i input.sdp -w http://localhost:7777/whip/777 --com
 ```
 
 ```bash
-cargo run --bin=whepfrom -- -o output.sdp -w http://localhost:7777/whep/777 --command \
-'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
+cargo run --bin=whepfrom -- -o rtp://127.0.0.1:9000 --sdp-file output.sdp \
+  -w http://localhost:7777/whep/777 --command \
+  'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
 ```
 
 ## Use Web browser debug {#browser}
@@ -181,4 +188,19 @@ Most browser build-in WebRTC debug tools
 | -------------- | ---------------------------- | -------------------------- |
 | `about:webrtc` | `chrome://webrtc-internals/` | `edge://webrtc-internals/` |
 |                | `chrome://webrtc-logs/`      | `edge://webrtc-logs/`      |
+
+## Optional network fault tests {#network-e2e}
+
+Linux developers with root/CAP_NET_ADMIN, `iproute2` and coturn can explicitly
+run the private-namespace STUN/TURN, packet-loss/delay and outage-recovery
+tests:
+
+```bash
+LIVE777_NETWORK_E2E=1 cargo nextest run --features rsmpeg \
+  -E 'binary(network_e2e)' --run-ignored ignored-only
+```
+
+These tests are ignored by default and never use public ICE servers. They
+create and remove their own network namespaces and veth pairs; they do not
+change the host firewall, default route or loopback interface.
 

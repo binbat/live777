@@ -2,6 +2,7 @@
 //! a ramp-up interval, optionally bounded by a duration, and aggregate their
 //! metrics. Used by the `livewrk` binary; not part of the test suite.
 
+pub mod acceptance;
 pub mod whep;
 #[cfg(feature = "rsmpeg")]
 pub mod whip;
@@ -57,7 +58,7 @@ pub struct SessionMetrics {
 }
 
 /// Aggregate result of a loadtest run.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct LoadtestStats {
     pub sessions_total: usize,
     pub sessions_connected: u64,
@@ -266,21 +267,26 @@ where
         "Loadtest completed"
     );
 
-    // The run is only genuinely broken when nothing connected AND not every
-    // session was a clean cancellation (e.g. the duration fired during
-    // ramp-up): failed or aborted sessions mean something went wrong.
-    if stats.sessions_connected == 0 && spawned > 0 && stats.sessions_cancelled < spawned as u64 {
-        anyhow::bail!("all {} loadtest session(s) failed", spawned);
+    Ok(stats)
+}
+
+/// Preserve the original library contract for callers that do not perform
+/// their own acceptance checks.
+pub(crate) fn ensure_legacy_success(stats: &LoadtestStats) -> Result<()> {
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled < stats.sessions_total as u64
+    {
+        anyhow::bail!("all {} loadtest session(s) failed", stats.sessions_total);
     }
 
-    // The all-cancelled case is a valid run (e.g. the duration fired during
-    // ramp-up), but it means zero traffic ever flowed; say so loudly instead
-    // of letting a no-op loadtest pass silently.
-    if stats.sessions_connected == 0 && spawned > 0 && stats.sessions_cancelled == spawned as u64 {
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled == stats.sessions_total as u64
+    {
         warn!("all sessions were cancelled before connecting; no traffic flowed");
     }
-
-    Ok(stats)
+    Ok(())
 }
 
 /// Sleep until `deadline` when set; pend forever otherwise (for `select!`).
@@ -426,18 +432,15 @@ mod tests {
         };
         let ct = CancellationToken::new();
 
-        let error = run_sessions(&config, ct, |_| async move {
+        let stats = run_sessions(&config, ct, |_| async move {
             // Never finishes and ignores cancellation.
             std::future::pending::<()>().await;
             (SessionMetrics::default(), Ok(SessionOutcome::Connected))
         })
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("all 1 loadtest session(s) failed")
-        );
+        assert_eq!(stats.sessions_aborted, 1);
+        assert!(ensure_legacy_success(&stats).is_err());
     }
 }

@@ -165,6 +165,7 @@ async fn start_liveion() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     let mut cfg = liveion::config::Config::default();
     cfg.http.cors = vec!["*".to_string()].into();
+    cfg.strategy.override_publisher = false;
     tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
     addr
 }
@@ -247,6 +248,18 @@ fn packets_total(stdout: &str, stderr: &str) -> u64 {
         })
 }
 
+fn parse_json_report(stdout: &str, stderr: &str) -> serde_json::Value {
+    let report = serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap_or_else(|e| {
+        panic!("livewrk stdout is not pure JSON: {e}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+    });
+    assert_eq!(report["schema_version"], 1, "report:\n{stdout}");
+    for key in ["stats", "verification", "failures", "warnings", "success"] {
+        assert!(report.get(key).is_some(), "missing {key}:\n{stdout}");
+    }
+    assert_eq!(report.as_object().unwrap().len(), 6, "report:\n{stdout}");
+    report
+}
+
 /// Two publishers (one stream and three streams) and two subscribers with
 /// decode verification, all as livewrk subprocesses against one liveion.
 ///
@@ -311,6 +324,14 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "12",
         "--verify-window",
         "2",
+        "--output",
+        "json",
+        "--min-connected",
+        "2",
+        "--min-packets",
+        "1",
+        "--min-bytes",
+        "1",
         "--ice-server",
         "",
     ]);
@@ -337,13 +358,16 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         whep_single.status.success(),
         "single-stream whep failed:\nstdout:\n{stdout_single}\nstderr:\n{stderr_single}"
     );
+    let report = parse_json_report(&stdout_single, &stderr_single);
+    assert_eq!(report["success"], true, "report:\n{stdout_single}");
+    assert_eq!(report["stats"]["sessions_connected"], 2);
+    assert_eq!(report["stats"]["sessions_failed"], 0);
+    assert!(report["stats"]["total_packets"].as_u64().unwrap() > 0);
+    assert!(report["stats"]["total_bytes"].as_u64().unwrap() > 0);
+    assert!(report["failures"].as_array().unwrap().is_empty());
     assert!(
-        stdout_single.contains("2 connected, 0 failed"),
-        "stdout:\n{stdout_single}\nstderr:\n{stderr_single}"
-    );
-    assert!(
-        verify_windows_total(&stdout_single, &stderr_single) > 0,
-        "verification did not run:\nstdout:\n{stdout_single}\nstderr:\n{stderr_single}"
+        report["verification"]["windows_total"].as_u64().unwrap() > 0,
+        "verification did not run:\n{stdout_single}"
     );
 
     let stdout_multi = String::from_utf8_lossy(&whep_multi.stdout);
@@ -360,6 +384,106 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         verify_windows_total(&stdout_multi, &stderr_multi) > 0,
         "verification did not run:\nstdout:\n{stdout_multi}\nstderr:\n{stderr_multi}"
     );
+
+    let mut threshold_failure = livewrk(&[
+        "whep",
+        "--whep",
+        &format!("{base}/whep/single-0"),
+        "--sessions",
+        "1",
+        "--duration",
+        "4",
+        "--min-bytes",
+        &u64::MAX.to_string(),
+        "--output",
+        "json",
+        "--ice-server",
+        "",
+    ]);
+    let mut tolerant = livewrk(&[
+        "whep",
+        "--whep",
+        &format!("{base}/whep/single-0"),
+        "--sessions",
+        "1",
+        "--duration",
+        "2",
+        "--verify-window",
+        "5",
+        "--verify-tolerant",
+        "--output",
+        "json",
+        "--ice-server",
+        "",
+    ]);
+    // `single-0` already has an incumbent and publisher override is disabled;
+    // `single-1` is new. The default partial-failure policy must still pass.
+    let mut partial = livewrk(&[
+        "whip",
+        "--whip",
+        &format!("{base}/whip/single"),
+        "--sessions",
+        "2",
+        "--duration",
+        "3",
+        "--output",
+        "json",
+        "--ice-server",
+        "",
+    ]);
+    let (threshold_failure, tolerant, partial) = tokio::join!(
+        threshold_failure.output(),
+        tolerant.output(),
+        partial.output()
+    );
+    let threshold_failure = threshold_failure.unwrap();
+    let tolerant = tolerant.unwrap();
+    let partial = partial.unwrap();
+
+    let stdout = String::from_utf8_lossy(&threshold_failure.stdout);
+    let stderr = String::from_utf8_lossy(&threshold_failure.stderr);
+    assert!(!threshold_failure.status.success(), "stdout:\n{stdout}");
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert_eq!(report["stats"]["sessions_connected"], 1);
+    assert!(
+        report["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| failure.as_str().unwrap().contains("bytes"))
+    );
+
+    let stdout = String::from_utf8_lossy(&tolerant.stdout);
+    let stderr = String::from_utf8_lossy(&tolerant.stderr);
+    assert!(
+        tolerant.status.success(),
+        "tolerant verification failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], true);
+    assert!(report["failures"].as_array().unwrap().is_empty());
+    assert!(
+        report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("verification"))
+    );
+
+    let stdout = String::from_utf8_lossy(&partial.stdout);
+    let stderr = String::from_utf8_lossy(&partial.stderr);
+    assert!(
+        partial.status.success(),
+        "default partial failure semantics changed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], true);
+    assert_eq!(report["stats"]["sessions_total"], 2);
+    assert_eq!(report["stats"]["sessions_connected"], 1);
+    assert_eq!(report["stats"]["sessions_failed"], 1);
+    assert!(report["failures"].as_array().unwrap().is_empty());
+    assert!(!report["warnings"].as_array().unwrap().is_empty());
 
     // The publishers exit cleanly once their duration elapses. Their pipes
     // have been drained since spawn, so collect exit status and output. The
@@ -423,6 +547,8 @@ async fn whip_whep_fail_when_server_unreachable() {
         "2",
         "--duration",
         "5",
+        "--output",
+        "json",
     ]);
     let mut whip = livewrk(&[
         "whip",
@@ -432,6 +558,8 @@ async fn whip_whep_fail_when_server_unreachable() {
         "2",
         "--duration",
         "5",
+        "--output",
+        "json",
         "--ice-server",
         "",
     ]);
@@ -449,6 +577,13 @@ async fn whip_whep_fail_when_server_unreachable() {
         String::from_utf8_lossy(&whep.stdout),
         String::from_utf8_lossy(&whep.stderr)
     );
+    let stdout = String::from_utf8_lossy(&whep.stdout);
+    let stderr = String::from_utf8_lossy(&whep.stderr);
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert_eq!(report["stats"]["sessions_connected"], 0);
+    assert!(!report["failures"].as_array().unwrap().is_empty());
+
     let whip = whip
         .expect("livewrk whip did not exit within 30s against an unreachable server")
         .unwrap();
@@ -458,4 +593,49 @@ async fn whip_whep_fail_when_server_unreachable() {
         String::from_utf8_lossy(&whip.stdout),
         String::from_utf8_lossy(&whip.stderr)
     );
+    let stdout = String::from_utf8_lossy(&whip.stdout);
+    let stderr = String::from_utf8_lossy(&whip.stderr);
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert_eq!(report["stats"]["sessions_connected"], 0);
+    assert!(!report["failures"].as_array().unwrap().is_empty());
+}
+
+/// Errors before session collection still produce the same JSON envelope.
+#[tokio::test]
+async fn whip_early_error_reports_json() {
+    init_test_environment();
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        livewrk(&[
+            "whip",
+            "--whip",
+            "://invalid",
+            "--sessions",
+            "1",
+            "--duration",
+            "1",
+            "--output",
+            "json",
+            "--ice-server",
+            "",
+        ])
+        .output(),
+    )
+    .await
+    .expect("livewrk did not exit after an invalid WHIP URL")
+    .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stdout:\n{stdout}");
+    let report = parse_json_report(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert_eq!(report["stats"]["sessions_total"], 0);
+    assert_eq!(report["stats"]["sessions_connected"], 0);
+    assert!(report["verification"].is_null());
+    assert!(report["warnings"].as_array().unwrap().is_empty());
+    let failures = report["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].as_str().unwrap().contains("Invalid WHIP URL"));
 }

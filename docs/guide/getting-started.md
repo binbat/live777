@@ -1,3 +1,9 @@
+---
+description: >-
+  Start Live777, run the end-to-end smoke test, and verify an FFmpeg-to-ffplay
+  media loop in three terminals.
+---
+
 # Getting Started
 
 The fastest way to verify a Live777 deployment end to end is the all-in-one
@@ -25,8 +31,8 @@ docker exec live777 smoke-test
 ```
 
 `smoke-test` publishes a synthetic test stream over WHIP, subscribes to it
-over WHEP, and decodes the received video with FFmpeg — proving the whole
-`WHIP → live777 → WHEP` media path works, server included.
+over WHEP, and decodes the received audio and video with FFmpeg — proving the
+whole `WHIP → live777 → WHEP` media path works, server included.
 
 **Success**: the command prints a `whepprobe` JSON report (codec, frames
 decoded, timing) and exits `0`.
@@ -81,9 +87,49 @@ runs the check and tears everything down:
 docker run --rm --network host ghcr.io/binbat/live777-all:latest smoke-test --standalone
 ```
 
+Standalone mode uses an isolated temporary configuration and loopback-only
+ICE. Set `SMOKE_PORT` to change its HTTP port (default `7777`).
+
+## Verify the RTP bridge in three terminals
+
+For an authoritative local `FFmpeg → WHIP → WHEP → ffplay` loop, install
+`live777`, `whipinto`, `whepfrom`, FFmpeg and ffplay (see
+[installation](/guide/installation)). Stop the Docker server first if it is
+using port 7777, then run one command in each terminal from the same working
+directory.
+
+**Terminal 1 — start the SFU:**
+
+```sh
+live777
+```
+
+**Terminal 2 — generate H264 RTP and publish it with whipinto:**
+
+```sh
+whipinto -i input.sdp -w http://127.0.0.1:7777/whip/777 --command \
+  "ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 \
+  -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency \
+  -f rtp rtp://127.0.0.1:5002 -sdp_file input.sdp"
+```
+
+**Terminal 3 — subscribe with whepfrom and play the generated SDP:**
+
+```sh
+whepfrom -w http://127.0.0.1:7777/whep/777 \
+  -o rtp://127.0.0.1:9000 --sdp-file output.sdp --command \
+  "ffplay -protocol_whitelist rtp,file,udp -i output.sdp"
+```
+
+The RTP output URL sends video to port 9000 (audio, when present, goes to
+9002); `--sdp-file` describes that receiver to ffplay. Stop each terminal
+with Ctrl-C when finished. See [whipinto](/guide/whipinto),
+[whepfrom](/guide/whepfrom) and the [FFmpeg guide](/guide/ffmpeg) for tokens,
+other codecs and RTSP variants.
+
 ## What the smoke test does not cover
 
-`smoke-test` verifies the `WHIP → live777 → WHEP` video path with FFmpeg
+`smoke-test` verifies the `WHIP → live777 → WHEP` audio/video path with FFmpeg
 decoding. Beyond it:
 
 - To verify **browser** rendering, use [WhepWright](/guide/whepwright),

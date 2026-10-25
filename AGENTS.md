@@ -589,6 +589,11 @@ Integration test binaries live in `tests/`:
 - `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
   synthetic publish and WHEP decode probes against in-process liveion,
   including JSON/exit-code success and failure contracts (needs `rsmpeg`)
+- `tests/whepwright_e2e.rs` — real browser CLI output and failure-artifact
+  contracts (needs `whepwright`)
+- `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
+  in private Linux namespaces; ignored by default and requiring
+  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -642,7 +647,9 @@ carries the check.
   first-run experience — run the container, then `smoke-test --standalone`
   (or `smoke-test` against an already-running server; `SMOKE_SERVER_URL` /
   `SMOKE_TOKEN` env tune it) publishes a synthetic WHIP stream and decodes it
-  back over WHEP. Because whepprobe/whipsynth need rsmpeg 0.18 — which cannot
+  back over WHEP. Standalone mode uses a temporary isolated config with
+  loopback ICE; `SMOKE_PORT` selects its HTTP port. Because
+  whepprobe/whipsynth need rsmpeg 0.18 — which cannot
   compile against Debian's field-privatized libav*-dev — the image builds
   upstream FFmpeg 8.1 *shared* (codec set mirrors `Dockerfile.live777-client`,
   installed to `/opt/ffmpeg`), points the rust builder at its
@@ -675,9 +682,16 @@ carries the check.
   (armv7 by default).
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
+  Mainstream Linux/macOS/Windows targets also get a diagnostics bundle with
+  whipsynth, whepprobe, livewrk and their codec runtime. The live777-all
+  Docker workflow runs `smoke-test --standalone` on each final architecture
+  image before publishing the multi-arch manifest.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
   `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
   (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.
+  After deployment, `.github/workflows/docs.yml` runs `llms-txt-check`
+  (`docs/scripts/llms-txt-check.sh`) against the deployed URL; it can also be
+  dispatched manually with a base URL.
 
 ## Useful Local Recipes (justfile)
 
@@ -685,6 +699,8 @@ carries the check.
 just build            # web + Rust release build
 just run              # cargo run --features=webui
 just run-cluster      # local livenil cluster
+just smoke            # standalone WHIP/WHEP encode/decode smoke test
+just smoke-bridge     # synth -> WHIP -> WHEP -> RTP/SDP -> ffprobe decode
 just gst-whip-rtp-h264  # GStreamer WHIP ingest smoke test
 just ffmpeg-rtp-h264    # FFmpeg WHIP ingest smoke test
 just ffplay-rtp         # WHEP playback to ffplay via RTP
@@ -701,5 +717,10 @@ cycle tests; they are the fastest way to exercise a local `live777` instance.
 3. `pnpm -r build` if you changed WebUI code.
 4. Edit `live777.toml` or `conf/live777.toml` as needed.
 5. `cargo run --features=webui` or `just run`.
-6. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
+6. Run `just smoke` for the real standalone WHIP → WHEP decode check, or
+   `just smoke-bridge` for whipinto synth → live777 → whepfrom RTP/SDP →
+   ffprobe decode. Both build the required debug binaries with `rsmpeg`, use
+   isolated temporary configuration and loopback ICE, and clean up their own
+   processes; `CARGO_TARGET_DIR` is respected.
+7. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
    -D warnings`, and `cargo nextest run --workspace` before finishing.

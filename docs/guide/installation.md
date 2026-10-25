@@ -8,6 +8,49 @@ you can donwload binary from [here](https://github.com/binbat/live777/releases)
 ./live777
 ```
 
+### Diagnostics bundle
+
+Releases also publish `live777-diagnostics-<version>-<target>` archives with
+`whipsynth`, `whepprobe` and `livewrk`, all built with `rsmpeg`. The bundle
+includes the dynamic FFmpeg runtime and its codec dependencies; a separate
+FFmpeg installation is not required.
+
+| Platform | Target |
+|----------|--------|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple silicon | `aarch64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+On Linux and macOS, extract the `.tar.gz` and run the launchers in `bin/`. They
+locate the bundled `lib/` relative to the extracted directory, so the whole
+directory can be moved. Do not invoke the `.real` binaries directly.
+
+```bash
+TAG=v0.11.0
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+cd "live777-diagnostics-${TAG}-${TARGET}"
+./bin/whipsynth --version
+./bin/whepprobe --version
+./bin/livewrk --version
+```
+
+On Windows, extract the `.zip`; the tools, FFmpeg/codec DLLs and x64 MSVC
+runtime DLLs (`vcruntime140*`, `msvcp140*`, `concrt140*` and, when present,
+`vccorlib140*`) are together in `bin/`. No separate Visual C++ Redistributable
+installation is required:
+
+```powershell
+Expand-Archive .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc.zip
+cd .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc
+.\bin\whipsynth.exe --version
+.\bin\whepprobe.exe --version
+.\bin\livewrk.exe --version
+```
+
 ### Configuration
 
 ```bash

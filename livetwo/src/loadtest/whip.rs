@@ -39,8 +39,20 @@ pub fn session_whip_url(base_url: &str, index: usize) -> Result<String> {
     Ok(url.to_string())
 }
 
-/// Run `config.session_count` synthetic WHIP publishers concurrently.
+/// Run publishers with the original all-failed error contract.
 pub async fn run(
+    config: &LoadtestConfig,
+    publisher_config: PublisherConfig,
+    ct: CancellationToken,
+) -> Result<LoadtestStats> {
+    let stats = collect(config, publisher_config, ct).await?;
+    super::ensure_legacy_success(&stats)?;
+    Ok(stats)
+}
+
+/// Collect publisher stats without applying acceptance rules, so callers can
+/// report even an all-failed run.
+pub async fn collect(
     config: &LoadtestConfig,
     publisher_config: PublisherConfig,
     ct: CancellationToken,

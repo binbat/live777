@@ -1254,14 +1254,19 @@ where
 
 fn assert_playback_ok(player_name: &str, profile: &MediaProfile, playback: &PlayResult) {
     /// Players report codec names in different conventions: ffprobe uses
-    /// lowercase (`h264`, `hevc`), the rsmpeg probe uses RTP names (`H264`,
-    /// `H265`). Compare case-insensitively and treat h265/hevc as aliases.
+    /// lowercase (`h264`, `hevc`, `adpcm_g722`), the rsmpeg probe uses RTP
+    /// names (`H264`, `H265`, `G722`). Compare aliases case-insensitively.
     fn codec_matches(reported: &str, expected: &str) -> bool {
         let reported = reported.to_lowercase();
         let expected = expected.to_lowercase();
         reported == expected
-            || (reported == "h265" && expected == "hevc")
-            || (reported == "hevc" && expected == "h265")
+            || matches!(
+                (reported.as_str(), expected.as_str()),
+                ("h265", "hevc")
+                    | ("hevc", "h265")
+                    | ("g722", "adpcm_g722")
+                    | ("adpcm_g722", "g722")
+            )
     }
 
     assert!(

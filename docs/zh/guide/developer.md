@@ -167,8 +167,9 @@ cargo run --bin=whipinto -- -i input.sdp -w http://localhost:7777/whip/777 --com
 ```
 
 ```bash
-cargo run --bin=whepfrom -- -o output.sdp -w http://localhost:7777/whep/777 --command \
-'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
+cargo run --bin=whepfrom -- -o rtp://127.0.0.1:9000 --sdp-file output.sdp \
+  -w http://localhost:7777/whep/777 --command \
+  'ffplay -protocol_whitelist rtp,file,udp -i output.sdp'
 ```
 
 ## 浏览器 WebRTC 调试工具 {#browser}
@@ -179,4 +180,17 @@ cargo run --bin=whepfrom -- -o output.sdp -w http://localhost:7777/whep/777 --co
 | -------------- | ---------------------------- | -------------------------- |
 | `about:webrtc` | `chrome://webrtc-internals/` | `edge://webrtc-internals/` |
 |                | `chrome://webrtc-logs/`      | `edge://webrtc-logs/`      |
+
+## 可选网络故障测试 {#network-e2e}
+
+具备 root/CAP_NET_ADMIN、`iproute2` 和 coturn 的 Linux 开发者可以显式运行
+私有 network namespace 中的 STUN/TURN、丢包/延迟和断网恢复测试：
+
+```bash
+LIVE777_NETWORK_E2E=1 cargo nextest run --features rsmpeg \
+  -E 'binary(network_e2e)' --run-ignored ignored-only
+```
+
+这些测试默认忽略，不会使用公网 ICE 服务器。它们只创建并清理自己的
+network namespace 和 veth，不修改宿主机防火墙、默认路由或 loopback。
 

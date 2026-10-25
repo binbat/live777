@@ -1,6 +1,6 @@
 # FFmpeg
 
-我们有 [whipinto](/guide/whipinto) 和 [whepfrom](/guide/whepfrom) 来把 `rtp` <-> `whip`/`whep` 进行转换
+我们有 [whipinto](/zh/guide/whipinto) 和 [whepfrom](/zh/guide/whepfrom) 来把 `rtp` <-> `whip`/`whep` 进行转换
 
 ::: warning 树莓派和其他 ARM 开发板
 本页所有示例都是 CPU 软件编码（`libx264`、`libvpx` 等）。在树莓派、RK3588 这类开发板上会占满 CPU——请改用[原生硬件管线构建](/zh/guide/raspberry-pi)。如果确实必须用 ffmpeg，至少使用开发板的硬件编码器（如 Raspberry Pi OS 上的 `-c:v h264_v4l2m2m -b:v 1M`）而不是 `libx264`。
@@ -63,7 +63,8 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 ```
 
 ```bash
-whepfrom -o output.sdp -w http://localhost:7777/whep/777
+whepfrom -o rtp://127.0.0.1:9000 --sdp-file output.sdp \
+  -w http://localhost:7777/whep/777
 ```
 
 对于 ffplay，你需要一个 sdp 文件
@@ -103,15 +104,13 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 
 ## AV1
 
-::: warning
-- 需要设置 `-strict experimental`
-:::
+当前 FFmpeg 版本运行此示例通常不需要 `-strict experimental`。只有旧版本
+明确要求为 AV1 RTP 打包开启实验功能时才添加它。
 
 ```bash
 ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p \
 -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 \
--strict experimental \
 -f rtp "rtp://127.0.0.1:5002" -sdp_file input.sdp
 ```
 
@@ -123,7 +122,7 @@ ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
 -g 60 -keyint_min 60 \
 -deadline realtime -speed 4 \
 -b:v 2000k -maxrate 2500k -bufsize 5000k \
--vcodec libvpx -f rtp 'rtp://127.0.0.1:5002' -sdp_file input.sdp
+-f rtp 'rtp://127.0.0.1:5002' -sdp_file input.sdp
 ```
 
 ```bash
@@ -133,7 +132,7 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 ## VP9
 
 ::: warning
-VP9 打包功能尚处于实验阶段，其规范尚处于草案状态。请设置 `-strict experiment` 选项以启用此功能。
+VP9 打包功能尚处于实验阶段，其规范尚处于草案状态。请设置 `-strict experimental` 选项以启用此功能。
 :::
 
 ```bash
@@ -164,7 +163,7 @@ ffmpeg -re -f lavfi -i sine=frequency=1000 \
 -ar 48000 -ac 2 \
 -b:a 48k -application voip \
 -frame_duration 10 -vbr constrained \
--acodec libopus -f rtp 'rtp://127.0.0.1:5004'
+-f rtp 'rtp://127.0.0.1:5004'
 ```
 
 ### OPUS WHIP

@@ -105,10 +105,9 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          # rsmpeg is excluded from release builds: it requires native FFmpeg
-          # dev libraries that aren't available in cross-compilation Docker
-          # images. The rsmpeg-enabled tools (whepprobe, whipsynth) are
-          # built and tested in CI but are not part of the release matrix.
+          # The general release matrix stays unchanged; rsmpeg tools and their
+          # dynamic FFmpeg runtime are packaged by build-diagnostics on native
+          # runners because the cross-compilation images lack FFmpeg dev libs.
           $BUILD_CMD $BUILD_NDK build --locked --all-targets \
             --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,rtsp \
             --release --target=${{ matrix.job.target }}
@@ -270,6 +269,108 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+
+  build-diagnostics:
+    name: diagnostics (${{ matrix.job.target }})
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get the release version from the tag
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+            VERSION=$(git describe --tags)
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "version is: ${VERSION}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.job.target }}
+
+      - name: Install LLVM 20 for bindgen (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20"
+          directory: ${{ github.workspace }}/clang20
+
+      - name: Expose LLVM 20 to the FFmpeg setup (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          SRC=$(find "${{ github.workspace }}/clang20" -name 'libclang.so*' -type f | head -1)
+          [ -n "${SRC}" ] || { echo "ERROR: libclang.so not found"; exit 1; }
+          sudo mkdir -p /usr/lib/llvm-20/lib
+          sudo ln -sf "${SRC}" /usr/lib/llvm-20/lib/libclang-20.so
+
+      - name: Install FFmpeg for rsmpeg
+        uses: ./.github/actions/install-ffmpeg
+
+      - name: Build diagnostics tools
+        shell: bash
+        run: >-
+          cargo build --locked --release --target=${{ matrix.job.target }}
+          --bin=whipsynth --bin=whepprobe --bin=livewrk --features=rsmpeg
+
+      - name: Package diagnostics tools (Unix)
+        if: runner.os != 'Windows'
+        id: package-unix
+        shell: bash
+        run: bash scripts/package-diagnostics.sh package "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Verify extracted diagnostics package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/package-diagnostics.sh verify "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Package diagnostics tools (Windows)
+        if: runner.os == 'Windows'
+        id: package-windows
+        shell: pwsh
+        run: ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+
+      - name: Verify extracted diagnostics package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+
+      - name: Select diagnostics archive
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            echo "DIAGNOSTICS_ARCHIVE=${{ steps.package-windows.outputs.archive }}" >> "$GITHUB_ENV"
+          else
+            echo "DIAGNOSTICS_ARCHIVE=${{ steps.package-unix.outputs.archive }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Artifact Upload diagnostics bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
+          path: ${{ env.DIAGNOSTICS_ARCHIVE }}
+
+      - name: Upload diagnostics release archive
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build-native:
     name: aarch64-unknown-linux-gnu-${{ matrix.job.variant }} (ubuntu-24.04)

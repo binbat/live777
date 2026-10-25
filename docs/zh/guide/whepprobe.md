@@ -1,6 +1,6 @@
 # WhepProbe
 
-`whepprobe` 是一个类似 `ffprobe` 的 WHEP 端点诊断工具。它订阅 WHEP 流并验证流是否可达、视频是否能通过 `rsmpeg` crate 调用 FFmpeg 正常解码。
+`whepprobe` 是一个类似 `ffprobe` 的 WHEP 端点诊断工具。它订阅 WHEP 流，验证流是否可达，并通过 `rsmpeg` crate 调用 FFmpeg 实际解码媒体。支持 VP8、VP9、H.264、H.265、AV1 视频以及 Opus、G.722、PCMU、PCMA 音频。纯视频流保持原有成功语义；只要收到音频 RTP，就必须至少成功解码一个音频帧。
 
 如果需要基于真实浏览器的播放验证，请查看 [`WhepWright`](whepwright)。
 
@@ -22,6 +22,9 @@ docker run --rm --network host ghcr.io/binbat/live777-all:latest \
 # 需要 FFmpeg 开发库
 cargo build --bin whepprobe --features rsmpeg
 ```
+
+AV1 软件解码需要 FFmpeg 启用 `libdav1d` 或 `libaom`。探针会优先使用这些
+解码器，而不是 FFmpeg 面向硬件解码的原生 AV1 解码器。
 
 ## 用法
 
@@ -57,9 +60,16 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `--timeout` | `30` | 整体超时时间（秒） |
 | `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |
 
+## JSON 音频字段
+
+所有报告（包括失败报告和无音频流）都包含 `audio_frame_count`、
+`audio_sample_rate` 和 `audio_channels`。零值表示没有解码出音频帧；成功解码后，
+这些字段分别表示音频帧数、实际采样率（G.722 的 RTP 时钟为 8000 Hz，但实际
+采样率为 16000 Hz）和声道数。
+
 ## 退出码
 
-- `0`：探测成功（WHEP 已连接且视频已解码）。
+- `0`：WHEP 已连接且视频已解码；如果收到音频 RTP，音频也已成功解码。
 - `1`：探测失败或发生错误。
 
 ## 核心库

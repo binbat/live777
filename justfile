@@ -4,6 +4,7 @@ host := "127.0.0.1"
 port := "7777"
 server := "http://" + host + ":" + port
 stream := "test-stream"
+target_dir := env_var_or_default("CARGO_TARGET_DIR", "target")
 rkmpp_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest"
 rpi_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rpi:latest"
 
@@ -230,6 +231,21 @@ mediamtx:
 
 docs:
     pnpm run docs:dev
+
+# Build and run the real WHIP -> WHEP decode smoke test in isolation
+[group('smoke')]
+smoke:
+    cargo build --features=rsmpeg --bin live777 --bin whipsynth --bin whepprobe
+    PATH="{{target_dir}}/debug:$PATH" ./docker/smoke-test.sh --standalone
+
+# Verify whipinto synth -> live777 -> whepfrom RTP/SDP -> ffprobe decode
+[group('smoke')]
+smoke-bridge:
+    cargo build --features=rsmpeg --bin live777 --bin whipinto --bin whepfrom
+    LIVE777_BIN="{{target_dir}}/debug/live777" \
+        WHIPINTO_BIN="{{target_dir}}/debug/whipinto" \
+        WHEPFROM_BIN="{{target_dir}}/debug/whepfrom" \
+        ./scripts/smoke-bridge.sh
 
 run:
     cargo run --features=webui

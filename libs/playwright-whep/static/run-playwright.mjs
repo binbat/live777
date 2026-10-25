@@ -27,6 +27,8 @@ function parseArgs() {
         acodec: "",
         layer: "",
         token: "",
+        diagnosticsDir: "",
+        trace: false,
     };
     for (let i = 0; i < args.length; i += 2) {
         if (i + 1 >= args.length) {
@@ -77,6 +79,12 @@ function parseArgs() {
                 break;
             case "--token":
                 result.token = value;
+                break;
+            case "--diagnostics-dir":
+                result.diagnosticsDir = value;
+                break;
+            case "--trace":
+                result.trace = value === "true";
                 break;
         }
     }
@@ -208,6 +216,23 @@ function resultPropertyName(mode) {
     return "__LIVE777_RESULT__";
 }
 
+function emptyDiagnostics() {
+    return {
+        stateTimeline: [],
+        candidateTypeCounts: {},
+        selectedPair: null,
+        rtp: [],
+    };
+}
+
+function runnerFailure(mode, error) {
+    const result = { success: false, connected: false, error };
+    if (mode === "both") {
+        return { success: false, publish: null, subscribe: null, error };
+    }
+    return result;
+}
+
 async function main() {
     const params = parseArgs();
     if (!params.staticRoot) {
@@ -226,74 +251,209 @@ async function main() {
         process.exit(1);
     }
 
-    const { server, url } = await startServer(params.staticRoot);
-    const playerUrl = buildPlayerUrl(url, params);
+    const diagnosticsDir = params.diagnosticsDir
+        ? path.resolve(params.diagnosticsDir)
+        : null;
+    const artifacts = {
+        directory: diagnosticsDir || "",
+        retained: false,
+        capture_errors: [],
+    };
+    const artifactPath = (name) =>
+        diagnosticsDir && path.join(diagnosticsDir, name);
+    const redact = (value) => {
+        let text = String(value);
+        if (params.token) text = text.split(params.token).join("[REDACTED]");
+        return text;
+    };
+    const persistCaptureErrors = async () => {
+        const file = artifactPath("capture-errors.json");
+        if (file) {
+            await fs.writeFile(
+                file,
+                `${JSON.stringify(artifacts.capture_errors, null, 2)}\n`,
+                "utf8",
+            );
+        }
+    };
+    const writeLog = async (kind, value) => {
+        const file = artifactPath("console.log");
+        if (!file) return;
+        const line = `[${new Date().toISOString()}] [${kind}] ${redact(value)}\n`;
+        try {
+            await fs.appendFile(file, line, "utf8");
+            artifacts.console_log = file;
+        } catch (err) {
+            const message = `console capture failed: ${err.message || err}`;
+            if (!artifacts.capture_errors.includes(message)) {
+                artifacts.capture_errors.push(message);
+                await persistCaptureErrors().catch(() => {});
+            }
+        }
+    };
+    const capture = async (name, operation) => {
+        try {
+            await operation();
+        } catch (err) {
+            const message = `${name} capture failed: ${redact(err.message || err)}`;
+            artifacts.capture_errors.push(message);
+            await persistCaptureErrors().catch(() => {});
+            await writeLog("runner", message);
+        }
+    };
 
+    let server = null;
     let browserInstance = null;
     let context = null;
+    let page = null;
+    let result = null;
+
+    if (diagnosticsDir) {
+        await fs.mkdir(diagnosticsDir, { recursive: true });
+        await writeLog("runner", `Starting ${params.mode} browser run`);
+    }
+
+    let rejectTermination;
+    const termination = new Promise((_, reject) => {
+        rejectTermination = reject;
+    });
+    const onSigterm = () =>
+        rejectTermination(new Error("Playwright runner received SIGTERM"));
+    const onSigint = () =>
+        rejectTermination(new Error("Playwright runner received SIGINT"));
+    process.once("SIGTERM", onSigterm);
+    process.once("SIGINT", onSigint);
 
     try {
-        const launcher = loadPlaywright(params.browser);
-        const launchOptions = {
-            headless: params.headless,
-            args: buildArgs(
-                params.browser,
-                params.headless,
-                params.mode,
-                params.source,
-            ),
-        };
-        if (params.channel) {
-            launchOptions.channel = params.channel;
-        }
-        browserInstance = await launcher.launch(launchOptions);
-        context = await browserInstance.newContext();
-        const page = await context.newPage();
+        await Promise.race([
+            (async () => {
+                const started = await startServer(params.staticRoot);
+                server = started.server;
+                const playerUrl = buildPlayerUrl(started.url, params);
+                const launcher = loadPlaywright(params.browser);
+                const launchOptions = {
+                    headless: params.headless,
+                    args: buildArgs(
+                        params.browser,
+                        params.headless,
+                        params.mode,
+                        params.source,
+                    ),
+                };
+                if (params.channel) {
+                    launchOptions.channel = params.channel;
+                } else if (params.browser === "chromium") {
+                    launchOptions.channel = "chromium";
+                }
+                browserInstance = await launcher.launch(launchOptions);
+                context = await browserInstance.newContext();
+                if (params.trace && diagnosticsDir) {
+                    await capture("trace start", () =>
+                        context.tracing.start({
+                            screenshots: true,
+                            snapshots: true,
+                            sources: true,
+                        }),
+                    );
+                }
+                page = await context.newPage();
 
-        page.on("console", (msg) => {
-            const text = msg.text();
-            if (text.startsWith("[")) {
-                console.error(`[browser] ${text}`);
-            }
-        });
-        page.on("pageerror", (err) => {
-            console.error(`[browser pageerror] ${err.message || err}`);
-        });
+                page.on("console", (msg) => {
+                    const text = msg.text();
+                    void writeLog(`console:${msg.type()}`, text);
+                    if (text.startsWith("[")) {
+                        console.error(`[browser] ${redact(text)}`);
+                    }
+                });
+                page.on("pageerror", (err) => {
+                    void writeLog("pageerror", err.message || err);
+                    console.error(
+                        `[browser pageerror] ${redact(err.message || err)}`,
+                    );
+                });
 
-        await page.goto(playerUrl, { waitUntil: "domcontentloaded" });
+                await page.goto(playerUrl, { waitUntil: "domcontentloaded" });
 
-        if (params.token) {
-            await page.evaluate((token) => {
-                window.__LIVE777_TOKEN__ = token;
-            }, params.token);
-        }
+                if (params.token) {
+                    await page.evaluate((token) => {
+                        window.__LIVE777_TOKEN__ = token;
+                    }, params.token);
+                }
 
-        const resultProp = resultPropertyName(params.mode);
-        await page.waitForFunction(
-            (prop) => window[prop] !== undefined,
-            resultProp,
-            { timeout: params.timeoutMs + 10000 },
-        );
+                const resultProp = resultPropertyName(params.mode);
+                await page.waitForFunction(
+                    (prop) => window[prop] !== undefined,
+                    resultProp,
+                    { timeout: params.timeoutMs + 10000 },
+                );
 
-        const value = await page.evaluate((prop) => window[prop], resultProp);
-        console.log(JSON.stringify({ mode: params.mode, result: value }));
+                result = await page.evaluate(
+                    (prop) => window[prop],
+                    resultProp,
+                );
+            })(),
+            termination,
+        ]);
     } catch (err) {
-        console.error(`[runner error] ${err.message || err}`);
-        console.log(
-            JSON.stringify({
-                mode: params.mode,
-                result: {
-                    success: false,
-                    connected: false,
-                    error: err.message || String(err),
-                },
-            }),
-        );
+        const message = redact(err.message || err);
+        await writeLog("runner", message);
+        console.error(`[runner error] ${message}`);
+        result = runnerFailure(params.mode, message);
     } finally {
-        if (context) await context.close().catch(() => {});
-        if (browserInstance) await browserInstance.close().catch(() => {});
-        await new Promise((resolve) => server.close(resolve));
+        artifacts.retained = Boolean(diagnosticsDir && !result?.success);
+        if (diagnosticsDir) {
+            await capture("sdp-ice", async () => {
+                const diagnostics = page
+                    ? await page.evaluate(
+                          () => window.__LIVE777_DIAGNOSTICS__ || null,
+                      )
+                    : null;
+                const file = artifactPath("sdp-ice.json");
+                await fs.writeFile(
+                    file,
+                    `${JSON.stringify(diagnostics || emptyDiagnostics(), null, 2)}\n`,
+                    "utf8",
+                );
+                artifacts.sdp_ice = file;
+            });
+        }
+        if (artifacts.retained && page) {
+            await capture("screenshot", async () => {
+                const file = artifactPath("screenshot.png");
+                await page.screenshot({ path: file, fullPage: true });
+                artifacts.screenshot = file;
+            });
+        } else if (artifacts.retained) {
+            artifacts.capture_errors.push(
+                "screenshot capture failed: browser page was not created",
+            );
+        }
+        if (context && params.trace && diagnosticsDir) {
+            if (artifacts.retained) {
+                await capture("trace", async () => {
+                    const file = artifactPath("trace.zip");
+                    await context.tracing.stop({ path: file });
+                    artifacts.trace = file;
+                });
+            } else {
+                await capture("trace cleanup", () => context.tracing.stop());
+            }
+        }
+        if (context) {
+            await capture("browser context cleanup", () => context.close());
+        }
+        if (browserInstance) {
+            await capture("browser cleanup", () => browserInstance.close());
+        }
+        if (server) await new Promise((resolve) => server.close(resolve));
+        process.removeListener("SIGTERM", onSigterm);
+        process.removeListener("SIGINT", onSigint);
+        if (diagnosticsDir) await persistCaptureErrors().catch(() => {});
     }
+
+    const output = { mode: params.mode, result };
+    if (diagnosticsDir) output.artifacts = artifacts;
+    console.log(JSON.stringify(output));
 }
 
 main().catch((err) => {
