@@ -22,7 +22,7 @@ use tracing::info;
 use webrtc::peer_connection::{RTCIceServer, RTCPeerConnectionState};
 
 #[cfg(feature = "rsmpeg")]
-use std::sync::atomic::AtomicBool;
+use std::{future::Future, pin::Pin};
 
 use super::{LoadtestConfig, LoadtestStats, SessionMetrics, SessionOutcome, run_sessions};
 use crate::utils::shutdown::graceful_shutdown;
@@ -106,16 +106,21 @@ pub async fn collect(
     let session_verify = verifier.session_verify();
 
     let run_ct = session_ct.clone();
-    let result = run_sessions(config, session_ct.clone(), move |i| {
-        let params = params.clone();
-        let verify = session_verify.clone();
-        let run_ct = run_ct.child_token();
-        async move { run_one(i, params, verify, run_ct).await }
-    })
-    .await;
-
-    session_ct.cancel();
-    let verify_stats = verifier.finish().await;
+    let sessions = async {
+        let result = run_sessions(config, session_ct.clone(), move |i| {
+            let params = params.clone();
+            let verify = session_verify.clone();
+            let run_ct = run_ct.child_token();
+            async move { run_one(i, params, verify, run_ct).await }
+        })
+        .await;
+        session_ct.cancel();
+        result
+    };
+    // The verifier is a directly owned future, not a spawned task. If collect
+    // is dropped, its active decode worker is dropped and reaped in the same
+    // unwind instead of being left behind in a detached verifier task.
+    let (result, verify_stats) = tokio::join!(sessions, verifier.finish());
     let stats = result?;
     Ok((stats, verify_stats))
 }
@@ -418,7 +423,7 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// Owns the verifier task; created by [`run`] when verification is enabled.
+/// Owns the verifier future; created by [`run`] when verification is enabled.
 struct VerifierHandle {
     #[cfg(feature = "rsmpeg")]
     inner: Option<VerifierInner>,
@@ -427,7 +432,7 @@ struct VerifierHandle {
 #[cfg(feature = "rsmpeg")]
 struct VerifierInner {
     session: SessionVerify,
-    task: tokio::task::JoinHandle<VerifyStats>,
+    future: Pin<Box<dyn Future<Output = VerifyStats> + Send>>,
 }
 
 impl VerifierHandle {
@@ -441,7 +446,7 @@ impl VerifierHandle {
         let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
         let (mime_tx, mime_rx) = watch::channel(None::<String>);
         let ct = parent_ct.child_token();
-        let task = tokio::spawn(run_verifier(
+        let future = Box::pin(run_verifier(
             verify_rx,
             target_tx,
             Arc::clone(&active),
@@ -457,7 +462,7 @@ impl VerifierHandle {
                     active,
                     mime_tx: Arc::new(mime_tx),
                 },
-                task,
+                future,
             }),
         })
     }
@@ -483,12 +488,7 @@ impl VerifierHandle {
     async fn finish(self) -> Option<VerifyStats> {
         #[cfg(feature = "rsmpeg")]
         if let Some(inner) = self.inner {
-            match inner.task.await {
-                Ok(stats) => return Some(stats),
-                Err(e) => {
-                    tracing::warn!(error = ?e, "WHEP verifier task failed; all decode verification results were lost")
-                }
-            }
+            return Some(inner.future.await);
         }
         None
     }
@@ -630,10 +630,10 @@ enum WindowOutcome {
 /// Why the packet forwarding loop of a window ended.
 #[cfg(feature = "rsmpeg")]
 enum ForwardEnd {
-    /// The window duration elapsed.
+    /// The window duration elapsed; close stdin and collect the flushed result.
     Expired,
-    /// The decoder thread is gone; its result carries the reason.
-    DecoderGone,
+    /// Sending to the decode worker failed or the worker exited.
+    DecoderFailed(anyhow::Error),
     /// Shutdown started or every session went away.
     Shutdown,
 }
@@ -649,85 +649,72 @@ async fn decode_window(
     window: Duration,
     ct: &CancellationToken,
 ) -> WindowOutcome {
-    /// Extra time the decoder thread gets past the window to flush; the join
-    /// timeout below adds a margin on top of its own deadline.
+    /// Extra time the worker gets past the window for EOF, decoder flush, and
+    /// process collection.
     const DECODER_GRACE: Duration = Duration::from_secs(2);
 
-    let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(VERIFY_CHANNEL_CAPACITY);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let decoder = tokio::task::spawn_blocking({
-        let mime = mime.to_string();
-        let cancelled = Arc::clone(&cancelled);
-        move || {
-            crate::probe::decoder::run_ffi_decoder(
-                mime,
-                None,
-                packet_rx,
-                cancelled,
-                window + DECODER_GRACE,
-            )
-        }
-    });
+    use crate::probe::worker::{DecodeSummary, DecodeWorker, DecodeWorkerConfig};
 
-    // Forward packets until the window expires, shutdown starts, every
-    // session is gone, or the decoder thread dies. Only shutdown skips
-    // recording; a dead decoder is exactly the failure the window measures.
-    // The deadline is created once and pinned: a per-iteration `sleep(window)`
-    // would restart on every packet and never fire under continuous traffic.
-    let deadline = tokio::time::sleep(window);
-    tokio::pin!(deadline);
-    let end = tokio::select! {
-        _ = ct.cancelled() => ForwardEnd::Shutdown,
-        end = async {
-            loop {
-                tokio::select! {
-                    packet = verify_rx.recv() => {
-                        match packet {
-                            Some((session, packet)) => {
-                                // Stale packet from a previously targeted
-                                // session whose forwarder had not observed the
-                                // target switch yet: drop it instead of feeding
-                                // a foreign sequence space to the decoder.
-                                if session != target {
-                                    continue;
-                                }
-                                match packet_tx.try_send(packet) {
-                                    Ok(()) => {}
-                                    // The decoder is backed up: drop the
-                                    // packet (RTP decoding tolerates loss)
-                                    // rather than stall the forward loop,
-                                    // mirroring the upstream try_send.
-                                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                                        break ForwardEnd::DecoderGone;
-                                    }
-                                }
-                            }
-                            None => break ForwardEnd::Shutdown,
-                        }
-                    }
-                    _ = &mut deadline => break ForwardEnd::Expired,
-                }
-            }
-        } => end,
+    let worker_deadline = tokio::time::Instant::now() + window + DECODER_GRACE * 2;
+    let mut worker = match DecodeWorker::start(
+        DecodeWorkerConfig {
+            mime_type: mime.to_string(),
+            sprop_params: None,
+        },
+        ct,
+        worker_deadline,
+    )
+    .await
+    {
+        Ok(worker) => worker,
+        Err(_) if ct.is_cancelled() => return WindowOutcome::Cancelled,
+        Err(error) => return WindowOutcome::Done(Err(error)),
     };
 
-    cancelled.store(true, Ordering::Relaxed);
-    let result = tokio::time::timeout(DECODER_GRACE * 2, decoder).await;
-    if matches!(end, ForwardEnd::Shutdown) {
-        return WindowOutcome::Cancelled;
-    }
-    match result {
-        Ok(Ok(result)) => WindowOutcome::Done(result),
-        // A JoinError also covers cancellation from runtime shutdown, so only
-        // call it a panic when it actually is one.
-        Ok(Err(e)) if e.is_panic() => {
-            WindowOutcome::Done(Err(anyhow!("decoder task panicked: {e}")))
+    // The deadline is absolute and shared with sends: a per-iteration sleep or
+    // an unmonitored pipe write could otherwise extend the window forever under
+    // continuous traffic or backpressure.
+    let window_deadline = tokio::time::Instant::now() + window;
+    let end = loop {
+        tokio::select! {
+            _ = ct.cancelled() => break ForwardEnd::Shutdown,
+            packet = verify_rx.recv() => {
+                match packet {
+                    Some((session, packet)) => {
+                        // Stale packet from a previously targeted session whose
+                        // forwarder had not observed the target switch yet.
+                        if session != target {
+                            continue;
+                        }
+                        if let Err(error) = worker.send_rtp(&packet, ct, window_deadline).await {
+                            break ForwardEnd::DecoderFailed(error);
+                        }
+                    }
+                    None => break ForwardEnd::Shutdown,
+                }
+            }
+            _ = tokio::time::sleep_until(window_deadline) => break ForwardEnd::Expired,
         }
-        Ok(Err(e)) => WindowOutcome::Done(Err(anyhow!("decoder task was cancelled: {e}"))),
-        // Aborting a blocking task does not stop the thread; it still exits
-        // on its own deadline. Detach and count the window failed.
-        Err(_) => WindowOutcome::Done(Err(anyhow!("decoder thread did not stop after the window"))),
+    };
+
+    match end {
+        ForwardEnd::Shutdown => {
+            // Explicit drop runs the worker's synchronous kill+reap guard.
+            drop(worker);
+            WindowOutcome::Cancelled
+        }
+        ForwardEnd::DecoderFailed(_) if ct.is_cancelled() => WindowOutcome::Cancelled,
+        ForwardEnd::DecoderFailed(error) => WindowOutcome::Done(Err(error)),
+        ForwardEnd::Expired => match worker.finish(ct, worker_deadline).await {
+            Ok(DecodeSummary::Video(decoded)) => {
+                WindowOutcome::Done(Ok((decoded.width, decoded.height, decoded.frame_count)))
+            }
+            Ok(DecodeSummary::Audio(_)) => {
+                WindowOutcome::Done(Err(anyhow!("video decode worker returned an audio result")))
+            }
+            Err(_) if ct.is_cancelled() => WindowOutcome::Cancelled,
+            Err(error) => WindowOutcome::Done(Err(error)),
+        },
     }
 }
 

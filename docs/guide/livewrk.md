@@ -17,12 +17,14 @@ feedback statistics.
 ```bash
 # The whip subcommand and WHEP decode verification require FFmpeg
 # development libraries (rsmpeg)
-cargo build --bin livewrk --features rsmpeg
+cargo build --bin livewrk --bin whepprobe --features rsmpeg
 ```
 
 Without the `rsmpeg` feature only the `whep` subcommand (without
 `--verify-window`) is available; the `whip` subcommand explains how to
-rebuild when invoked.
+rebuild when invoked. Decode verification launches `whepprobe` as an isolated
+worker, so keep it beside `livewrk` (both are included in diagnostics bundles)
+or set `LIVE777_WHEPPROBE_BIN` to its path.
 
 ## Usage
 

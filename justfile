@@ -671,10 +671,11 @@ livewrk-whip sessions="100" duration="60":
     cargo run --release --features=rsmpeg --bin livewrk -- whip \
         --whip {{server}}/whip/load --sessions {{sessions}} --duration {{duration}}
 
-# Decode verification (--verify-window) requires building with --features=rsmpeg.
+# Decode verification (--verify-window) uses the sibling whepprobe worker.
 [group('loadtest')]
 livewrk-whep sessions="100" duration="60" target_stream=stream:
-    cargo run --release --features=rsmpeg --bin livewrk -- whep \
+    cargo build --release --features=rsmpeg --bin livewrk --bin whepprobe
+    ./target/release/livewrk whep \
         --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
 
 [group('loadtest')]

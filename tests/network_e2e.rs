@@ -182,7 +182,10 @@ impl Topology {
         command.args(["netns", "exec", self.name(namespace)]);
         command.arg(program);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        command.env("NO_PROXY", "*").env("no_proxy", "*");
+        command
+            .env("NO_PROXY", "*")
+            .env("no_proxy", "*")
+            .env("LIVE777_WEBRTC_DISABLE_MDNS", "1");
         for variable in [
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -549,6 +552,7 @@ fn assert_media_success(probe: &ProbeOutput) {
 
 fn peer_state_logged(output: &str, state: &str) -> bool {
     output.contains(&format!("Connection state changed: {state}"))
+        || output.contains(&format!("WHIP publish connection state changed: {state}"))
         || output.contains(&format!("WHEP connection state changed: {state}"))
 }
 

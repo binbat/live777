@@ -1,12 +1,12 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use libwish::Client;
 use tokio::sync::Mutex;
@@ -14,18 +14,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use webrtc::peer_connection::RTCPeerConnectionState;
 
+use crate::probe::decoder::DecodedAudio;
+use crate::probe::worker::{DecodeSummary, DecodeWorker, DecodeWorkerConfig, VideoDecodeResult};
 use crate::probe::{ProbeBackend, ProbeConfig, ProbeResult};
 use crate::utils::shutdown::graceful_shutdown;
 
-const DECODER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// WHEP probe backend that receives RTP payloads directly from the WebRTC
-/// peer connection, depacketizes them into encoded frames, and decodes them
-/// with rsmpeg/FFmpeg through FFI.
-///
-/// Unlike the previous implementation this avoids an intermediate RTP/UDP
-/// bridge: encoded frames travel from the Rust WebRTC stack to FFmpeg in the
-/// same process.
+/// peer connection and sends them to isolated whepprobe decode workers. The
+/// workers reuse the rsmpeg/FFmpeg RTP frame decoder; no RTP/UDP bridge or
+/// in-process FFmpeg decoding is involved.
 #[derive(Debug, Clone, Copy)]
 pub struct RsmpegProbe {
     /// How long to decode after the subscribe session becomes connected.
@@ -52,13 +49,13 @@ impl ProbeBackend for RsmpegProbe {
         info!(
             whep_url = %config.whep_url,
             codec = ?config.video_codec,
-            "Starting rsmpeg WHEP probe (FFI encoded-frame path)"
+            "Starting rsmpeg WHEP probe (decode-worker path)"
         );
 
         let ct = CancellationToken::new();
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(RTCPeerConnectionState::New);
-        // Use bounded channels so slow decoders cannot cause unbounded memory
-        // growth in the WebRTC track readers.
+        // Bound the WebRTC track readers independently from the worker pipes so
+        // slow decoding cannot cause unbounded in-process memory growth.
         let (video_tx, video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
         let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
@@ -118,7 +115,7 @@ impl ProbeBackend for RsmpegProbe {
         };
 
         // The overall probe must respect config.timeout across all phases:
-        // connection, codec detection, and decoding.
+        // connection, codec detection, decoding, and worker collection.
         let deadline = start + config.timeout;
 
         let connected = wait_for_state(
@@ -175,7 +172,7 @@ impl ProbeBackend for RsmpegProbe {
         );
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        // Keep a small margin for the decoder thread to shut down cleanly.
+        // Keep a small margin for normal EOF, decoder flush, and child reaping.
         let decode_duration = self
             .decode_duration
             .min(Duration::from_secs(10))
@@ -191,79 +188,40 @@ impl ProbeBackend for RsmpegProbe {
             return Ok(result);
         }
 
-        let sprop_params = config.sprop_params.clone();
-        let (packet_tx, packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-
         let video_bytes_received = Arc::new(AtomicU64::new(0));
-        let forward_handle = tokio::spawn(forward_video_packets(
+        // These futures are joined in-place rather than spawned. Dropping the
+        // probe therefore drops both workers and synchronously reaps them.
+        let video_decode = run_video_decoder(
+            mime_type,
+            config.sprop_params.clone(),
             video_rx,
-            packet_tx,
             video_bytes_received.clone(),
             ct.clone(),
             decode_duration,
-        ));
-
-        let audio_handle = tokio::spawn(run_audio_decoder(
+            deadline,
+        );
+        let audio_decode = run_audio_decoder(
             audio_rx,
             codec_info.clone(),
             audio_bytes_received.clone(),
-            cancelled.clone(),
             ct.clone(),
             decode_duration,
-        ));
-
-        let decoder_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let decoder_handle = tokio::task::spawn_blocking(move || {
-            crate::probe::decoder::run_ffi_tokio_decoder(
-                mime_type,
-                sprop_params.as_deref(),
-                packet_rx,
-                cancelled_clone,
-                decode_duration + DECODER_JOIN_TIMEOUT,
-            )
-        });
-        let decode_result = join_decoder_task(
-            decoder_handle,
-            decoder_timeout,
-            cancelled.clone(),
-            ct.clone(),
-        )
-        .await;
-
-        cancelled.store(true, Ordering::Relaxed);
+            deadline,
+        );
+        let (decode_result, audio_decode_result) = tokio::join!(video_decode, audio_decode);
         ct.cancel();
-        match join_task(forward_handle, DECODER_JOIN_TIMEOUT).await {
-            Some(Ok(())) => {}
-            Some(Err(e)) => result.error = Some(format!("video forward task panicked: {e:?}")),
-            None => result.error = Some("video forward task timed out".to_string()),
-        }
-        let audio_decode_result = join_decoder_task(
-            audio_handle,
-            DECODER_JOIN_TIMEOUT,
-            cancelled.clone(),
-            ct.clone(),
-        )
-        .await;
 
         let mut video_success = false;
         match decode_result {
-            Some(Ok(Ok((width, height, frame_count)))) => {
-                result.width = width;
-                result.height = height;
-                result.frame_count = frame_count;
-                result.video_tracks = if frame_count > 0 { 1 } else { 0 };
-                video_success = frame_count > 0 && width > 0 && height > 0;
+            Ok(decoded) => {
+                result.width = decoded.width;
+                result.height = decoded.height;
+                result.frame_count = decoded.frame_count;
+                result.video_tracks = u32::from(decoded.frame_count > 0);
+                video_success = decoded.frame_count > 0 && decoded.width > 0 && decoded.height > 0;
             }
-            Some(Ok(Err(e))) => {
+            Err(e) => {
                 result.error = Some(format!("video decoder error: {e:?}"));
-            }
-            Some(Err(e)) => {
-                result.error = Some(format!("video decode task panicked: {e:?}"));
-            }
-            None => {
-                result.error = Some("video decoder timed out".to_string());
             }
         }
 
@@ -273,19 +231,15 @@ impl ProbeBackend for RsmpegProbe {
         result.audio_codec = negotiated_audio_codec(&codec_info).await;
 
         match audio_decode_result {
-            Some(Ok(Some(Ok(decoded)))) => {
+            Some(Ok(decoded)) => {
                 result.audio_frame_count = decoded.frame_count;
                 result.audio_sample_rate = decoded.sample_rate;
                 result.audio_channels = decoded.channels;
             }
-            Some(Ok(Some(Err(e)))) => {
+            Some(Err(e)) => {
                 result.error = Some(format!("audio decoder error: {e:?}"));
             }
-            Some(Ok(None)) => {}
-            Some(Err(e)) => {
-                result.error = Some(format!("audio decode task panicked: {e:?}"));
-            }
-            None => result.error = Some("audio decode task timed out".to_string()),
+            None => {}
         }
         let audio_success = result.audio_bytes_received == 0 || result.audio_frame_count > 0;
         if result.audio_bytes_received > 0
@@ -303,8 +257,73 @@ impl ProbeBackend for RsmpegProbe {
     }
 }
 
-async fn forward_video_packets(
-    mut video_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+async fn run_video_decoder(
+    mime_type: String,
+    sprop_params: Option<String>,
+    video_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    bytes_received: Arc<AtomicU64>,
+    ct: CancellationToken,
+    decode_duration: Duration,
+    hard_deadline: tokio::time::Instant,
+) -> Result<VideoDecodeResult> {
+    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    let forward = forward_packets(
+        video_rx,
+        packet_tx,
+        bytes_received,
+        ct.clone(),
+        decode_duration,
+    );
+    let decode = async {
+        let mut worker = DecodeWorker::start(
+            DecodeWorkerConfig {
+                mime_type,
+                sprop_params,
+            },
+            &ct,
+            hard_deadline,
+        )
+        .await?;
+        while let Some(packet) = packet_rx.recv().await {
+            worker.send_rtp(&packet, &ct, hard_deadline).await?;
+        }
+        match worker.finish(&ct, hard_deadline).await? {
+            DecodeSummary::Video(decoded) => Ok(decoded),
+            DecodeSummary::Audio(_) => bail!("video decode worker returned an audio result"),
+        }
+    };
+    let (_, decoded) = tokio::join!(forward, decode);
+    decoded
+}
+
+async fn run_audio_decoder(
+    audio_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    bytes_received: Arc<AtomicU64>,
+    ct: CancellationToken,
+    decode_duration: Duration,
+    hard_deadline: tokio::time::Instant,
+) -> Option<Result<DecodedAudio>> {
+    let (packet_tx, packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    let forward = forward_packets(
+        audio_rx,
+        packet_tx,
+        bytes_received,
+        ct.clone(),
+        decode_duration,
+    );
+    let (_, decoded) = tokio::join!(
+        forward,
+        decode_audio_packets(packet_rx, codec_info, ct, hard_deadline)
+    );
+    decoded
+}
+
+/// Preserve the original bounded packet queue ahead of FFmpeg. The forward and
+/// decode futures are joined in-place, so this extra buffering does not detach
+/// either side when the outer probe is dropped.
+async fn forward_packets(
+    mut source_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     packet_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     bytes_received: Arc<AtomicU64>,
     ct: CancellationToken,
@@ -312,21 +331,19 @@ async fn forward_video_packets(
 ) {
     let deadline = tokio::time::sleep(decode_duration);
     tokio::pin!(deadline);
-    loop {
+    'forward: loop {
         tokio::select! {
-            packet = video_rx.recv() => {
-                let Some(packet) = packet else {
-                    break;
-                };
+            packet = source_rx.recv() => {
+                let Some(packet) = packet else { break };
                 bytes_received.fetch_add(packet.len() as u64, Ordering::Relaxed);
                 tokio::select! {
                     result = packet_tx.send(packet) => {
                         if result.is_err() {
-                            break;
+                            break 'forward;
                         }
                     }
-                    _ = ct.cancelled() => break,
-                    _ = &mut deadline => break,
+                    _ = ct.cancelled() => break 'forward,
+                    _ = &mut deadline => break 'forward,
                 }
             }
             _ = ct.cancelled() => break,
@@ -335,103 +352,55 @@ async fn forward_video_packets(
     }
 }
 
-async fn run_audio_decoder(
-    mut audio_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+async fn decode_audio_packets(
+    mut packet_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     codec_info: Arc<Mutex<rtsp::CodecInfo>>,
-    bytes_received: Arc<AtomicU64>,
-    cancelled: Arc<AtomicBool>,
     ct: CancellationToken,
-    decode_duration: Duration,
-) -> Option<Result<crate::probe::decoder::DecodedAudio>> {
-    let (packet_tx, packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
-    let mut packet_rx = Some(packet_rx);
-    let mut decoder_handle = None;
-    let deadline = tokio::time::sleep(decode_duration);
-    tokio::pin!(deadline);
-
-    loop {
-        tokio::select! {
-            packet = audio_rx.recv() => {
-                let Some(packet) = packet else {
-                    break;
+    hard_deadline: tokio::time::Instant,
+) -> Option<Result<DecodedAudio>> {
+    let mut worker = None;
+    let result = async {
+        while let Some(packet) = packet_rx.recv().await {
+            if worker.is_none() {
+                let Some(mime_type) = negotiated_audio_mime(&codec_info).await else {
+                    return Err(anyhow!("audio RTP arrived without codec information"));
                 };
-                bytes_received.fetch_add(packet.len() as u64, Ordering::Relaxed);
-                if decoder_handle.is_none() {
-                    let Some(mime_type) = negotiated_audio_mime(&codec_info).await else {
-                        return Some(Err(anyhow!("audio RTP arrived without codec information")));
-                    };
-                    let cancelled = cancelled.clone();
-                    let packet_rx = packet_rx.take().expect("audio receiver is taken once");
-                    decoder_handle = Some(tokio::task::spawn_blocking(move || {
-                        crate::probe::decoder::run_ffi_audio_decoder(
+                worker = Some(
+                    DecodeWorker::start(
+                        DecodeWorkerConfig {
                             mime_type,
-                            packet_rx,
-                            cancelled,
-                            decode_duration + DECODER_JOIN_TIMEOUT,
-                        )
-                    }));
-                }
-                tokio::select! {
-                    result = packet_tx.send(packet) => {
-                        if result.is_err() {
-                            break;
-                        }
-                    }
-                    _ = ct.cancelled() => break,
-                    _ = &mut deadline => break,
-                }
+                            sprop_params: None,
+                        },
+                        &ct,
+                        hard_deadline,
+                    )
+                    .await?,
+                );
             }
-            _ = ct.cancelled() => break,
-            _ = &mut deadline => break,
+            worker
+                .as_mut()
+                .expect("audio worker was just initialized")
+                .send_rtp(&packet, &ct, hard_deadline)
+                .await?;
         }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        return Some(Err(error));
     }
 
-    drop(packet_tx);
-    match decoder_handle {
-        Some(handle) => {
-            match join_decoder_task(handle, DECODER_JOIN_TIMEOUT, cancelled, ct).await {
-                Some(Ok(result)) => Some(result),
-                Some(Err(e)) => Some(Err(anyhow!("audio decoder task failed: {e}"))),
-                None => Some(Err(anyhow!("audio decoder timed out"))),
+    match worker {
+        Some(worker) => Some(
+            async {
+                match worker.finish(&ct, hard_deadline).await? {
+                    DecodeSummary::Audio(decoded) => Ok(decoded),
+                    DecodeSummary::Video(_) => bail!("audio decode worker returned a video result"),
+                }
             }
-        }
+            .await,
+        ),
         None => None,
-    }
-}
-
-async fn join_task<T>(
-    task: tokio::task::JoinHandle<T>,
-    timeout: Duration,
-) -> Option<Result<T, tokio::task::JoinError>> {
-    let abort = task.abort_handle();
-    match tokio::time::timeout(timeout, task).await {
-        Ok(result) => Some(result),
-        Err(_) => {
-            abort.abort();
-            None
-        }
-    }
-}
-
-async fn join_decoder_task<T>(
-    mut task: tokio::task::JoinHandle<T>,
-    timeout: Duration,
-    cancelled: Arc<AtomicBool>,
-    ct: CancellationToken,
-) -> Option<Result<T, tokio::task::JoinError>> {
-    match tokio::time::timeout(timeout, &mut task).await {
-        Ok(result) => Some(result),
-        Err(_) => {
-            cancelled.store(true, Ordering::Relaxed);
-            ct.cancel();
-            match tokio::time::timeout(DECODER_JOIN_TIMEOUT, &mut task).await {
-                Ok(Ok(_)) | Err(_) => {
-                    task.abort();
-                    None
-                }
-                Ok(Err(error)) => Some(Err(error)),
-            }
-        }
     }
 }
 
@@ -510,176 +479,4 @@ async fn negotiated_audio_codec(codec_info: &Arc<Mutex<rtsp::CodecInfo>>) -> Opt
             .unwrap_or(&mime_type)
             .to_ascii_lowercase()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    };
-    use std::time::Duration;
-
-    use tokio_util::sync::CancellationToken;
-
-    use super::{forward_video_packets, join_decoder_task, join_task};
-
-    type BlockedForward = (
-        tokio::sync::mpsc::Sender<Vec<u8>>,
-        tokio::sync::mpsc::Sender<Vec<u8>>,
-        tokio::sync::mpsc::Receiver<Vec<u8>>,
-        tokio::task::JoinHandle<()>,
-    );
-
-    fn blocked_forward(ct: CancellationToken, decode_duration: Duration) -> BlockedForward {
-        let (source_tx, source_rx) = tokio::sync::mpsc::channel(1);
-        let (decoder_tx, decoder_rx) = tokio::sync::mpsc::channel(1);
-        decoder_tx.try_send(vec![0]).unwrap();
-        let forward = tokio::spawn(forward_video_packets(
-            source_rx,
-            decoder_tx.clone(),
-            Arc::new(AtomicU64::new(0)),
-            ct,
-            decode_duration,
-        ));
-        (source_tx, decoder_tx, decoder_rx, forward)
-    }
-
-    #[tokio::test]
-    async fn cancel_interrupts_forward_when_decoder_stops_consuming() {
-        let ct = CancellationToken::new();
-        let (source_tx, _decoder_tx, _decoder_rx, forward) =
-            blocked_forward(ct.clone(), Duration::from_secs(30));
-        source_tx.send(vec![1]).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(!forward.is_finished());
-
-        ct.cancel();
-        let result = join_task(forward, Duration::from_millis(200)).await;
-        assert!(matches!(result, Some(Ok(()))));
-    }
-
-    #[tokio::test]
-    async fn deadline_interrupts_forward_when_decoder_stops_consuming() {
-        let ct = CancellationToken::new();
-        let (source_tx, _decoder_tx, _decoder_rx, forward) =
-            blocked_forward(ct, Duration::from_millis(20));
-        source_tx.send(vec![1]).await.unwrap();
-        let result = join_task(forward, Duration::from_millis(200)).await;
-        assert!(matches!(result, Some(Ok(()))));
-    }
-
-    #[tokio::test]
-    async fn dropping_decoder_receiver_interrupts_forward() {
-        let ct = CancellationToken::new();
-        let (source_tx, _decoder_tx, decoder_rx, forward) =
-            blocked_forward(ct, Duration::from_secs(30));
-        source_tx.send(vec![1]).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(!forward.is_finished());
-
-        drop(decoder_rx);
-        let result = join_task(forward, Duration::from_millis(200)).await;
-        assert!(matches!(result, Some(Ok(()))));
-    }
-
-    #[tokio::test]
-    async fn slow_decoder_is_cancelled_and_joined_after_timeout() {
-        let (source_tx, source_rx) = tokio::sync::mpsc::channel(1);
-        let (decoder_tx, mut decoder_rx) = tokio::sync::mpsc::channel(1);
-        let decoding = Arc::new(AtomicBool::new(false));
-        let decoding_clone = decoding.clone();
-        let finished = Arc::new(AtomicBool::new(false));
-        let finished_clone = finished.clone();
-        let decoder = tokio::task::spawn_blocking(move || {
-            decoder_rx.blocking_recv().unwrap();
-            decoding_clone.store(true, Ordering::Relaxed);
-            std::thread::sleep(Duration::from_millis(250));
-            finished_clone.store(true, Ordering::Relaxed);
-        });
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let ct = CancellationToken::new();
-        let forward = tokio::spawn(forward_video_packets(
-            source_rx,
-            decoder_tx,
-            Arc::new(AtomicU64::new(0)),
-            ct.clone(),
-            Duration::from_secs(30),
-        ));
-        source_tx.send(vec![1]).await.unwrap();
-        for _ in 0..100 {
-            if decoding.load(Ordering::Relaxed) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        assert!(decoding.load(Ordering::Relaxed));
-
-        ct.cancel();
-        assert!(
-            join_decoder_task(
-                decoder,
-                Duration::from_millis(20),
-                cancelled.clone(),
-                ct.clone(),
-            )
-            .await
-            .is_none()
-        );
-        assert!(cancelled.load(Ordering::Relaxed));
-        assert!(finished.load(Ordering::Relaxed));
-        assert!(matches!(
-            join_task(forward, Duration::from_millis(200)).await,
-            Some(Ok(()))
-        ));
-    }
-
-    #[tokio::test]
-    async fn nested_decoder_task_finishes_within_cancellation_grace() {
-        let finished = Arc::new(AtomicBool::new(false));
-        let finished_clone = finished.clone();
-        let worker = tokio::task::spawn_blocking(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            finished_clone.store(true, Ordering::Relaxed);
-        });
-        let nested = tokio::spawn(async move {
-            worker.await.unwrap();
-        });
-
-        assert!(
-            join_decoder_task(
-                nested,
-                Duration::from_millis(10),
-                Arc::new(AtomicBool::new(false)),
-                CancellationToken::new(),
-            )
-            .await
-            .is_none()
-        );
-        assert!(finished.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn unresponsive_decoder_join_has_a_bounded_wait() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let decoder = tokio::task::spawn_blocking(|| {
-                std::thread::sleep(Duration::from_secs(5));
-            });
-            let started = std::time::Instant::now();
-            let result = join_decoder_task(
-                decoder,
-                Duration::from_millis(10),
-                Arc::new(AtomicBool::new(false)),
-                CancellationToken::new(),
-            )
-            .await;
-            assert!(result.is_none());
-            assert!(started.elapsed() < Duration::from_secs(3));
-        });
-        runtime.shutdown_background();
-    }
 }

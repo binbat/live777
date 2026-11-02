@@ -14,11 +14,13 @@ RTCP 反馈统计。
 
 ```bash
 # whip 子命令和 WHEP 解码验证需要 FFmpeg 开发库（rsmpeg）
-cargo build --bin livewrk --features rsmpeg
+cargo build --bin livewrk --bin whepprobe --features rsmpeg
 ```
 
 不带 `rsmpeg` feature 构建时只有 `whep` 子命令可用（且不能用
-`--verify-window`）；此时调用 `whip` 子命令会提示如何重新构建。
+`--verify-window`）；此时调用 `whip` 子命令会提示如何重新构建。解码验证会启动
+独立的 `whepprobe` worker，因此请将它与 `livewrk` 放在同一目录（诊断工具包已
+同时包含两者），或通过 `LIVE777_WHEPPROBE_BIN` 指定其路径。
 
 ## 用法
 

@@ -1,11 +1,4 @@
-use std::{
-    io::Cursor,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::io::Cursor;
 
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
@@ -15,7 +8,6 @@ use rsmpeg::{
 };
 use rtc::rtp::packet::Packet;
 use rtc_shared::marshal::Unmarshal;
-use std::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::payload::{RePayload, RePayloadCodec};
@@ -28,7 +20,7 @@ use crate::payload::{RePayload, RePayloadCodec};
 /// tolerating startup noise such as VP8 interframes before the first keyframe.
 const MAX_EARLY_FAILURES: u32 = 100;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecodedAudio {
     pub frame_count: u32,
     pub sample_rate: u32,
@@ -359,68 +351,6 @@ fn av_packet_from_bytes(data: &[u8]) -> Result<AVPacket> {
     Ok(packet)
 }
 
-/// Run a blocking FFmpeg decoder that reads RTP packets from `packet_rx` and
-/// decodes them until the cancellation token fires or the timeout expires.
-pub fn run_ffi_decoder(
-    mime_type: String,
-    sprop_params: Option<&str>,
-    packet_rx: mpsc::Receiver<Vec<u8>>,
-    cancelled: Arc<AtomicBool>,
-    timeout: Duration,
-) -> Result<(u32, u32, u32)> {
-    let mut decoder = RtpFrameDecoder::new(mime_type, sprop_params)?;
-    let deadline = std::time::Instant::now() + timeout;
-
-    while std::time::Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
-        match packet_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(packet) => decoder.feed_rtp(&packet)?,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    decoder.finish()
-}
-
-pub fn run_ffi_tokio_decoder(
-    mime_type: String,
-    sprop_params: Option<&str>,
-    mut packet_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    cancelled: Arc<AtomicBool>,
-    timeout: Duration,
-) -> Result<(u32, u32, u32)> {
-    let mut decoder = RtpFrameDecoder::new(mime_type, sprop_params)?;
-    let deadline = std::time::Instant::now() + timeout;
-
-    while std::time::Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
-        match packet_rx.blocking_recv() {
-            Some(packet) => decoder.feed_rtp(&packet)?,
-            None => break,
-        }
-    }
-
-    decoder.finish()
-}
-
-pub fn run_ffi_audio_decoder(
-    mime_type: String,
-    mut packet_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    cancelled: Arc<AtomicBool>,
-    timeout: Duration,
-) -> Result<DecodedAudio> {
-    let mut decoder = RtpFrameDecoder::new(mime_type, None)?;
-    let deadline = std::time::Instant::now() + timeout;
-
-    while std::time::Instant::now() < deadline && !cancelled.load(Ordering::Relaxed) {
-        match packet_rx.blocking_recv() {
-            Some(packet) => decoder.feed_rtp(&packet)?,
-            None => break,
-        }
-    }
-
-    decoder.finish_audio()
-}
-
 /// Parse H.264 `sprop-parameter-sets=BASE64_SPS,BASE64_PPS` and return the
 /// decoded SPS and PPS NAL units (without Annex-B start codes).
 fn parse_h264_sprop(params: &str) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -541,6 +471,85 @@ mod tests {
         }
         let (width, height, frames) = decoder.finish().unwrap();
         assert_eq!((width, height), (64, 64));
+        assert!(frames > 0);
+    }
+
+    #[test]
+    fn decodes_h265_video() {
+        let mut generator =
+            crate::source::FrameGenerator::new(&crate::source::FrameGeneratorConfig {
+                video_codec: crate::source::VideoCodec::H265,
+                audio_codec: None,
+                width: 64,
+                height: 64,
+                fps: 30,
+                duration: None,
+            })
+            .unwrap();
+        let sprop = crate::source::extract_h265_sprop(64, 64, 30).unwrap();
+        let mut decoder = RtpFrameDecoder::new("video/h265", Some(&sprop)).unwrap();
+        for _ in 0..100 {
+            if let crate::whipsynth::source::SourceFrame::Frame(crate::source::MediaFrame::Video(
+                frame,
+            )) = generator.next_frame().unwrap()
+            {
+                decoder.decode_packet(&frame.data, frame.pts).unwrap();
+                break;
+            }
+        }
+        let (width, height, frames) = decoder.finish().unwrap();
+        assert_eq!((width, height), (64, 64));
+        assert!(frames > 0);
+    }
+
+    #[test]
+    fn decodes_h265_rtp_after_starting_with_interframe() {
+        use rtc_shared::marshal::Marshal;
+
+        let mut generator =
+            crate::source::FrameGenerator::new(&crate::source::FrameGeneratorConfig {
+                video_codec: crate::source::VideoCodec::H265,
+                audio_codec: None,
+                width: 640,
+                height: 480,
+                fps: 30,
+                duration: None,
+            })
+            .unwrap();
+        let sprop = crate::source::extract_h265_sprop(640, 480, 30).unwrap();
+        let mut decoder = RtpFrameDecoder::new("video/h265", Some(&sprop)).unwrap();
+        let mut packetizer =
+            crate::whipsynth::Packetizer::new(&crate::whipsynth::PacketizerConfig {
+                width: 640,
+                height: 480,
+                h265_sprop: Some(sprop),
+                ..crate::whipsynth::PacketizerConfig::new(crate::source::VideoCodec::H265, None)
+            })
+            .unwrap();
+        let mut keyframe = None;
+        for _ in 0..100 {
+            if let crate::whipsynth::source::SourceFrame::Frame(crate::source::MediaFrame::Video(
+                frame,
+            )) = generator.next_frame().unwrap()
+            {
+                if keyframe.is_none() {
+                    keyframe = Some(frame);
+                    continue;
+                }
+                for packet in packetizer.packetize_video(&frame).unwrap() {
+                    decoder.feed_rtp(&packet.marshal().unwrap()).unwrap();
+                }
+                for packet in packetizer
+                    .packetize_video(keyframe.as_ref().unwrap())
+                    .unwrap()
+                {
+                    decoder.feed_rtp(&packet.marshal().unwrap()).unwrap();
+                }
+                break;
+            }
+        }
+        let (width, height, frames) = decoder.finish().unwrap();
+        assert_eq!((width, height), (640, 480));
         assert!(frames > 0);
     }
 

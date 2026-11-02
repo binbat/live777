@@ -6,6 +6,7 @@ on:
       - docker
     tags:
       - 'v*'
+  pull_request:
 
 jobs:
   docker:
@@ -55,53 +56,58 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Login to GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/')
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and load final image
+      - name: Build final image once
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/${{ matrix.arch }}
-          load: true
-          push: false
+          outputs: |
+            type=docker,dest=${{ runner.temp }}/${{ matrix.app }}-${{ matrix.arch }}.tar,name=local/${{ matrix.app }}:test
+            ${{ startsWith(github.ref, 'refs/tags/') && format('type=image,name=ghcr.io/binbat/{0},push=true,push-by-digest=true', matrix.app) || '' }}
           build-args: |
             LIVE777_VERSION=${{ steps.version.outputs.version }}
-          tags: local/${{ matrix.app }}:test
           labels: ${{ steps.meta.outputs.labels }}
+      - name: Load final image
+        run: docker load --input "${{ runner.temp }}/${{ matrix.app }}-${{ matrix.arch }}.tar"
       - name: Smoke test final image
         run: bash scripts/docker-smoke.sh "${{ matrix.app }}" "local/${{ matrix.app }}:test"
-      - name: Push image by digest and record digest
-        if: startsWith(github.ref, 'refs/tags/')
-        id: push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile.${{ matrix.app }}
-          platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=ghcr.io/binbat/${{ matrix.app }},push=true,push-by-digest=true
-          build-args: |
-            LIVE777_VERSION=${{ steps.version.outputs.version }}
-          labels: ${{ steps.meta.outputs.labels }}
       - name: Save tested image digest
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        run: printf '%s\n' 'ghcr.io/binbat/${{ matrix.app }}@${{ steps.push.outputs.digest }}' > digest.txt
+        run: printf '%s\n' 'ghcr.io/binbat/${{ matrix.app }}@${{ steps.build.outputs.digest }}' > digest.txt
       - name: Upload tested image digest
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.app }}-digest-${{ matrix.arch }}
           path: digest.txt
+          if-no-files-found: error
+
+  docker-registry-test:
+    name: Local registry integration
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Test digest pushes and multi-architecture manifests
+        run: bash scripts/docker-registry-test.sh
 
   docker-manifest:
     name: Docker Manifest (${{ matrix.app }})
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - docker
+      - docker-registry-test
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false

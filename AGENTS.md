@@ -218,7 +218,12 @@ configure `pkg-config` and linker paths.
 - `livetwo` is the protocol-conversion engine used by `whipinto`/`whepfrom`
   and the `cascade` feature. `livetwo/src/whip/core.rs` is the single WHIP
   publish core (peer construction, connection waits, ICE diagnostics) shared
-  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher.
+  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher. FFmpeg
+  decoding for `whepprobe` and livewrk's rotating verifier runs in isolated
+  `whepprobe --decode-worker` processes (`livetwo/src/probe/worker.rs`), so a
+  stuck decoder can be killed and reaped without leaking threads. `livewrk`
+  finds the helper beside its executable (or via `LIVE777_WHEPPROBE_BIN`);
+  diagnostics bundles ship both binaries together.
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
 
@@ -644,10 +649,17 @@ carries the check.
   (all-in-one quickstart/AI-deploy image, see below), `liveion`
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
-  `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix;
-  each final image runs `scripts/docker-smoke.sh` for its app before its digest
-  is collected into the multi-architecture manifest (no architecture-suffixed
-  release tags).
+  `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix.
+  Each matrix job builds once, exporting a Docker tar for `docker load` and
+  `scripts/docker-smoke.sh` and, only on version tags, pushing that same build
+  by digest. Pull requests and the `docker` branch build and smoke every image
+  without pushing to GHCR. Version-tag manifests (without architecture-suffixed
+  tags) are created only after all image smoke tests and the local-registry
+  integration test pass. `bash scripts/docker-registry-test.sh` starts an
+  isolated `registry:2`, exercises Docker-tar plus digest-only outputs for
+  amd64/arm64, validates and pulls the two-architecture manifest, and runs the
+  pulled image. It needs Docker, Buildx, curl and jq, uses only localhost, and
+  never publishes to GHCR or creates a Release.
 - **`live777-all` vs the slim `live777-server`/`live777-client` split**:
   `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
   whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check

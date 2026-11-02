@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use libwish::Client;
+use rtc::ice::mdns::MulticastDnsMode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -7,13 +8,30 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionEventHandler, RTCConfigurationBuilder, RTCIceGatheringState,
-    RTCPeerConnectionState, RTCSessionDescription,
+    RTCPeerConnectionState, RTCSessionDescription, SettingEngine, SettingEngineBuilder,
 };
 
 const OFFER_ICE_CANDIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const DISABLE_MDNS_ENV: &str = "LIVE777_WEBRTC_DISABLE_MDNS";
 
 pub fn ice_udp_addrs() -> Vec<SocketAddr> {
     api::webrtc::resolve_webrtc_ice_udp_addrs(None)
+}
+
+pub fn setting_engine() -> SettingEngine {
+    setting_engine_with_mdns_disabled(
+        std::env::var(DISABLE_MDNS_ENV).is_ok_and(|value| value == "1"),
+    )
+}
+
+fn setting_engine_with_mdns_disabled(disable_mdns: bool) -> SettingEngine {
+    let builder = SettingEngineBuilder::new();
+    let builder = if disable_mdns {
+        builder.with_multicast_dns_mode(MulticastDnsMode::Disabled)
+    } else {
+        builder
+    };
+    builder.build()
 }
 
 pub async fn setup_connection(
@@ -173,6 +191,20 @@ impl PeerConnectionEventHandler for Handler {
 mod tests {
     use super::*;
     use webrtc::peer_connection::{MediaEngine, PeerConnectionBuilder, Registry};
+
+    #[test]
+    fn mdns_is_disabled_only_by_explicit_opt_in() {
+        assert_eq!(
+            setting_engine_with_mdns_disabled(false)
+                .multicast_dns()
+                .mode,
+            MulticastDnsMode::QueryOnly
+        );
+        assert_eq!(
+            setting_engine_with_mdns_disabled(true).multicast_dns().mode,
+            MulticastDnsMode::Disabled
+        );
+    }
 
     #[tokio::test]
     async fn offer_sdp_does_not_advertise_unspecified_candidate_addr() {

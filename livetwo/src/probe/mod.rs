@@ -10,6 +10,8 @@ use webrtc::peer_connection::RTCIceServer;
 pub mod decoder;
 #[cfg(feature = "rsmpeg")]
 pub mod rsmpeg;
+#[cfg(feature = "rsmpeg")]
+pub mod worker;
 
 /// Configuration for a WHEP probe session.
 #[derive(Debug, Clone)]

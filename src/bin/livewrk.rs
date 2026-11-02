@@ -9,6 +9,8 @@
 //! The whip subcommand appends `-N` to the last path segment, so the whip
 //! example above publishes the streams `load-0` .. `load-99`.
 //! The `whip` subcommand and `whep --verify-window` require the `rsmpeg` feature.
+//! Decode verification also requires a sibling `whepprobe` executable (or
+//! `LIVE777_WHEPPROBE_BIN`) to run as an isolated worker.
 
 use std::time::Duration;
 

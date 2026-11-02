@@ -22,8 +22,12 @@ struct Args {
     verbose: u8,
 
     /// WHEP endpoint URL, e.g. http://localhost:7777/whep/live
-    #[arg(short, long)]
-    whep: String,
+    #[arg(short, long, required_unless_present = "decode_worker")]
+    whep: Option<String>,
+
+    /// Internal RTP decode worker; its stdin/stdout are a private binary protocol.
+    #[arg(long, hide = true)]
+    decode_worker: bool,
 
     /// Output format: human, json
     #[arg(short, long, value_enum, default_value = "human")]
@@ -82,6 +86,13 @@ async fn run() -> Result<bool> {
         "whepprobe={},livetwo={},webrtc={}",
         log_level, log_level, webrtc_level,
     );
+    if args.decode_worker {
+        // The worker reserves stdout for binary framing; all diagnostics,
+        // including verbose decoder logs, belong exclusively on stderr.
+        log::set_stderr(filter);
+        livetwo::probe::worker::run_stdio().await?;
+        return Ok(true);
+    }
     if matches!(args.output, OutputFormat::Json) {
         log::set_stderr(filter);
     } else {
@@ -139,7 +150,10 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
     };
 
     Ok(ProbeConfig {
-        whep_url: args.whep.clone(),
+        whep_url: args
+            .whep
+            .clone()
+            .context("WHEP URL is required outside decode-worker mode")?,
         timeout: Duration::from_secs(args.timeout),
         video_codec: codec,
         sprop_params: args.sprop_params.clone(),

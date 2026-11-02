@@ -7,9 +7,11 @@ on:
   release:
     types:
       - 'published'
+  pull_request:
 
 jobs:
   build:
+    if: github.event_name != 'pull_request'
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -292,7 +294,7 @@ jobs:
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME}
-          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
             VERSION=$(git describe --tags)
           fi
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
@@ -409,6 +411,7 @@ jobs:
 
       - name: Artifact Upload diagnostics bundle and sources
         uses: actions/upload-artifact@v7
+        if: github.ref_type == 'tag'
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
           path: |
@@ -423,6 +426,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   build-native:
+    if: github.event_name != 'pull_request'
     name: aarch64-unknown-linux-gnu-${{ matrix.job.variant }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
     strategy:
