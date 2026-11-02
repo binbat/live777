@@ -594,7 +594,11 @@ Integration test binaries live in `tests/`:
   whipsynth publisher)
 - `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
   in private Linux namespaces; ignored by default and requiring
-  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn
+  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn. The dedicated
+  Linux `network-e2e` job in `.github/workflows/rust.yml` installs these
+  dependencies and runs the ignored tests as root, preserving the Cargo/rustup
+  and FFmpeg dynamic-library environment through sudo; all other CI jobs and
+  default local runs leave them ignored.
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -728,6 +732,8 @@ cycle tests; they are the fastest way to exercise a local `live777` instance.
    `just smoke-bridge` for whipinto synth → live777 → whepfrom RTP/SDP →
    ffprobe decode. Both build the required debug binaries with `rsmpeg`, use
    isolated temporary configuration and loopback ICE, and clean up their own
-   processes; `CARGO_TARGET_DIR` is respected.
+   processes; `CARGO_TARGET_DIR` is respected. The non-media safeguards are
+   covered by `tests/smoke_port_conflict.sh` and `tests/smoke_audio_required.sh`
+   (occupied HTTP/RTP endpoints and rejecting a video-only probe).
 7. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
    -D warnings`, and `cargo nextest run --workspace` before finishing.

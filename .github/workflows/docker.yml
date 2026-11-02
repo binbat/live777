@@ -28,8 +28,6 @@ jobs:
         arch:
           - amd64
           - arm64
-    env:
-      TEST_IMAGE: ghcr.io/binbat/${{ matrix.app }}:test-${{ github.run_id }}-${{ matrix.arch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -72,11 +70,11 @@ jobs:
           push: false
           build-args: |
             LIVE777_VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ env.TEST_IMAGE }}
+          tags: local/${{ matrix.app }}:test
           labels: ${{ steps.meta.outputs.labels }}
       - name: Smoke test final image
-        run: bash scripts/docker-smoke.sh "${{ matrix.app }}" "${TEST_IMAGE}"
-      - name: Push tested image and record digest
+        run: bash scripts/docker-smoke.sh "${{ matrix.app }}" "local/${{ matrix.app }}:test"
+      - name: Push image by digest and record digest
         if: startsWith(github.ref, 'refs/tags/')
         id: push
         uses: docker/build-push-action@v7
@@ -84,10 +82,9 @@ jobs:
           context: .
           file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/${{ matrix.arch }}
-          push: true
+          outputs: type=image,name=ghcr.io/binbat/${{ matrix.app }},push=true,push-by-digest=true
           build-args: |
             LIVE777_VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ env.TEST_IMAGE }}
           labels: ${{ steps.meta.outputs.labels }}
       - name: Save tested image digest
         if: startsWith(github.ref, 'refs/tags/')

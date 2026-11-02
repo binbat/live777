@@ -74,13 +74,25 @@ if ! LOG_DIR="$(mktemp -d)"; then
     exit 1
 fi
 
+stop_pid() {
+    stop_pid_target=$1
+    [ -n "$stop_pid_target" ] || return 0
+    kill "$stop_pid_target" 2>/dev/null
+    (
+        sleep 5
+        kill -KILL "$stop_pid_target" 2>/dev/null
+    ) &
+    stop_pid_watchdog=$!
+    wait "$stop_pid_target" 2>/dev/null
+    kill "$stop_pid_watchdog" 2>/dev/null
+    wait "$stop_pid_watchdog" 2>/dev/null
+}
+
 cleanup() {
     # Only processes this script started are stopped; a pre-existing live777
     # (default mode) is left running.
-    [ -z "$SYNTH_PID" ] || kill "$SYNTH_PID" 2>/dev/null
-    [ -z "$LIVE777_PID" ] || kill "$LIVE777_PID" 2>/dev/null
-    [ -z "$SYNTH_PID" ] || wait "$SYNTH_PID" 2>/dev/null
-    [ -z "$LIVE777_PID" ] || wait "$LIVE777_PID" 2>/dev/null
+    stop_pid "$SYNTH_PID"
+    stop_pid "$LIVE777_PID"
     rm -rf "$LOG_DIR"
 }
 trap cleanup EXIT
@@ -153,6 +165,36 @@ whipsynth -v --whip "$SERVER_URL/whip/$STREAM" --acodec opus --ice-server "" $TO
 SYNTH_PID=$!
 echo "smoke-test: publishing stream '$STREAM' with whipsynth (pid $SYNTH_PID)" >&2
 
+json_number_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+json_string_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+json_bool_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+probe_audio_valid() {
+    probe_success=$(json_bool_field "$1" success)
+    probe_audio_codec=$(json_string_field "$1" audio_codec)
+    probe_audio_frames=$(json_number_field "$1" audio_frame_count)
+    probe_audio_bytes=$(json_number_field "$1" audio_bytes_received)
+    [ "$probe_success" = "true" ] && [ "$probe_audio_codec" = "opus" ] || return 1
+    case "$probe_audio_frames" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    case "$probe_audio_bytes" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$probe_audio_frames" -gt 0 ] && [ "$probe_audio_bytes" -gt 0 ]
+}
+
 # Bounded retries: the WHEP subscribe also serves as publisher readiness —
 # a fresh stream needs a moment before the first probe can connect.
 attempt=1
@@ -161,14 +203,17 @@ while [ "$attempt" -le "$ATTEMPTS" ]; do
     # shellcheck disable=SC2086
     if LAST_JSON=$(whepprobe --whep "$SERVER_URL/whep/$STREAM" --output json \
         --decode-duration 1 --timeout 10 --ice-server "" $TOKEN_OPT); then
-        echo "$LAST_JSON"
-        exit 0
+        if probe_audio_valid "$LAST_JSON"; then
+            echo "$LAST_JSON"
+            exit 0
+        fi
+        echo "smoke-test: probe attempt $attempt did not verify decoded opus audio" >&2
     fi
     attempt=$((attempt + 1))
     sleep 1
 done
 
-echo "smoke-test: probe failed after $ATTEMPTS attempts on $SERVER_URL/whep/$STREAM" >&2
+echo "smoke-test: probe failed or lacked decoded opus audio after $ATTEMPTS attempts on $SERVER_URL/whep/$STREAM" >&2
 if [ -n "$LAST_JSON" ]; then
     echo "smoke-test: last probe result:" >&2
     echo "$LAST_JSON" >&2

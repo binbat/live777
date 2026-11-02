@@ -164,48 +164,28 @@ async fn run_session(
         Err(e) => return (Duration::ZERO, Err(e)),
     };
     let mut client = Client::new(params.whep_url.clone(), auth);
-    let peer_ct = CancellationToken::new();
+    let peer_ct = ct.child_token();
 
-    // Race the setup (WHEP POST/answer + ICE) against cancellation so a
-    // session stopped while connecting still reports back instead of being
-    // aborted at the drain grace.
-    let (peer, _answer, _stats, mut dc_recv_rx, _dc_send_tx) = tokio::select! {
-        result = crate::whep::setup_whep_peer(
-            peer_ct.clone(),
-            &mut client,
-            video_tx,
-            audio_tx,
-            codec_info,
-            crate::whep::WhepPeerOptions {
-                ice_servers: params.ice_servers.clone(),
-                ..Default::default()
-            },
-            Some(state_tx),
-            verify.is_some().then_some(video_mime_tx),
-        ) => match result {
-            Ok(parts) => parts,
-            Err(e) => {
-                // Same cleanup as the cancel branch below: the WHEP POST may
-                // already have gone through (e.g. set_configuration or
-                // set_remote_description failed), so remove the server-side
-                // resource instead of leaking the session.
-                peer_ct.cancel();
-                if client.session_url.is_some() {
-                    let _ = client.remove_resource().await;
-                }
-                return (Duration::ZERO, Err(e));
-            }
+    let (peer, _answer, _stats, mut dc_recv_rx, _dc_send_tx) = match crate::whep::setup_whep_peer(
+        peer_ct.clone(),
+        &mut client,
+        video_tx,
+        audio_tx,
+        codec_info,
+        crate::whep::WhepPeerOptions {
+            ice_servers: params.ice_servers.clone(),
+            ..Default::default()
         },
-        _ = ct.cancelled() => {
-            // The half-built peer goes away with the setup future; remove the
-            // server-side resource when the WHEP POST already went through so
-            // the stream does not leak.
-            if client.session_url.is_some() {
-                let _ = client.remove_resource().await;
-            }
-            peer_ct.cancel();
+        Some(state_tx),
+        verify.is_some().then_some(video_mime_tx),
+    )
+    .await
+    {
+        Ok(parts) => parts,
+        Err(_) if ct.is_cancelled() => {
             return (Duration::ZERO, Ok(SessionOutcome::Cancelled));
         }
+        Err(e) => return (Duration::ZERO, Err(e)),
     };
 
     // The media path is ready: connected time starts here.
@@ -762,6 +742,9 @@ async fn wait_for_stop(
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
 ) -> StopReason {
     loop {
+        if ct.is_cancelled() {
+            return StopReason::Requested;
+        }
         let state = *state_rx.borrow_and_update();
         if matches!(
             state,
@@ -773,6 +756,7 @@ async fn wait_for_stop(
             // Disconnected is potentially transient (ICE may recover); only
             // treat it as fatal when it outlives the grace period.
             tokio::select! {
+                biased;
                 _ = ct.cancelled() => return StopReason::Requested,
                 _ = peer_ct.cancelled() => {
                     return StopReason::PeerEnded(*state_rx.borrow());
@@ -789,6 +773,7 @@ async fn wait_for_stop(
             }
         }
         tokio::select! {
+            biased;
             _ = ct.cancelled() => return StopReason::Requested,
             _ = peer_ct.cancelled() => {
                 return StopReason::PeerEnded(*state_rx.borrow());
@@ -902,9 +887,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_stop_reports_requested_cancel() {
+    async fn wait_for_stop_prioritizes_requested_cancel() {
         let ct = CancellationToken::new();
-        let peer_ct = CancellationToken::new();
+        let peer_ct = ct.child_token();
         let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
 
         ct.cancel();

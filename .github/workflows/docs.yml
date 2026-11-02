@@ -14,7 +14,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.deployment_status.state == 'success' &&
-       github.event.deployment_status.target_url != '')
+       github.event.deployment.environment == 'Production' &&
+       contains(github.event.deployment_status.target_url, 'live777.pages.dev'))
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -22,6 +23,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.deployment.sha || github.sha }}
           persist-credentials: false
       - name: Check deployed llms.txt and key pages
         env:

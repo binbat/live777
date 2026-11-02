@@ -759,12 +759,177 @@ where
 }
 
 #[cfg(unix)]
-fn signal_runner_group(child_id: Option<u32>, signal: libc::c_int) {
-    if let Some(pid) = child_id {
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), signal);
+#[derive(Debug)]
+struct UnixProcess {
+    pid: libc::pid_t,
+    ppid: libc::pid_t,
+    pgid: libc::pid_t,
+    state: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct RunnerProcessSnapshot {
+    pids: std::collections::BTreeSet<libc::pid_t>,
+    groups: std::collections::BTreeSet<libc::pid_t>,
+    individual_pids: std::collections::BTreeSet<libc::pid_t>,
+}
+
+#[cfg(unix)]
+impl RunnerProcessSnapshot {
+    async fn capture(child_id: u32) -> Result<Self> {
+        let root = libc::pid_t::try_from(child_id).context("Runner PID does not fit in pid_t")?;
+        let table = unix_process_table().await?;
+        if !table.iter().any(|process| process.pid == root) {
+            return Err(anyhow!(
+                "runner PID {root} was absent from the process snapshot"
+            ));
+        }
+
+        let mut pids = std::collections::BTreeSet::from([root]);
+        loop {
+            let previous_len = pids.len();
+            for process in &table {
+                if pids.contains(&process.ppid) {
+                    pids.insert(process.pid);
+                }
+            }
+            if pids.len() == previous_len {
+                break;
+            }
+        }
+
+        let process_groups: std::collections::BTreeMap<_, _> = table
+            .iter()
+            .filter(|process| pids.contains(&process.pid))
+            .map(|process| (process.pid, process.pgid))
+            .collect();
+        let mut groups = std::collections::BTreeSet::new();
+        for pgid in process_groups
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if pids.contains(&pgid)
+                && table
+                    .iter()
+                    .filter(|process| process.pgid == pgid)
+                    .all(|process| pids.contains(&process.pid))
+            {
+                groups.insert(pgid);
+            }
+        }
+        let individual_pids = process_groups
+            .into_iter()
+            .filter_map(|(pid, pgid)| (!groups.contains(&pgid)).then_some(pid))
+            .collect();
+        Ok(Self {
+            pids,
+            groups,
+            individual_pids,
+        })
+    }
+
+    fn root_only(child_id: u32) -> Self {
+        let root = libc::pid_t::try_from(child_id).ok();
+        Self {
+            pids: root.into_iter().collect(),
+            groups: root.into_iter().collect(),
+            individual_pids: std::collections::BTreeSet::new(),
         }
     }
+
+    fn signal(&self, signal: libc::c_int, name: &str) -> Vec<String> {
+        let mut failures = Vec::new();
+        for pgid in &self.groups {
+            if let Err(error) = send_unix_signal(-pgid, signal) {
+                failures.push(format!(
+                    "failed to send {name} to process group {pgid}: {error}"
+                ));
+            }
+        }
+        for pid in &self.individual_pids {
+            if let Err(error) = send_unix_signal(*pid, signal) {
+                failures.push(format!("failed to send {name} to process {pid}: {error}"));
+            }
+        }
+        failures
+    }
+
+    async fn surviving_pids_after_kill(&self) -> Result<Vec<libc::pid_t>> {
+        for attempt in 0..10 {
+            let survivors: Vec<_> = unix_process_table()
+                .await?
+                .into_iter()
+                .filter(|process| {
+                    self.pids.contains(&process.pid) && !process.state.starts_with(['Z', 'X'])
+                })
+                .map(|process| process.pid)
+                .collect();
+            if survivors.is_empty() || attempt == 9 {
+                return Ok(survivors);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        unreachable!()
+    }
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+async fn unix_process_table() -> Result<Vec<UnixProcess>> {
+    let output = Command::new("ps")
+        .args(["-eo", "pid=,ppid=,pgid=,stat="])
+        .output()
+        .await
+        .context("Failed to run ps for runner process cleanup")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "ps exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = std::str::from_utf8(&output.stdout).context("ps produced invalid UTF-8")?;
+    let mut table = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut columns = line.split_whitespace();
+        let pid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PID in ps output: {line}"))?;
+        let ppid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PPID in ps output: {line}"))?;
+        let pgid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PGID in ps output: {line}"))?;
+        let state = columns
+            .next()
+            .with_context(|| format!("Missing process state in ps output: {line}"))?
+            .to_string();
+        table.push(UnixProcess {
+            pid,
+            ppid,
+            pgid,
+            state,
+        });
+    }
+    Ok(table)
 }
 
 async fn terminate_runner<R, W>(
@@ -780,21 +945,75 @@ where
 {
     #[cfg(unix)]
     {
-        signal_runner_group(child_id, libc::SIGTERM);
-        let status = match timeout(
+        let Some(child_id) = child_id else {
+            let kill = child.start_kill().map_or_else(
+                |error| format!("direct runner kill failed: {error}"),
+                |_| "direct runner kill was requested".to_string(),
+            );
+            let wait = child.wait().await;
+            return format!(
+                "runner PID was unavailable, so descendants could not be enumerated; {kill}; wait result: {wait:?}; diagnostics may be incomplete"
+            );
+        };
+        let (snapshot, snapshot_error) = match RunnerProcessSnapshot::capture(child_id).await {
+            Ok(snapshot) => (snapshot, None),
+            Err(error) => (
+                RunnerProcessSnapshot::root_only(child_id),
+                Some(format!(
+                    "descendant snapshot failed: {error}; only the runner process group was targeted"
+                )),
+            ),
+        };
+
+        let term_failures = snapshot.signal(libc::SIGTERM, "SIGTERM");
+        let term_wait = timeout(
             Duration::from_secs(5),
             wait_for_runner(child, stdout_lines, stderr_lines, last_stdout_line),
         )
-        .await
-        {
+        .await;
+        let runner_reaped = matches!(&term_wait, Ok(Ok(_)));
+        let mut details = vec![match term_wait {
             Ok(Ok(status)) => format!("runner exited with {status} after SIGTERM"),
             Ok(Err(error)) => format!("runner cleanup failed after SIGTERM: {error}"),
             Err(_) => "runner did not exit within 5s of SIGTERM".to_string(),
-        };
-        signal_runner_group(child_id, libc::SIGKILL);
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        format!("{status}; remaining runner processes killed; diagnostics may be incomplete")
+        }];
+        details.extend(term_failures);
+        if let Some(error) = &snapshot_error {
+            details.push(error.clone());
+        }
+
+        let kill_failures = snapshot.signal(libc::SIGKILL, "SIGKILL");
+        details.extend(kill_failures);
+        if !runner_reaped {
+            match timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    details.push(format!("failed to wait for runner after SIGKILL: {error}"))
+                }
+                Err(_) => {
+                    details.push("runner did not exit within 5s of SIGKILL".to_string());
+                    if let Err(error) = child.start_kill() {
+                        details.push(format!("direct runner kill retry failed: {error}"));
+                    }
+                }
+            }
+        }
+
+        if snapshot_error.is_none() {
+            match snapshot.surviving_pids_after_kill().await {
+                Ok(survivors) if survivors.is_empty() => {
+                    details.push("no processes from the runner snapshot remain alive".to_string());
+                }
+                Ok(survivors) => details.push(format!(
+                    "runner snapshot processes still alive after SIGKILL: {survivors:?}"
+                )),
+                Err(error) => details.push(format!(
+                    "failed to verify runner descendant cleanup: {error}"
+                )),
+            }
+        }
+        details.push("diagnostics may be incomplete".to_string());
+        details.join("; ")
     }
     #[cfg(windows)]
     {
@@ -997,7 +1216,7 @@ console.log(JSON.stringify({
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn timeout_terminates_runner_process_group_and_preserves_capture_errors() {
+    async fn timeout_terminates_detached_runner_descendants_and_preserves_capture_errors() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1010,7 +1229,11 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const args = process.argv.slice(2);
 const directory = args[args.indexOf("--diagnostics-dir") + 1];
-const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" });
+const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+});
+child.unref();
 fs.writeFileSync(`${directory}/child.pid`, String(child.pid));
 process.on("SIGTERM", () => {
     fs.writeFileSync(`${directory}/term-received`, "yes");
@@ -1049,7 +1272,8 @@ setInterval(() => {}, 1000);
         assert!(
             error
                 .to_string()
-                .contains("remaining runner processes killed")
+                .contains("no processes from the runner snapshot remain alive"),
+            "{error}"
         );
         assert!(directory.join("term-received").is_file());
 
@@ -1071,12 +1295,16 @@ setInterval(() => {}, 1000);
             .parse()
             .unwrap();
         for _ in 0..50 {
-            if unsafe { libc::kill(pid, 0) } != 0 {
+            let table = unix_process_table().await.unwrap();
+            let alive = table
+                .iter()
+                .any(|process| process.pid == pid && !process.state.starts_with(['Z', 'X']));
+            if !alive {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("runner descendant {pid} survived process-group cleanup");
+        panic!("detached runner descendant {pid} survived process-tree cleanup");
     }
 
     #[cfg(windows)]

@@ -203,7 +203,7 @@ function buildPlayerUrl(baseUrl, params) {
     if (params.layer) {
         url.searchParams.set("layer", params.layer);
     }
-    // Token is passed via an in-page message instead of the URL to avoid
+    // Token is installed by context.addInitScript instead of the URL to avoid
     // leaking it into browser history, server logs, and referrer headers.
     url.searchParams.set("source", params.source);
     url.searchParams.set("timeout", params.timeoutMs.toString());
@@ -345,6 +345,11 @@ async function main() {
                 }
                 browserInstance = await launcher.launch(launchOptions);
                 context = await browserInstance.newContext();
+                if (params.token) {
+                    await context.addInitScript((token) => {
+                        window.__LIVE777_TOKEN__ = token;
+                    }, params.token);
+                }
                 if (params.trace && diagnosticsDir) {
                     await capture("trace start", () =>
                         context.tracing.start({
@@ -371,12 +376,6 @@ async function main() {
                 });
 
                 await page.goto(playerUrl, { waitUntil: "domcontentloaded" });
-
-                if (params.token) {
-                    await page.evaluate((token) => {
-                        window.__LIVE777_TOKEN__ = token;
-                    }, params.token);
-                }
 
                 const resultProp = resultPropertyName(params.mode);
                 await page.waitForFunction(

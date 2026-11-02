@@ -294,6 +294,7 @@ impl WhepSource {
                 // Pure pull: no need to join the upstream's WHEP control group.
                 control_channel: false,
                 cable_label: String::new(),
+                setup_timeout: None,
             },
             None,
             None,

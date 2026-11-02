@@ -106,6 +106,8 @@ impl PlaywrightWhepPlayer {
             },
             duration_ms: subscribe.duration_ms,
             error: subscribe.error,
+            video_codec: None,
+            audio_codec: None,
             ..Default::default()
         })
     }

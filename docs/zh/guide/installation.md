@@ -10,10 +10,13 @@
 
 ### 诊断工具包
 
-Release 同时发布 `live777-diagnostics-<版本>-<目标>` 压缩包，包含使用
-`rsmpeg` 构建的 `whipsynth`、`whepprobe` 和 `livewrk`。工具包已包含动态
-FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。`licenses/` 目录包含
-第三方许可证文本和依赖声明。
+诊断工具包的起始版本为 `v0.11.0`，更早的 Release 不包含这些资产。不同
+Release 和目标平台的资产可能不同，下载前请确认所选已发布 Release 的实际
+资产列表。包含诊断工具的 Release 会发布
+`live777-diagnostics-<版本>-<目标>` 压缩包，内含使用 `rsmpeg` 构建的
+`whipsynth`、`whepprobe` 和 `livewrk`。工具包已包含动态 FFmpeg 运行时及其
+编解码器依赖，无需另外安装 FFmpeg。`licenses/` 目录包含第三方许可证文本和
+依赖声明。
 
 每个诊断二进制包在同一 Release 中都有对应的源码包：Linux/macOS 为
 `live777-diagnostics-sources-<版本>-<目标>.tar.gz`，Windows 为 `.zip`。
@@ -21,10 +24,13 @@ FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。`licenses
 `MANIFEST.tsv` 记录二进制包名称、SHA-256、目标平台和版本，`REBUILD.md`
 说明如何使用这些源码。缺少必要源码时，发布打包会直接失败。
 
+请将 `TAG`（PowerShell 中为 `$env:TAG`）设置为已确认包含诊断资产的已发布
+版本。以下示例要求显式设置该变量，不会回退到没有诊断资产的旧版本。
+
 在 Linux 或 macOS 上下载并查看对应源码：
 
 ```bash
-TAG=v0.11.0
+: "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
@@ -45,7 +51,7 @@ cat "live777-diagnostics-sources-${TAG}-${TARGET}/REBUILD.md"
 `.real` 二进制文件。
 
 ```bash
-TAG=v0.11.0
+: "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
@@ -60,8 +66,12 @@ DLL（`vcruntime140*`、`msvcp140*`、`concrt140*`，以及存在时的
 `vccorlib140*`）均位于 `bin/`，无需另外安装 Visual C++ Redistributable：
 
 ```powershell
-Expand-Archive .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc.zip
-cd .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc
+if (-not $env:TAG) {
+    throw "Set TAG to a published release with diagnostics assets"
+}
+$Bundle = "live777-diagnostics-${env:TAG}-x86_64-pc-windows-msvc"
+Expand-Archive -Path ".\$Bundle.zip" -DestinationPath .
+cd ".\$Bundle"
 .\bin\whipsynth.exe --version
 .\bin\whepprobe.exe --version
 .\bin\livewrk.exe --version

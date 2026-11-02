@@ -1,10 +1,12 @@
 //! Opt-in, privileged network integration tests using only private namespaces.
 //!
-//! Run explicitly with `LIVE777_NETWORK_E2E=1 cargo nextest run --features
-//! rsmpeg -E 'binary(network_e2e)' --run-ignored ignored-only` as root with
-//! CAP_NET_ADMIN. Every test is ignored by default: setup creates network
-//! namespaces and veth pairs. No default route, host firewall, host loopback,
-//! or public ICE server is used.
+//! Run explicitly with `LIVE777_NETWORK_E2E=1 cargo nextest run --profile ci
+//! --features rsmpeg -E 'binary(network_e2e)' --run-ignored ignored-only` as
+//! root with CAP_NET_ADMIN and iproute2/coturn installed. When using sudo,
+//! preserve PATH, Cargo/rustup and FFmpeg pkg-config variables plus
+//! LD_LIBRARY_PATH. Every test is ignored by default outside the dedicated
+//! Linux `network-e2e` CI job: setup creates network namespaces and veth pairs.
+//! No default route, host firewall, host loopback, or public ICE server is used.
 
 #![cfg(all(target_os = "linux", feature = "rsmpeg"))]
 

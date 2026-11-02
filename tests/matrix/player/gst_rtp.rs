@@ -164,14 +164,8 @@ impl Player for GstRtpPlayer {
                 video_tracks: u32::from(profile.video.is_some()),
                 audio_tracks: u32::from(profile.audio.is_some()),
                 duration_ms,
-                codecs: [
-                    profile.video.map(|v| v.codec.ffprobe_name()),
-                    profile.audio.map(|a| a.ffprobe_name()),
-                ]
-                .into_iter()
-                .flatten()
-                .map(str::to_string)
-                .collect(),
+                video_codec: profile.video.map(|v| v.codec.ffprobe_name().to_string()),
+                audio_codec: profile.audio.map(|a| a.ffprobe_name().to_string()),
                 audio_channels: profile.audio.map(|a| a.channels() as u32).unwrap_or(0),
             }),
             Ok(Ok(status)) => Ok(PlayResult {

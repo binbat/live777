@@ -115,11 +115,8 @@ pub fn into_play_result(
         video_tracks,
         audio_tracks,
         duration_ms,
-        codecs: probe
-            .streams
-            .iter()
-            .filter_map(|s| s.codec_name.clone())
-            .collect(),
+        video_codec: video.and_then(|s| s.codec_name.clone()),
+        audio_codec: audio.and_then(|s| s.codec_name.clone()),
         audio_channels: audio.and_then(|s| s.channels).unwrap_or(0) as u32,
     }
 }

@@ -60,12 +60,42 @@ jobs:
             WHEPFROM_BIN="$PWD/target/debug/whepfrom" \
             ./scripts/smoke-bridge.sh
           ./tests/smoke_port_conflict.sh
+          ./tests/smoke_audio_required.sh
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  network-e2e:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+      - name: Install FFmpeg for rsmpeg
+        uses: ./.github/actions/install-ffmpeg
+      - name: Install coturn and iproute2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq coturn iproute2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Run privileged network integration tests
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" \
+            "LIBCLANG_PATH=${LIBCLANG_PATH:-}" \
+            "FFMPEG_PKG_CONFIG_PATH=${FFMPEG_PKG_CONFIG_PATH:-}" \
+            "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}" \
+            "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            LIVE777_NETWORK_E2E=1 \
+            cargo nextest run --profile ci --features rsmpeg \
+              -E 'binary(network_e2e)' --run-ignored ignored-only
 
   build:
     strategy:

@@ -88,7 +88,14 @@ async fn run() -> Result<bool> {
         log::set(filter);
     }
 
-    let config = build_config(&args)?;
+    let config = match build_config(&args) {
+        Ok(config) => config,
+        Err(error) => {
+            let failed = ProbeResult::failed("rsmpeg", format!("{error:?}"));
+            print_result(&failed, args.output);
+            return Ok(false);
+        }
+    };
 
     info!(
         whep_url = %config.whep_url,
@@ -101,8 +108,9 @@ async fn run() -> Result<bool> {
         decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    match backend.probe(&config).await {
-        Ok(result) => {
+    let hard_timeout = config.timeout + Duration::from_secs(5);
+    match tokio::time::timeout(hard_timeout, backend.probe(&config)).await {
+        Ok(Ok(result)) => {
             let success = result.success;
             print_result(&result, args.output);
             if success {
@@ -110,10 +118,14 @@ async fn run() -> Result<bool> {
             }
             Ok(success)
         }
-        Err(e) => {
-            // Emit a structured failure result for JSON consumers without
-            // duplicating the diagnostics on stderr.
-            let failed = ProbeResult::failed("rsmpeg", format!("{e:?}"));
+        Ok(Err(error)) => {
+            let failed = ProbeResult::failed("rsmpeg", format!("{error:?}"));
+            print_result(&failed, args.output);
+            Ok(false)
+        }
+        Err(_) => {
+            let failed =
+                ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
             print_result(&failed, args.output);
             Ok(false)
         }

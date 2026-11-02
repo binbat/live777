@@ -57,8 +57,8 @@
           vcodec: params.get("vcodec") || "",
           acodec: params.get("acodec") || "",
           layer: params.get("layer") || "",
-          // Token is injected by the runner via page.evaluate so it never
-          // appears in the URL or browser history.
+          // Token is injected by context.addInitScript before this page's
+          // scripts run, so it never appears in the URL or browser history.
           token: window.__LIVE777_TOKEN__ || "",
         };
       }

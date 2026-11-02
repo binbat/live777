@@ -127,6 +127,9 @@ pub struct WhepPeerOptions {
     /// Label of the DataChannel this peer creates (when `control_channel`
     /// is on). Joins the matching cable on the server.
     pub cable_label: String,
+    /// Bound offer/answer setup so a failed or timed-out POST can be cleaned
+    /// up while the peer is still available.
+    pub setup_timeout: Option<std::time::Duration>,
 }
 
 impl Default for WhepPeerOptions {
@@ -136,6 +139,7 @@ impl Default for WhepPeerOptions {
             ice_udp_addrs: Vec::new(),
             control_channel: true,
             cable_label: DEFAULT_CABLE_LABEL.to_string(),
+            setup_timeout: None,
         }
     }
 }
@@ -170,8 +174,9 @@ pub async fn setup_whep_peer(
         None
     };
 
+    let setup_timeout = options.setup_timeout;
     let peer = create_peer(
-        ct,
+        ct.clone(),
         video_send,
         audio_send,
         codec_info.clone(),
@@ -183,12 +188,33 @@ pub async fn setup_whep_peer(
     )
     .await?;
 
-    utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
+    let answer = tokio::select! {
+        answer = async {
+            if let Some(timeout) = setup_timeout {
+                tokio::time::timeout(
+                    timeout,
+                    utils::webrtc::setup_connection(peer.clone(), client, gather_complete),
+                )
+                .await
+                .map_err(|_| anyhow!("timed out setting up WHEP peer after {timeout:?}"))??;
+            } else {
+                utils::webrtc::setup_connection(peer.clone(), client, gather_complete).await?;
+            }
 
-    let answer = peer
-        .remote_description()
-        .await
-        .ok_or_else(|| anyhow!("No remote description"))?;
+            peer.remote_description()
+                .await
+                .ok_or_else(|| anyhow!("No remote description"))
+        } => answer,
+        _ = ct.cancelled() => Err(anyhow!("WHEP peer setup cancelled")),
+    };
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(error) => {
+            ct.cancel();
+            crate::utils::shutdown::graceful_shutdown("WHEP", client, peer).await;
+            return Err(error);
+        }
+    };
 
     let stats = Arc::new(RtcpStats::new());
 

@@ -72,35 +72,26 @@ impl ProbeBackend for RsmpegProbe {
 
         // Create the peer connection in the current task so that the returned
         // `Arc<dyn PeerConnection>` stays alive for the whole probe duration.
-        let setup = tokio::time::timeout(
-            config.timeout,
-            crate::whep::setup_whep_peer(
-                ct.clone(),
-                &mut client,
-                video_tx,
-                audio_tx,
-                codec_info.clone(),
-                crate::whep::WhepPeerOptions {
-                    ice_servers: config.ice_servers.clone(),
-                    ..Default::default()
-                },
-                Some(state_tx),
-                Some(video_mime_tx),
-            ),
+        let setup = crate::whep::setup_whep_peer(
+            ct.clone(),
+            &mut client,
+            video_tx,
+            audio_tx,
+            codec_info.clone(),
+            crate::whep::WhepPeerOptions {
+                ice_servers: config.ice_servers.clone(),
+                setup_timeout: Some(config.timeout),
+                ..Default::default()
+            },
+            Some(state_tx),
+            Some(video_mime_tx),
         )
         .await;
         let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match setup {
-            Ok(Ok(parts)) => parts,
-            Ok(Err(e)) => {
+            Ok(parts) => parts,
+            Err(e) => {
                 ct.cancel();
                 return Err(e);
-            }
-            Err(_) => {
-                ct.cancel();
-                return Err(anyhow!(
-                    "timed out setting up WHEP peer after {:?}",
-                    config.timeout
-                ));
             }
         };
 
@@ -433,9 +424,12 @@ async fn join_decoder_task<T>(
         Err(_) => {
             cancelled.store(true, Ordering::Relaxed);
             ct.cancel();
-            match task.await {
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
+            match tokio::time::timeout(DECODER_JOIN_TIMEOUT, &mut task).await {
+                Ok(Ok(_)) | Err(_) => {
+                    task.abort();
+                    None
+                }
+                Ok(Err(error)) => Some(Err(error)),
             }
         }
     }
@@ -641,7 +635,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nested_decoder_task_is_not_aborted_after_timeout() {
+    async fn nested_decoder_task_finishes_within_cancellation_grace() {
         let finished = Arc::new(AtomicBool::new(false));
         let finished_clone = finished.clone();
         let worker = tokio::task::spawn_blocking(move || {
@@ -663,5 +657,29 @@ mod tests {
             .is_none()
         );
         assert!(finished.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn unresponsive_decoder_join_has_a_bounded_wait() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let decoder = tokio::task::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_secs(5));
+            });
+            let started = std::time::Instant::now();
+            let result = join_decoder_task(
+                decoder,
+                Duration::from_millis(10),
+                Arc::new(AtomicBool::new(false)),
+                CancellationToken::new(),
+            )
+            .await;
+            assert!(result.is_none());
+            assert!(started.elapsed() < Duration::from_secs(3));
+        });
+        runtime.shutdown_background();
     }
 }

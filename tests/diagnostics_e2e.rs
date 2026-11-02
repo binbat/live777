@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
@@ -411,4 +411,153 @@ async fn whepprobe_reports_failure_without_media() {
             "failure report must contain a stable zero {field}:\n{probe_stdout}"
         );
     }
+}
+
+#[tokio::test]
+async fn invalid_codec_emits_structured_json_failure() {
+    let output = tool(
+        whepprobe_path(),
+        &[
+            "--whep",
+            "http://127.0.0.1:1/whep/live",
+            "--output",
+            "json",
+            "--codec",
+            "invalid",
+        ],
+    )
+    .output()
+    .await
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Invalid codec")),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn unresponsive_whep_http_respects_cli_timeout() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stalled_server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tool(
+            whepprobe_path(),
+            &[
+                "--whep",
+                &format!("http://{addr}/whep/live"),
+                "--output",
+                "json",
+                "--timeout",
+                "1",
+                "--ice-server",
+                "",
+            ],
+        )
+        .output(),
+    )
+    .await
+    .expect("whepprobe ignored its overall timeout")
+    .unwrap();
+    stalled_server.abort();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("timed out")),
+        "{report}"
+    );
+}
+
+async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "connection closed before HTTP headers arrived");
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return String::from_utf8_lossy(&request).into_owned();
+        }
+        assert!(request.len() < 65536, "HTTP headers are unexpectedly large");
+    }
+}
+
+#[tokio::test]
+async fn setup_timeout_deletes_created_whep_session() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut post, _) = listener.accept().await.unwrap();
+        let request = read_http_head(&mut post).await;
+        assert!(request.starts_with("POST /whep/live "), "{request}");
+        post.write_all(
+            b"HTTP/1.1 201 Created\r\nLocation: /session/test\r\nContent-Type: application/sdp\r\nContent-Length: 100\r\nConnection: keep-alive\r\n\r\nv=0\r\n",
+        )
+        .await
+        .unwrap();
+
+        let (mut delete, _) = listener.accept().await.unwrap();
+        let request = read_http_head(&mut delete).await;
+        delete
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        request
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tool(
+            whepprobe_path(),
+            &[
+                "--whep",
+                &format!("http://{addr}/whep/live"),
+                "--output",
+                "json",
+                "--timeout",
+                "1",
+                "--ice-server",
+                "",
+            ],
+        )
+        .output(),
+    )
+    .await
+    .expect("whepprobe did not finish setup timeout cleanup")
+    .unwrap();
+    let delete_request = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("whepprobe did not DELETE the created session")
+        .unwrap();
+    assert!(
+        delete_request.starts_with("DELETE /session/test "),
+        "{delete_request}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("timed out setting up WHEP peer")),
+        "{report}"
+    );
 }

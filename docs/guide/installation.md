@@ -10,23 +10,30 @@ you can donwload binary from [here](https://github.com/binbat/live777/releases)
 
 ### Diagnostics bundle
 
-Releases also publish `live777-diagnostics-<version>-<target>` archives with
-`whipsynth`, `whepprobe` and `livewrk`, all built with `rsmpeg`. The bundle
-includes the dynamic FFmpeg runtime and its codec dependencies; a separate
-FFmpeg installation is not required. The `licenses/` directory contains the
-third-party license texts and dependency notices.
+Diagnostics bundle support starts with `v0.11.0`; earlier releases do not
+include these assets. Always check the selected published release's asset list,
+since availability can differ by release and target. Supported releases publish
+`live777-diagnostics-<version>-<target>` archives with `whipsynth`, `whepprobe`
+and `livewrk`, all built with `rsmpeg`. The bundle includes the dynamic FFmpeg
+runtime and its codec dependencies; a separate FFmpeg installation is not
+required. The `licenses/` directory contains the third-party license texts and
+dependency notices.
 
-Every diagnostics binary archive has a matching source archive in the same
+Each diagnostics binary archive has a matching source archive in the same
 release: `live777-diagnostics-sources-<version>-<target>.tar.gz` on Linux/macOS
 or `.zip` on Windows. It contains the Live777 source snapshot, exact FFmpeg
 source, dependency source downloads and build recipes. Its `MANIFEST.tsv` records
 the binary archive name, SHA-256, target and version; `REBUILD.md` explains how
 to use the sources. Release packaging fails if the required sources are missing.
 
+Set `TAG` (`$env:TAG` in PowerShell) to a published release whose diagnostics
+assets you have verified. The examples require this variable rather than
+falling back to an older release without the assets.
+
 To download and inspect the corresponding sources on Linux or macOS:
 
 ```bash
-TAG=v0.11.0
+: "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
@@ -47,7 +54,7 @@ locate the bundled `lib/` relative to the extracted directory, so the whole
 directory can be moved. Do not invoke the `.real` binaries directly.
 
 ```bash
-TAG=v0.11.0
+: "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
@@ -63,8 +70,12 @@ runtime DLLs (`vcruntime140*`, `msvcp140*`, `concrt140*` and, when present,
 installation is required:
 
 ```powershell
-Expand-Archive .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc.zip
-cd .\live777-diagnostics-v0.11.0-x86_64-pc-windows-msvc
+if (-not $env:TAG) {
+    throw "Set TAG to a published release with diagnostics assets"
+}
+$Bundle = "live777-diagnostics-${env:TAG}-x86_64-pc-windows-msvc"
+Expand-Archive -Path ".\$Bundle.zip" -DestinationPath .
+cd ".\$Bundle"
 .\bin\whipsynth.exe --version
 .\bin\whepprobe.exe --version
 .\bin\livewrk.exe --version

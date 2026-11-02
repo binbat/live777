@@ -102,11 +102,8 @@ impl From<ProbeResult> for PlayResult {
             audio_tracks: result.audio_tracks,
             audio_channels: result.audio_channels,
             duration_ms: result.duration_ms,
-            // Both codec names are reported so AV profiles can assert on each.
-            codecs: [result.video_codec, result.audio_codec]
-                .into_iter()
-                .flatten()
-                .collect(),
+            video_codec: result.video_codec,
+            audio_codec: result.audio_codec,
             error: result.error,
         }
     }
