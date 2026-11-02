@@ -114,13 +114,13 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 
 ## AV1
 
-Current FFmpeg releases do not normally need `-strict experimental` for this
-example. Add it only if an older FFmpeg build explicitly requires it for AV1
-RTP packetization.
+AV1 RTP packetization was introduced in FFmpeg 8.0 and is still experimental
+through FFmpeg 8.1.2, so `-strict experimental` is required. Earlier releases
+do not include an AV1 RTP packetizer.
 
 ```bash
 ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p \
--c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
+-strict experimental -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 \
 -f rtp "rtp://127.0.0.1:5002" -sdp_file input.sdp
 ```

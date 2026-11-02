@@ -9,8 +9,8 @@ on:
 
 jobs:
   docker:
-    name: Docker Images (${{ matrix.app }})
-    runs-on: ubuntu-26.04
+    name: Docker Images (${{ matrix.app }} / linux/${{ matrix.arch }})
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +24,12 @@ jobs:
           - net4mqtt
           - whipinto
           - whepfrom
+          - live777-all
+        arch:
+          - amd64
+          - arm64
+    env:
+      TEST_IMAGE: ghcr.io/binbat/${{ matrix.app }}:test-${{ github.run_id }}-${{ matrix.arch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -56,66 +62,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: ${{ startsWith(github.ref, 'refs/tags/') }}
-          file: docker/Dockerfile.${{ matrix.app }}
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            LIVE777_VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  live777-all:
-    name: live777-all (linux/${{ matrix.arch }})
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - amd64
-          - arm64
-    env:
-      TEST_IMAGE: ghcr.io/binbat/live777-all:test-${{ github.run_id }}-${{ matrix.arch }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Version
-        id: version
-        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
-      - name: Docker meta for tested architecture tags
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/binbat/live777-all
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-          flavor: |
-            latest=auto
-            suffix=-${{ matrix.arch }}
-            onlatest=true
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and load final image
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: docker/Dockerfile.live777-all
+          file: docker/Dockerfile.${{ matrix.app }}
           platforms: linux/${{ matrix.arch }}
           load: true
           push: false
@@ -124,33 +75,63 @@ jobs:
           tags: ${{ env.TEST_IMAGE }}
           labels: ${{ steps.meta.outputs.labels }}
       - name: Smoke test final image
-        run: docker run --rm --network host "${TEST_IMAGE}" smoke-test --standalone
-      - name: Push tested architecture tags
+        run: bash scripts/docker-smoke.sh "${{ matrix.app }}" "${TEST_IMAGE}"
+      - name: Push tested image and record digest
+        if: startsWith(github.ref, 'refs/tags/')
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.app }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          build-args: |
+            LIVE777_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ env.TEST_IMAGE }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Save tested image digest
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        env:
-          ARCH_TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          while IFS= read -r tag; do
-            [ -n "${tag}" ] || continue
-            docker tag "${TEST_IMAGE}" "${tag}"
-            docker push "${tag}"
-          done < <(printf '%s\n' "${ARCH_TAGS}")
+        run: printf '%s\n' 'ghcr.io/binbat/${{ matrix.app }}@${{ steps.push.outputs.digest }}' > digest.txt
+      - name: Upload tested image digest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.app }}-digest-${{ matrix.arch }}
+          path: digest.txt
 
-  live777-all-manifest:
-    name: live777-all (manifest)
+  docker-manifest:
+    name: Docker Manifest (${{ matrix.app }})
     if: startsWith(github.ref, 'refs/tags/')
     needs:
-      - live777-all
+      - docker
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - ffmpeg
+          - gstreamer
+          - live777-client
+          - live777-server
+          - liveion
+          - liveman
+          - net4mqtt
+          - whipinto
+          - whepfrom
+          - live777-all
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Download tested image digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: ${{ matrix.app }}-digest-*
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/binbat/live777-all
+          images: ghcr.io/binbat/${{ matrix.app }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -166,13 +147,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish manifests from tested architecture tags
+      - name: Publish manifests from tested image digests
         shell: bash
         env:
           RELEASE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          amd64_digest=$(cat "${{ matrix.app }}-digest-amd64/digest.txt")
+          arm64_digest=$(cat "${{ matrix.app }}-digest-arm64/digest.txt")
+          [ -n "${amd64_digest}" ] && [ -n "${arm64_digest}" ]
           while IFS= read -r tag; do
             [ -n "${tag}" ] || continue
-            docker buildx imagetools create --tag "${tag}" "${tag}-amd64" "${tag}-arm64"
+            docker buildx imagetools create --tag "${tag}" "${amd64_digest}" "${arm64_digest}"
           done < <(printf '%s\n' "${RELEASE_TAGS}")
-

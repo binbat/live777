@@ -640,7 +640,10 @@ carries the check.
   (all-in-one quickstart/AI-deploy image, see below), `liveion`
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
-  `ghcr.io/binbat/<app>`.
+  `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix;
+  each final image runs `scripts/docker-smoke.sh` for its app before its digest
+  is collected into the multi-architecture manifest (no architecture-suffixed
+  release tags).
 - **`live777-all` vs the slim `live777-server`/`live777-client` split**:
   `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
   whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check

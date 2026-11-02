@@ -104,12 +104,12 @@ whipinto -i input.sdp -w http://localhost:7777/whip/777
 
 ## AV1
 
-当前 FFmpeg 版本运行此示例通常不需要 `-strict experimental`。只有旧版本
-明确要求为 AV1 RTP 打包开启实验功能时才添加它。
+AV1 RTP 打包器从 FFmpeg 8.0 开始提供，到 FFmpeg 8.1.2 仍处于实验阶段，
+因此必须添加 `-strict experimental`。更早的版本不包含 AV1 RTP 打包器。
 
 ```bash
 ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -pix_fmt yuv420p \
--c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
+-strict experimental -c:v libaom-av1 -cpu-used 8 -tile-columns 0 -tile-rows 0 -row-mt 1 \
 -lag-in-frames 0 -g 30 -keyint_min 30 -b:v 0 -crf 30 -threads 4 \
 -f rtp "rtp://127.0.0.1:5002" -sdp_file input.sdp
 ```
