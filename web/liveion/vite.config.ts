@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import { defineConfig, mergeConfig } from 'vite';
 
-import CommonConfig, { ProjectRoot } from '../vite.config';
+import CommonConfig, { ProjectRoot } from '../vite.config.ts';
 
 // directory name of the current module (web/liveion)
 const configDir = import.meta.dirname;

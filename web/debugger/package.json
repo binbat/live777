@@ -23,7 +23,7 @@
     "player-core": "workspace:*"
   },
   "devDependencies": {
-    "@nuintun/qrcode": "^5.0.2",
-    "typescript-event-target": "^1.1.1"
+    "@nuintun/qrcode": "^5.0.3",
+    "typescript-event-target": "^1.1.2"
   }
 }

@@ -6,7 +6,7 @@ export default defineConfig({
     plugins: [vue()],
     build: {
         lib: {
-            entry: resolve(__dirname, "index.ts"),
+            entry: resolve(import.meta.dirname, "index.ts"),
             fileName: "index",
             formats: ["es"],
         },

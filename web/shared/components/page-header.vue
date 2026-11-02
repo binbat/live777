@@ -20,7 +20,7 @@ export interface PageHeaderProps {
 <script setup lang="ts">
 import { computed } from "vue";
 import { ChevronDownIcon } from "@heroicons/vue/24/solid";
-import { Monitor, Calendar } from "lucide-vue-next";
+import { Monitor, Calendar } from "@lucide/vue";
 
 import Logo from "/logo.svg";
 import { useToken } from "../context";
