@@ -6,12 +6,12 @@ export default defineConfig({
     plugins: [vue()],
     resolve: {
         alias: {
-            "@": resolve(__dirname, ".."),
+            "@": resolve(import.meta.dirname, ".."),
         },
     },
     build: {
         lib: {
-            entry: resolve(__dirname, "main.ts"),
+            entry: resolve(import.meta.dirname, "main.ts"),
             fileName: "index",
             formats: ["es"],
         },

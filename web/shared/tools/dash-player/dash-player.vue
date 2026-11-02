@@ -455,7 +455,7 @@ const setManualQuality = (idx: number) => {
     const p = player;
     if (!p) return;
     setAutoQuality(false);
-    try { p.setRepresentationForTypeById("video", idx); } catch { /* ignore */ }
+    try { p.setRepresentationForTypeByIndex("video", idx); } catch { /* ignore */ }
     qualityIndex.value = idx;
 };
 

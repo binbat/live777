@@ -29,7 +29,7 @@ provides the embedded WebUIs.
 - **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.21.1` from
   crates.io.
 - **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
-- **Package manager** — pnpm 10.20.0 (workspace covers `web/*`).
+- **Package manager** — pnpm 12.16.1 (workspace covers `web/*`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
   in `liveman` for recording indexes.
 - **Media testing** — FFmpeg and GStreamer pipelines (see `justfile`).
@@ -107,7 +107,7 @@ Built assets are placed under `assets/<crate>/` and embedded at compile time via
 ### Prerequisites
 
 - Rust toolchain (stable; targets vary by platform).
-- `pnpm` 10.20.0 or compatible.
+- `pnpm` 12.16.1 or compatible.
 - Node.js (CI uses `latest`).
 - For WebUI builds: `pnpm install`.
 - For native source features on Linux: `libcamera-dev`, `libv4l-dev`.

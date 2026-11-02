@@ -4,6 +4,7 @@ import ts from 'typescript-eslint';
 export default ts.config(
     {
         ignores: [
+            '.playwright/',
             'assets/',
             'docs/.vitepress/cache/',
             'docs/.vitepress/dist/',
