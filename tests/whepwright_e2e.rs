@@ -126,7 +126,7 @@ async fn success_emits_pure_json_and_cleans_diagnostics() {
             &format!("http://{addr}/whip/{stream}"),
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -165,11 +165,10 @@ async fn success_emits_pure_json_and_cleans_diagnostics() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn failure_retains_sanitized_diagnostics_and_trace() {
+async fn failure_retains_diagnostics_and_trace() {
     let addr = start_liveion().await;
     let temp = tempfile::tempdir().unwrap();
     let diagnostics = temp.path().join("diagnostics");
-    let token = "whepwright-test-secret";
     let output = run_whepwright(&[
         "--whep",
         &format!(
@@ -198,26 +197,8 @@ async fn failure_retains_sanitized_diagnostics_and_trace() {
     assert!(run_directory.is_dir());
     let screenshot = std::fs::read(artifact_path(&report, "screenshot")).unwrap();
     assert!(screenshot.starts_with(b"\x89PNG\r\n\x1a\n"));
-    let trace_path = artifact_path(&report, "trace");
-    let trace = std::fs::read(trace_path).unwrap();
+    let trace = std::fs::read(artifact_path(&report, "trace")).unwrap();
     assert!(trace.starts_with(b"PK"));
-    let extracted = temp.path().join("unpacked-trace");
-    let scan = Command::new("python3")
-        .arg("-c")
-        .arg(
-            "import pathlib, sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2]); token = sys.argv[3].encode(); leaked = [str(p) for p in pathlib.Path(sys.argv[2]).rglob('*') if p.is_file() and token in p.read_bytes()]; print('\\n'.join(leaked)); sys.exit(bool(leaked))",
-        )
-        .arg(trace_path)
-        .arg(&extracted)
-        .arg(token)
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        scan.status.success(),
-        "trace contains the token:\n{}",
-        String::from_utf8_lossy(&scan.stdout)
-    );
 
     let console = std::fs::read_to_string(artifact_path(&report, "console_log")).unwrap();
     assert!(
@@ -228,7 +209,6 @@ async fn failure_retains_sanitized_diagnostics_and_trace() {
         console.contains("[runner]"),
         "runner events were not captured"
     );
-    assert!(!console.contains(token), "console log leaked the token");
 
     let sdp_ice_path = artifact_path(&report, "sdp_ice");
     let sdp_ice_text = std::fs::read_to_string(sdp_ice_path).unwrap();
@@ -241,9 +221,59 @@ async fn failure_retains_sanitized_diagnostics_and_trace() {
     assert!(sdp_ice["candidateTypeCounts"].is_object());
     assert!(sdp_ice.get("selectedPair").is_some());
     assert!(sdp_ice["rtp"].is_array());
-    assert!(!sdp_ice_text.contains(token));
     assert!(!sdp_ice_text.contains("v=0"));
     assert!(!sdp_ice_text.contains("a=candidate"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failure_redacts_url_token_from_console_and_sdp_ice() {
+    let addr = start_liveion().await;
+    let temp = tempfile::tempdir().unwrap();
+    let diagnostics = temp.path().join("diagnostics");
+    let token = "whepwright-test-secret";
+    let output = run_whepwright(&[
+        "--whep",
+        &format!(
+            "http://{addr}/whep/whepwright-token-query-{}?token={token}",
+            std::process::id()
+        ),
+        "--output",
+        "json",
+        "--timeout",
+        "1",
+        "--token",
+        token,
+        "--diagnostics-dir",
+        diagnostics.to_str().unwrap(),
+    ])
+    .await;
+    let report = parse_json(&output);
+    assert!(
+        !output.status.success(),
+        "no-media playback unexpectedly passed"
+    );
+    assert_eq!(report["success"], false);
+    assert_eq!(report["artifacts"]["retained"], true);
+    assert!(report["artifacts"]["trace"].is_null());
+
+    let run_directory = PathBuf::from(report["artifacts"]["directory"].as_str().unwrap());
+    assert!(run_directory.starts_with(&diagnostics));
+    assert!(run_directory.is_dir());
+    assert!(!run_directory.join("trace.zip").exists());
+    let console = std::fs::read_to_string(artifact_path(&report, "console_log")).unwrap();
+    assert!(console.contains("Starting WHEP subscribe:"));
+    assert!(
+        console.contains("?token=[REDACTED]"),
+        "the URL token did not reach the browser console: {console}"
+    );
+    assert!(!console.contains(token), "console log leaked the token");
+
+    let sdp_ice_text = std::fs::read_to_string(artifact_path(&report, "sdp_ice")).unwrap();
+    let _: serde_json::Value = serde_json::from_str(&sdp_ice_text).unwrap();
+    assert!(
+        !sdp_ice_text.contains(token),
+        "SDP/ICE log leaked the token"
+    );
 }
 
 #[tokio::test]

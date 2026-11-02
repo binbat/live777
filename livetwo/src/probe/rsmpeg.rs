@@ -72,25 +72,35 @@ impl ProbeBackend for RsmpegProbe {
 
         // Create the peer connection in the current task so that the returned
         // `Arc<dyn PeerConnection>` stays alive for the whole probe duration.
-        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match crate::whep::setup_whep_peer(
-            ct.clone(),
-            &mut client,
-            video_tx,
-            audio_tx,
-            codec_info.clone(),
-            crate::whep::WhepPeerOptions {
-                ice_servers: config.ice_servers.clone(),
-                ..Default::default()
-            },
-            Some(state_tx),
-            Some(video_mime_tx),
+        let setup = tokio::time::timeout(
+            config.timeout,
+            crate::whep::setup_whep_peer(
+                ct.clone(),
+                &mut client,
+                video_tx,
+                audio_tx,
+                codec_info.clone(),
+                crate::whep::WhepPeerOptions {
+                    ice_servers: config.ice_servers.clone(),
+                    ..Default::default()
+                },
+                Some(state_tx),
+                Some(video_mime_tx),
+            ),
         )
-        .await
-        {
-            Ok(parts) => parts,
-            Err(e) => {
+        .await;
+        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match setup {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(e)) => {
                 ct.cancel();
                 return Err(e);
+            }
+            Err(_) => {
+                ct.cancel();
+                return Err(anyhow!(
+                    "timed out setting up WHEP peer after {:?}",
+                    config.timeout
+                ));
             }
         };
 
@@ -223,7 +233,13 @@ impl ProbeBackend for RsmpegProbe {
                 decode_duration + DECODER_JOIN_TIMEOUT,
             )
         });
-        let decode_result = join_task(decoder_handle, decoder_timeout).await;
+        let decode_result = join_decoder_task(
+            decoder_handle,
+            decoder_timeout,
+            cancelled.clone(),
+            ct.clone(),
+        )
+        .await;
 
         cancelled.store(true, Ordering::Relaxed);
         ct.cancel();
@@ -232,7 +248,13 @@ impl ProbeBackend for RsmpegProbe {
             Some(Err(e)) => result.error = Some(format!("video forward task panicked: {e:?}")),
             None => result.error = Some("video forward task timed out".to_string()),
         }
-        let audio_decode_result = join_task(audio_handle, DECODER_JOIN_TIMEOUT).await;
+        let audio_decode_result = join_decoder_task(
+            audio_handle,
+            DECODER_JOIN_TIMEOUT,
+            cancelled.clone(),
+            ct.clone(),
+        )
+        .await;
 
         let mut video_success = false;
         match decode_result {
@@ -375,11 +397,13 @@ async fn run_audio_decoder(
 
     drop(packet_tx);
     match decoder_handle {
-        Some(handle) => match join_task(handle, DECODER_JOIN_TIMEOUT).await {
-            Some(Ok(result)) => Some(result),
-            Some(Err(e)) => Some(Err(anyhow!("audio decoder task failed: {e}"))),
-            None => Some(Err(anyhow!("audio decoder timed out"))),
-        },
+        Some(handle) => {
+            match join_decoder_task(handle, DECODER_JOIN_TIMEOUT, cancelled, ct).await {
+                Some(Ok(result)) => Some(result),
+                Some(Err(e)) => Some(Err(anyhow!("audio decoder task failed: {e}"))),
+                None => Some(Err(anyhow!("audio decoder timed out"))),
+            }
+        }
         None => None,
     }
 }
@@ -394,6 +418,25 @@ async fn join_task<T>(
         Err(_) => {
             abort.abort();
             None
+        }
+    }
+}
+
+async fn join_decoder_task<T>(
+    mut task: tokio::task::JoinHandle<T>,
+    timeout: Duration,
+    cancelled: Arc<AtomicBool>,
+    ct: CancellationToken,
+) -> Option<Result<T, tokio::task::JoinError>> {
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(result) => Some(result),
+        Err(_) => {
+            cancelled.store(true, Ordering::Relaxed);
+            ct.cancel();
+            match task.await {
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            }
         }
     }
 }
@@ -485,7 +528,7 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
 
-    use super::{forward_video_packets, join_task};
+    use super::{forward_video_packets, join_decoder_task, join_task};
 
     type BlockedForward = (
         tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -547,16 +590,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_decoder_join_has_a_hard_timeout() {
+    async fn slow_decoder_is_cancelled_and_joined_after_timeout() {
         let (source_tx, source_rx) = tokio::sync::mpsc::channel(1);
         let (decoder_tx, mut decoder_rx) = tokio::sync::mpsc::channel(1);
         let decoding = Arc::new(AtomicBool::new(false));
         let decoding_clone = decoding.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = finished.clone();
         let decoder = tokio::task::spawn_blocking(move || {
             decoder_rx.blocking_recv().unwrap();
             decoding_clone.store(true, Ordering::Relaxed);
             std::thread::sleep(Duration::from_millis(250));
+            finished_clone.store(true, Ordering::Relaxed);
         });
+        let cancelled = Arc::new(AtomicBool::new(false));
         let ct = CancellationToken::new();
         let forward = tokio::spawn(forward_video_packets(
             source_rx,
@@ -575,16 +622,46 @@ mod tests {
         assert!(decoding.load(Ordering::Relaxed));
 
         ct.cancel();
-        let start = std::time::Instant::now();
         assert!(
-            join_task(decoder, Duration::from_millis(20))
-                .await
-                .is_none()
+            join_decoder_task(
+                decoder,
+                Duration::from_millis(20),
+                cancelled.clone(),
+                ct.clone(),
+            )
+            .await
+            .is_none()
         );
-        assert!(start.elapsed() < Duration::from_millis(200));
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(finished.load(Ordering::Relaxed));
         assert!(matches!(
             join_task(forward, Duration::from_millis(200)).await,
             Some(Ok(()))
         ));
+    }
+
+    #[tokio::test]
+    async fn nested_decoder_task_is_not_aborted_after_timeout() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = finished.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            finished_clone.store(true, Ordering::Relaxed);
+        });
+        let nested = tokio::spawn(async move {
+            worker.await.unwrap();
+        });
+
+        assert!(
+            join_decoder_task(
+                nested,
+                Duration::from_millis(10),
+                Arc::new(AtomicBool::new(false)),
+                CancellationToken::new(),
+            )
+            .await
+            .is_none()
+        );
+        assert!(finished.load(Ordering::Relaxed));
     }
 }

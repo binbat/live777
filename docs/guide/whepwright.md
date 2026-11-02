@@ -83,9 +83,11 @@ Successful runs remove that directory. Failed runs retain:
 
 `sdp-ice.json` contains summaries, not the offer or answer SDP. Neither
 authentication tokens nor complete SDP are written to that file. Capture failures
-are listed in the result's `artifacts.capture_errors` array. If the Rust runner
-times out, it asks Node to finish capture and close the browser, then cleans up
-any remaining runner processes; the retained diagnostics may be incomplete.
+are listed in the result's `artifacts.capture_errors` array. Relative diagnostics
+paths are resolved against the whepwright process working directory. On Unix, a
+runner timeout asks Node to finish capture and close the browser, then kills the
+remaining process group. On Windows, `taskkill` terminates the runner process
+tree. Retained diagnostics may be incomplete after a timeout.
 
 Playwright traces can contain evaluated arguments and network authorization
 headers. For that reason `--trace --token ...` is rejected before a browser or

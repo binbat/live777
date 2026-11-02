@@ -49,11 +49,11 @@ runs:
       shell: bash
       run: |
         # Enable the external codecs used by livetwo's rsmpeg sources:
-        # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svt-av1), Opus (opus).
+        # VP8/VP9 (vpx), H264 (x264), H265 (x265), AV1 (svt-av1, dav1d), Opus (opus).
         #
         # Build the *dynamic* (x64-windows) ffmpeg: with a static build,
         # rusty_ffmpeg's link_system_ffmpeg only links the 7 av* libs and omits
-        # the transitive codec deps (opus, vpx, x264, x265, svt-av1), causing
+        # the transitive codec deps (opus, vpx, x264, x265, svt-av1, dav1d), causing
         # unresolved-symbol link errors (opus_strerror, opus_multistream_*,
         # ...). With a dynamic build the codecs are baked into the av*.dll, so
         # the av* import libs are sufficient and no per-codec linking is needed.
@@ -61,7 +61,7 @@ runs:
         # x264's upstream GitLab tarball currently no longer matches the SHA
         # recorded in vcpkg 2026.07.29, so we overlay a git-based port to avoid
         # the archive hash mismatch.
-        ./vcpkg/vcpkg.exe install "ffmpeg[opus,svt-av1,vpx,x264,x265]:x64-windows"
+        ./vcpkg/vcpkg.exe install "ffmpeg[dav1d,opus,svt-av1,vpx,x264,x265]:x64-windows"
 
     - name: Expose vcpkg FFmpeg to rsmpeg (Windows)
       if: runner.os == 'Windows'
@@ -104,7 +104,7 @@ runs:
       shell: bash
       run: |
         brew untap aws/tap 2>/dev/null || true
-        echo "digest=$(brew info --json=v2 --formula pkg-config nasm yasm libvpx x264 x265 svt-av1 opus | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        echo "digest=$(brew info --json=v2 --formula pkg-config nasm yasm libvpx x264 x265 svt-av1 dav1d opus openssl | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
     # Homebrew's ffmpeg formula moved to 9.x, which privatized AVCodec's
     # public fields (supported_framerates, pix_fmts, ...), so bindgen emits
@@ -134,7 +134,8 @@ runs:
         # required here.  The libav* brew packages are intentionally NOT
         # installed: the source build below provides them.
         brew untap aws/tap 2>/dev/null || true
-        brew install pkg-config nasm yasm libvpx x264 x265 svt-av1 opus
+        brew install pkg-config nasm yasm libvpx x264 x265 svt-av1 dav1d opus openssl
+        brew upgrade libvpx x264 x265 svt-av1 dav1d opus openssl
 
     - name: Build FFmpeg 8.1.2 from source (macOS)
       if: runner.os == 'macOS' && steps.cache-ffmpeg-macos.outputs.cache-hit != 'true'
@@ -144,30 +145,37 @@ runs:
         PREFIX="${{ github.workspace }}/ffmpeg-install"
         git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg ffmpeg-src
         cd ffmpeg-src
+        export PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
         ./configure \
           --prefix="$PREFIX" \
           --enable-gpl \
+          --enable-version3 \
           --enable-shared \
           --disable-static \
           --enable-libvpx \
           --enable-libx264 \
           --enable-libx265 \
           --enable-libsvtav1 \
+          --enable-libdav1d \
           --enable-libopus \
+          --enable-openssl \
+          --enable-protocol=dtls \
+          --enable-muxer=whip \
           --disable-doc
         make -j"$(sysctl -n hw.ncpu)"
         make install
 
-    # The source-built FFmpeg links against the homebrew codec libraries
-    # (libvpx, x264, x265, svt-av1, opus). Cache restores only our install
-    # prefix, not the runner's homebrew packages, so make sure they are
-    # present even on cache hits.
+    # The source-built FFmpeg links against Homebrew libraries
+    # (libvpx, x264, x265, svt-av1, dav1d, opus, openssl). Cache restores only
+    # our install prefix, not the runner's homebrew packages, so make sure they
+    # are present even on cache hits.
     - name: Install codec runtime libraries (macOS)
       if: runner.os == 'macOS'
       shell: bash
       run: |
         brew untap aws/tap 2>/dev/null || true
-        brew install pkg-config libvpx x264 x265 svt-av1 opus
+        brew install pkg-config libvpx x264 x265 svt-av1 dav1d opus openssl
+        brew upgrade libvpx x264 x265 svt-av1 dav1d opus openssl
 
     - name: Expose source-built FFmpeg to rsmpeg (macOS)
       if: runner.os == 'macOS'
@@ -205,11 +213,12 @@ runs:
       run: |
         set -e
         sudo apt-get update -qq
-        # Build tools + codec dev libraries only. The libav* -dev packages
+        # Build tools + external dev libraries only. The libav* -dev packages
         # are intentionally NOT installed: Debian's field-privatization
         # patches break rsmpeg, so we build libav* from upstream source.
         sudo apt-get install -y build-essential pkg-config nasm yasm \
-          libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev
+          libvpx-dev libx264-dev libx265-dev libsvtav1enc-dev libopus-dev \
+          libdav1d-dev libssl-dev
 
         PREFIX="${{ github.workspace }}/ffmpeg-install"
         git clone --depth 1 --branch n8.0 https://github.com/FFmpeg/FFmpeg ffmpeg-src
@@ -217,13 +226,18 @@ runs:
         ./configure \
           --prefix="$PREFIX" \
           --enable-gpl \
+          --enable-version3 \
           --enable-shared \
           --disable-static \
           --enable-libvpx \
           --enable-libx264 \
           --enable-libx265 \
           --enable-libsvtav1 \
+          --enable-libdav1d \
           --enable-libopus \
+          --enable-openssl \
+          --enable-protocol=dtls \
+          --enable-muxer=whip \
           --disable-doc
         make -j"$(nproc)"
         make install
@@ -242,17 +256,17 @@ runs:
         echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
 
-    # The source-built FFmpeg binary links against the system codec libraries
-    # (libvpx, libx264, libx265, libsvtav1, libopus). Cache restores only our
-    # install prefix, not the runner's system libraries, so make sure the
-    # runtime packages are present even on cache hits.
+    # The source-built FFmpeg binary links against system libraries
+    # (libvpx, libx264, libx265, libsvtav1, libdav1d, libopus, OpenSSL). Cache
+    # restores only our install prefix, not the runner's system libraries, so
+    # make sure the runtime packages are present even on cache hits.
     - name: Install codec runtime libraries (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y libvpx-dev libx264-dev libx265-dev \
-          libsvtav1enc-dev libopus-dev
+          libsvtav1enc-dev libopus-dev libdav1d-dev libssl-dev
 
     - name: Pin libclang to LLVM 20 for bindgen (Linux)
       if: runner.os == 'Linux'

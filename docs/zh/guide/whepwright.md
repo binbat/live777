@@ -79,8 +79,9 @@ whepwright -w http://localhost:7777/whep/live --output json
 
 `sdp-ice.json` 只包含摘要，不包含 offer 或 answer SDP，也不会向该文件写入
 认证 token 或完整 SDP。采集失败会列在结果的 `artifacts.capture_errors` 数组中。
-Rust runner 超时时会请求 Node 完成采集并关闭浏览器，随后清理残留的 runner
-进程；此时保留的诊断可能不完整。
+相对诊断路径以 whepwright 进程的工作目录为基准。Unix 上 runner 超时时会请求
+Node 完成采集并关闭浏览器，随后清理残留进程组；Windows 上使用 `taskkill`
+终止整个 runner 进程树。超时后保留的诊断可能不完整。
 
 Playwright trace 可能包含 evaluate 参数和网络 Authorization 头，因此
 `--trace --token ...` 会在启动浏览器或创建诊断目录之前被拒绝。必须使用

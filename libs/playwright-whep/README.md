@@ -14,10 +14,8 @@ end-to-end without building the full Live777 debugger frontend.
 - [Playwright](https://playwright.dev) installed in the working directory:
   ```bash
   pnpm add -D playwright
-  npx playwright install chromium --no-shell
+  npx playwright install chromium
   ```
-  `--no-shell` avoids downloading the separate headless-shell binary; the
-  harness launches the full Chromium binary in headless mode instead.
 - The WHIP/WHEP endpoint must allow cross-origin requests (CORS) or be served
   from the same origin as the test page.
 

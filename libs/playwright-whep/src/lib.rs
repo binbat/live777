@@ -467,6 +467,12 @@ impl WhepBrowserPlayer {
                 "Playwright traces may contain authentication tokens; --trace cannot be used with a token"
             ));
         }
+        let mut options = options;
+        if options.directory.is_relative() {
+            options.directory = std::env::current_dir()
+                .context("Failed to resolve diagnostics directory against the current directory")?
+                .join(&options.directory);
+        }
         if let Some(parent) = options.directory.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -790,7 +796,39 @@ where
         let _ = child.wait().await;
         format!("{status}; remaining runner processes killed; diagnostics may be incomplete")
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = (stdout_lines, stderr_lines, last_stdout_line);
+        let cleanup = if let Some(pid) = child_id {
+            let pid = pid.to_string();
+            match Command::new("taskkill")
+                .args(["/PID", pid.as_str(), "/T", "/F"])
+                .output()
+                .await
+            {
+                Ok(output) if output.status.success() => {
+                    "runner process tree killed with taskkill".to_string()
+                }
+                Ok(output) => {
+                    let _ = child.start_kill();
+                    format!(
+                        "taskkill exited with {}; runner force-killed",
+                        output.status
+                    )
+                }
+                Err(error) => {
+                    let _ = child.start_kill();
+                    format!("failed to run taskkill: {error}; runner force-killed")
+                }
+            }
+        } else {
+            let _ = child.start_kill();
+            "runner PID was unavailable; runner force-killed".to_string()
+        };
+        let _ = child.wait().await;
+        format!("{cleanup}; diagnostics may be incomplete")
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (child_id, stdout_lines, stderr_lines, last_stdout_line);
         let _ = child.start_kill();
@@ -883,6 +921,82 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn relative_diagnostics_directory_uses_rust_working_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let current_dir = std::env::current_dir().unwrap();
+        let temp = tempfile::tempdir_in(&current_dir).unwrap();
+        let playwright_dir = temp.path().join("playwright");
+        tokio::fs::create_dir(&playwright_dir).await.unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        let fake_node = temp.path().join("fake-node");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--diagnostics-dir") + 1];
+fs.writeFileSync(`${directory}/runner.json`, JSON.stringify({ directory, cwd: process.cwd() }));
+console.log(JSON.stringify({
+    mode: "subscribe",
+    result: { success: false, connected: false, error: "intentional failure" },
+}));
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &fake_node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-e\" ]; then exec node \"$@\"; fi\nexec node '{}' \"$@\"\n",
+                fake_runner.display()
+            ),
+        )
+        .await
+        .unwrap();
+        let mut permissions = tokio::fs::metadata(&fake_node).await.unwrap().permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&fake_node, permissions)
+            .await
+            .unwrap();
+
+        let directory = temp
+            .path()
+            .strip_prefix(&current_dir)
+            .unwrap()
+            .join("relative-diagnostics");
+        let expected_directory = current_dir.join(&directory);
+        let run = WhepBrowserPlayer::new("http://localhost/whep/live")
+            .node_path(&fake_node)
+            .playwright_dir(&playwright_dir)
+            .play_with_diagnostics(DiagnosticsOptions {
+                directory,
+                trace: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(run.artifacts.directory.is_absolute());
+        assert_eq!(run.artifacts.directory, expected_directory);
+        assert!(run.artifacts.retained);
+        let observation: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(expected_directory.join("runner.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Path::new(observation["directory"].as_str().unwrap()),
+            expected_directory
+        );
+        assert_eq!(
+            Path::new(observation["cwd"].as_str().unwrap()),
+            playwright_dir
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn timeout_terminates_runner_process_group_and_preserves_capture_errors() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -963,5 +1077,83 @@ setInterval(() => {}, 1000);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("runner descendant {pid} survived process-group cleanup");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn timeout_terminates_runner_process_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--diagnostics-dir") + 1];
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+});
+fs.writeFileSync(`${directory}/child.pid`, String(child.pid));
+setInterval(() => {}, 1000);
+"#,
+        )
+        .await
+        .unwrap();
+
+        let directory = temp.path().join("timeout-run");
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let mut child = Command::new("node")
+            .arg(&fake_runner)
+            .arg("--diagnostics-dir")
+            .arg(&directory)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let child_id = child.id();
+        let mut stdout_lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut stderr_lines = BufReader::new(child.stderr.take().unwrap()).lines();
+        let mut last_stdout_line = String::new();
+        for _ in 0..50 {
+            if directory.join("child.pid").is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(directory.join("child.pid").is_file());
+
+        let cleanup = terminate_runner(
+            child_id,
+            &mut child,
+            &mut stdout_lines,
+            &mut stderr_lines,
+            &mut last_stdout_line,
+        )
+        .await;
+        assert!(cleanup.contains("taskkill"), "{cleanup}");
+        let pid: u32 = tokio::fs::read_to_string(directory.join("child.pid"))
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pid = pid.to_string();
+        let filter = format!("PID eq {pid}");
+        for _ in 0..50 {
+            let output = Command::new("tasklist")
+                .args(["/FI", filter.as_str(), "/FO", "CSV", "/NH"])
+                .output()
+                .await
+                .unwrap();
+            let running = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.split("\",\"").nth(1) == Some(pid.as_str()));
+            if !running {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("runner descendant {pid} survived taskkill process-tree cleanup");
     }
 }

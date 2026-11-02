@@ -9,6 +9,56 @@ DIST=dist/diagnostics
 ARCHIVE=${DIST}/${STAGE}.tar.gz
 TOOLS=(whipsynth whepprobe livewrk)
 
+record_copied_file() {
+    local lib_dir=$1
+    local copied=$2
+    local origin=$3
+    printf 'lib/%s\t%s\n' "${copied}" "${origin}" >> "${lib_dir}/../third-party/copied-files.tsv"
+}
+
+copy_common_notices() {
+    local stage_dir=$1
+    local required
+    mkdir -p "${stage_dir}/licenses"
+    cp -R licenses/diagnostics/. "${stage_dir}/licenses/"
+    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
+        [[ -s ${stage_dir}/licenses/${required} ]] || { echo "Missing license notice: ${required}" >&2; return 1; }
+    done
+}
+
+linux_package_for_file() {
+    local origin=$1
+    local owner
+    owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
+    if [[ -z ${owner} ]]; then
+        origin=$(readlink -f "${origin}")
+        owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
+    fi
+    [[ -n ${owner} ]] || return 1
+    owner=${owner%%$'\n'*}
+    printf '%s\n' "${owner%%: *}"
+}
+
+copy_linux_notices() {
+    local stage_dir=$1
+    local copied origin package document destination
+    local found=false
+    while IFS=$'\t' read -r copied origin; do
+        [[ ${origin} == "${GITHUB_WORKSPACE:-$PWD}/ffmpeg-install/"* ]] && continue
+        package=$(linux_package_for_file "${origin}") || {
+            echo "No Debian package owns copied library ${origin}" >&2
+            return 1
+        }
+        document=/usr/share/doc/${package%%:*}/copyright
+        [[ -f ${document} ]] || { echo "Missing copyright notice for ${package}" >&2; return 1; }
+        destination=${stage_dir}/licenses/packages/${package//:/_}.copyright
+        mkdir -p "${destination%/*}"
+        cp -L "${document}" "${destination}"
+        found=true
+    done < "${stage_dir}/third-party/copied-files.tsv"
+    [[ ${found} == true ]] || { echo "No packaged Linux dependency notices found" >&2; return 1; }
+}
+
 copy_linux_dependencies() {
     local source=$1
     local lib_dir=$2
@@ -42,6 +92,7 @@ copy_linux_dependencies() {
             if [[ ! -f ${resolved} ]]; then
                 cp -L "${dependency}" "${resolved}"
                 chmod u+w,a+x "${resolved}"
+                record_copied_file "${lib_dir}" "${name}" "${dependency}"
                 queue+=("${resolved}")
             fi
         done < <(LD_LIBRARY_PATH="${lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ldd "${current}")
@@ -103,6 +154,7 @@ copy_macos_dependencies() {
             if [[ ! -f ${lib_dir}/${name} ]]; then
                 cp -L "${resolved}" "${lib_dir}/${name}"
                 chmod u+w "${lib_dir}/${name}"
+                record_copied_file "${lib_dir}" "${name}" "${resolved}"
                 queue+=("${lib_dir}/${name}")
             fi
             if [[ ${dependency} != "@rpath/${name}" ]]; then
@@ -110,6 +162,35 @@ copy_macos_dependencies() {
             fi
         done < <(otool -L "${current}" | tail -n +2 | awk '{print $1}')
     done
+}
+
+copy_macos_notices() {
+    local stage_dir=$1
+    local copied origin resolved relative formula prefix candidate destination
+    local cellar found
+    local seen=$'\n'
+    cellar=$(brew --cellar)
+    while IFS=$'\t' read -r copied origin; do
+        [[ ${origin} == "${GITHUB_WORKSPACE:-$PWD}/ffmpeg-install/"* ]] && continue
+        resolved=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${origin}")
+        [[ ${resolved} == "${cellar}/"* ]] || { echo "Copied library is not from Homebrew: ${resolved}" >&2; return 1; }
+        relative=${resolved#"${cellar}"/}
+        formula=${relative%%/*}
+        [[ ${seen} == *$'\n'"${formula}"$'\n'* ]] && continue
+        seen+="${formula}"$'\n'
+        prefix=$(brew --prefix "${formula}")
+        found=false
+        while IFS= read -r candidate; do
+            destination=${stage_dir}/licenses/homebrew/${formula}/${candidate#"${prefix}"/}
+            mkdir -p "${destination%/*}"
+            cp -L "${candidate}" "${destination}"
+            found=true
+        done < <(find -L "${prefix}" -type f \( -iname 'COPYING*' -o -iname 'LICENSE*' -o -iname 'NOTICE*' \) -print)
+        [[ ${found} == true ]] || { echo "No license notice installed for Homebrew formula ${formula}" >&2; return 1; }
+        if [[ -f ${prefix}/INSTALL_RECEIPT.json ]]; then
+            cp "${prefix}/INSTALL_RECEIPT.json" "${stage_dir}/licenses/homebrew/${formula}/INSTALL_RECEIPT.json"
+        fi
+    done < "${stage_dir}/third-party/copied-files.tsv"
 }
 
 sign_macos_bundle() {
@@ -150,7 +231,8 @@ package_unix() {
     local tool
 
     rm -rf "${stage_dir}"
-    mkdir -p "${stage_dir}/bin" "${stage_dir}/lib" "${DIST}"
+    mkdir -p "${stage_dir}/bin" "${stage_dir}/lib" "${stage_dir}/third-party" "${DIST}"
+    copy_common_notices "${stage_dir}"
     for tool in "${TOOLS[@]}"; do
         cp "${build_dir}/${tool}" "${stage_dir}/bin/${tool}.real"
         cat > "${stage_dir}/bin/${tool}" <<'LAUNCHER'
@@ -174,11 +256,13 @@ LAUNCHER
             for tool in "${TOOLS[@]}"; do
                 copy_linux_dependencies "${stage_dir}/bin/${tool}.real" "${stage_dir}/lib"
             done
+            copy_linux_notices "${stage_dir}"
             ;;
         Darwin)
             for tool in "${TOOLS[@]}"; do
                 copy_macos_dependencies "${stage_dir}/bin/${tool}.real" "${stage_dir}/lib"
             done
+            copy_macos_notices "${stage_dir}"
             sign_macos_bundle "${stage_dir}"
             ;;
         *) echo "Unsupported Unix host: $(uname -s)" >&2; return 1 ;;
@@ -192,16 +276,32 @@ LAUNCHER
 }
 
 verify_unix() {
-    local temporary bundle tool dependencies
+    local temporary bundle tool dependencies required
     temporary=$(mktemp -d)
     trap 'rm -rf "${temporary}"' RETURN
     mkdir -p "${temporary}/home"
     tar -xzf "${ARCHIVE}" -C "${temporary}"
     mv "${temporary}/${STAGE}" "${temporary}/relocated bundle"
     bundle="${temporary}/relocated bundle"
-    if [[ $(uname -s) == Darwin ]]; then
-        verify_macos_bundle "${bundle}"
-    fi
+    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
+        [[ -s ${bundle}/licenses/${required} ]] || { echo "Missing bundled license: ${required}" >&2; return 1; }
+    done
+    [[ -s ${bundle}/third-party/copied-files.tsv ]] || { echo "Missing copied-library provenance" >&2; return 1; }
+    case $(uname -s) in
+        Linux)
+            compgen -G "${bundle}/licenses/packages/*.copyright" >/dev/null || {
+                echo "Missing Debian dependency copyright notices" >&2
+                return 1
+            }
+            ;;
+        Darwin)
+            [[ -n $(find "${bundle}/licenses/homebrew" -type f -print -quit) ]] || {
+                echo "Missing Homebrew dependency license notices" >&2
+                return 1
+            }
+            verify_macos_bundle "${bundle}"
+            ;;
+    esac
 
     for tool in "${TOOLS[@]}"; do
         env -i PATH=/usr/bin:/bin HOME="${temporary}/home" TMPDIR="${temporary}" \

@@ -33,6 +33,7 @@ dist
 dist-ssr
 *.local
 .agents/
+.playwright/
 
 # Editor directories and files
 .vscode/*

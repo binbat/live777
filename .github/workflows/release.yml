@@ -323,6 +323,16 @@ jobs:
         uses: ./.github/actions/install-ffmpeg
 
       - name: Build diagnostics tools
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          RUSTFLAGS: -L native=${{ github.workspace }}/ffmpeg-install/lib
+        run: >-
+          cargo build --locked --release --target=${{ matrix.job.target }}
+          --bin=whipsynth --bin=whepprobe --bin=livewrk --features=rsmpeg
+
+      - name: Build diagnostics tools (Windows)
+        if: runner.os == 'Windows'
         shell: bash
         run: >-
           cargo build --locked --release --target=${{ matrix.job.target }}
@@ -350,25 +360,65 @@ jobs:
         shell: pwsh
         run: ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${VERSION}"
 
-      - name: Select diagnostics archive
+      - name: Enable Debian source repositories (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          SOURCES=/etc/apt/sources.list.d/ubuntu.sources
+          [ -f "${SOURCES}" ] || { echo "Missing Ubuntu repository definition: ${SOURCES}"; exit 1; }
+          sudo sed -i -E 's/^Types: deb$/Types: deb deb-src/' "${SOURCES}"
+          grep -q '^Types:.*deb-src' "${SOURCES}"
+          sudo apt-get update -qq
+
+      - name: Package corresponding diagnostics sources (Unix)
+        if: runner.os != 'Windows'
+        id: sources-unix
+        shell: bash
+        run: bash scripts/package-diagnostics-sources.sh package "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Verify diagnostics source archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/package-diagnostics-sources.sh verify "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Package corresponding diagnostics sources (Windows)
+        if: runner.os == 'Windows'
+        id: sources-windows
+        shell: pwsh
+        run: ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+
+      - name: Verify diagnostics source archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+
+      - name: Select diagnostics archives
         shell: bash
         run: |
           if [ "${RUNNER_OS}" = "Windows" ]; then
-            echo "DIAGNOSTICS_ARCHIVE=${{ steps.package-windows.outputs.archive }}" >> "$GITHUB_ENV"
+            DIAGNOSTICS_ARCHIVE='${{ steps.package-windows.outputs.archive }}'
+            DIAGNOSTICS_SOURCE_ARCHIVE='${{ steps.sources-windows.outputs.source_archive }}'
           else
-            echo "DIAGNOSTICS_ARCHIVE=${{ steps.package-unix.outputs.archive }}" >> "$GITHUB_ENV"
+            DIAGNOSTICS_ARCHIVE='${{ steps.package-unix.outputs.archive }}'
+            DIAGNOSTICS_SOURCE_ARCHIVE='${{ steps.sources-unix.outputs.source_archive }}'
           fi
+          [ -s "${DIAGNOSTICS_ARCHIVE}" ]
+          [ -s "${DIAGNOSTICS_SOURCE_ARCHIVE}" ]
+          echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
+          echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
 
-      - name: Artifact Upload diagnostics bundle
+      - name: Artifact Upload diagnostics bundle and sources
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
-          path: ${{ env.DIAGNOSTICS_ARCHIVE }}
+          path: |
+            ${{ env.DIAGNOSTICS_ARCHIVE }}
+            ${{ env.DIAGNOSTICS_SOURCE_ARCHIVE }}
 
-      - name: Upload diagnostics release archive
+      - name: Upload diagnostics release archives
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}"
+        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}" "${DIAGNOSTICS_SOURCE_ARCHIVE}"
         env:
           GH_TOKEN: ${{ github.token }}
 

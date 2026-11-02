@@ -12,7 +12,25 @@
 
 Release 同时发布 `live777-diagnostics-<版本>-<目标>` 压缩包，包含使用
 `rsmpeg` 构建的 `whipsynth`、`whepprobe` 和 `livewrk`。工具包已包含动态
-FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。
+FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。`licenses/` 目录包含
+第三方许可证文本和依赖声明。
+
+每个诊断二进制包在同一 Release 中都有对应的源码包：Linux/macOS 为
+`live777-diagnostics-sources-<版本>-<目标>.tar.gz`，Windows 为 `.zip`。
+其中包含 Live777 源码快照、精确的 FFmpeg 源码、依赖源码下载和构建配方。
+`MANIFEST.tsv` 记录二进制包名称、SHA-256、目标平台和版本，`REBUILD.md`
+说明如何使用这些源码。缺少必要源码时，发布打包会直接失败。
+
+在 Linux 或 macOS 上下载并查看对应源码：
+
+```bash
+TAG=v0.11.0
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
+cat "live777-diagnostics-sources-${TAG}-${TARGET}/MANIFEST.tsv"
+cat "live777-diagnostics-sources-${TAG}-${TARGET}/REBUILD.md"
+```
 
 | 平台 | 目标 |
 |------|------|

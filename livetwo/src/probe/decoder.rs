@@ -95,9 +95,17 @@ fn rtp_clock_rate(mime_lc: &str) -> i32 {
     }
 }
 
+fn find_av1_decoder() -> Option<rsmpeg::avcodec::AVCodecRef<'static>> {
+    [c"libdav1d", c"libaom-av1"]
+        .into_iter()
+        .find_map(rsmpeg::avcodec::AVCodec::find_decoder_by_name)
+}
+
 /// Whether the FFI decoder can handle the given track mime type.
 pub fn supports_mime(mime_type: &str) -> bool {
-    codec_id_for_mime(&mime_type.to_ascii_lowercase()).is_some()
+    let mime_lc = mime_type.to_ascii_lowercase();
+    codec_id_for_mime(&mime_lc).is_some()
+        && (mime_lc != "video/av1" || find_av1_decoder().is_some())
 }
 
 impl RtpFrameDecoder {
@@ -114,14 +122,15 @@ impl RtpFrameDecoder {
         };
 
         let decoder = if mime_lc == "video/av1" {
-            [c"libdav1d", c"libaom-av1"]
-                .into_iter()
-                .find_map(rsmpeg::avcodec::AVCodec::find_decoder_by_name)
-                .or_else(|| rsmpeg::avcodec::AVCodec::find_decoder(codec_id))
+            find_av1_decoder().ok_or_else(|| {
+                anyhow!(
+                    "AV1 software decoding requires libdav1d or libaom-av1; FFmpeg's native av1 decoder is not supported"
+                )
+            })?
         } else {
             rsmpeg::avcodec::AVCodec::find_decoder(codec_id)
-        }
-        .ok_or_else(|| anyhow!("Failed to find FFmpeg decoder for {mime_type}"))?;
+                .ok_or_else(|| anyhow!("Failed to find FFmpeg decoder for {mime_type}"))?
+        };
         let mut codec_context = AVCodecContext::new(&decoder);
         codec_context.set_pkt_timebase(ffi::AVRational {
             num: 1,
@@ -469,19 +478,13 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        RtpFrameDecoder, RtpTimestampExtender, ffi, parse_h264_sprop, parse_h265_sprop,
-        supports_mime,
+        RtpFrameDecoder, RtpTimestampExtender, ffi, find_av1_decoder, parse_h264_sprop,
+        parse_h265_sprop, supports_mime,
     };
 
     #[test]
-    fn codec_mapping_supports_av1_and_audio() {
-        for mime in [
-            "video/av1",
-            "audio/opus",
-            "audio/g722",
-            "audio/pcmu",
-            "audio/pcma",
-        ] {
+    fn codec_mapping_checks_decoder_availability() {
+        for mime in ["audio/opus", "audio/g722", "audio/pcmu", "audio/pcma"] {
             assert!(supports_mime(mime), "missing decoder mapping for {mime}");
             assert!(supports_mime(&mime.to_ascii_uppercase()));
         }
@@ -490,8 +493,28 @@ mod tests {
             panic!("unsupported audio codec was accepted");
         };
         assert!(error.to_string().contains("Unsupported codec"));
-        let av1 = rsmpeg::avcodec::AVCodec::find_decoder(ffi::AV_CODEC_ID_AV1).unwrap();
-        assert!(["av1", "libaom-av1", "libdav1d"].contains(&av1.name().to_str().unwrap()));
+
+        let av1 = find_av1_decoder();
+        for mime in ["video/av1", "VIDEO/AV1"] {
+            assert_eq!(
+                supports_mime(mime),
+                av1.is_some(),
+                "AV1 support does not match software decoder availability for {mime}"
+            );
+        }
+        match av1 {
+            Some(av1) => {
+                assert!(["libaom-av1", "libdav1d"].contains(&av1.name().to_str().unwrap()));
+            }
+            None => {
+                let Err(error) = RtpFrameDecoder::new("video/av1", None) else {
+                    panic!("AV1 decoding succeeded without a software decoder");
+                };
+                let message = error.to_string();
+                assert!(message.contains("libdav1d") && message.contains("libaom-av1"));
+                assert!(message.contains("native av1"));
+            }
+        }
     }
 
     #[test]

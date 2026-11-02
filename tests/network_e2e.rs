@@ -472,12 +472,13 @@ impl Stack {
         ice_addr: &str,
         stream: &str,
         decode_secs: u64,
+        debug_logs: bool,
     ) -> ChildGuard {
         let mut command =
             self.topology
                 .command(Namespace::Client, &bin_path!("whepprobe"), Some(ice_addr));
         command.args([
-            "-v",
+            if debug_logs { "-vv" } else { "-v" },
             "--whep",
             &format!("http://{SERVER}:{HTTP_PORT}/whep/{stream}"),
             "--output=json",
@@ -498,7 +499,7 @@ impl Stack {
         decode_secs: u64,
     ) -> ProbeOutput {
         let output = self
-            .probe_child(ice_server, ice_addr, stream, decode_secs)
+            .probe_child(ice_server, ice_addr, stream, decode_secs, false)
             .finish(Duration::from_secs(35));
         let report = serde_json::from_str(output.stdout.trim()).unwrap_or_else(|error| {
             panic!(
@@ -568,6 +569,31 @@ fn assert_candidate(output: &str, kind: &str, address: &str) {
         found,
         "missing non-loopback {kind} candidate for {address}:\n{output}"
     );
+}
+
+fn log_count(output: &str, needle: &str) -> usize {
+    output.matches(needle).count()
+}
+
+fn wait_for_log_count(child: &mut ChildGuard, needle: &str, minimum: usize, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let output = child.combined_output();
+        assert!(
+            !child.has_exited(),
+            "{} exited before logging {minimum} occurrences of {needle:?}:\n{output}",
+            child.label
+        );
+        if log_count(&output, needle) >= minimum {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} did not log {minimum} occurrences of {needle:?} within {timeout:?}:\n{output}",
+            child.label
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn wait_for_log(child: &mut ChildGuard, needle: &str, timeout: Duration) {
@@ -706,11 +732,18 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
     let mut publisher = stack.publisher("", CLIENT, "outage");
     publisher.wait_connected(Duration::from_secs(30));
 
-    let mut recovery = stack.probe_child("", CLIENT, "outage", 10);
+    let mut recovery = stack.probe_child("", CLIENT, "outage", 10, true);
     recovery.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));
+    let decoded_before_restore = log_count(&recovery.combined_output(), "Decoded frame");
     stack.topology.set_client_server_link(true);
+    wait_for_log_count(
+        &mut recovery,
+        "Decoded frame",
+        decoded_before_restore + 1,
+        Duration::from_secs(10),
+    );
     let recovery = recovery.finish(Duration::from_secs(30));
     let report: Value = serde_json::from_str(recovery.stdout.trim()).unwrap_or_else(|error| {
         panic!(
@@ -729,7 +762,7 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
         publisher.combined_output()
     );
 
-    let mut established = stack.probe_child("", CLIENT, "outage", 10);
+    let mut established = stack.probe_child("", CLIENT, "outage", 10, false);
     established.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
     let outage_started = Instant::now();

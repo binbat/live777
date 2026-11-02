@@ -683,9 +683,12 @@ carries the check.
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
   Mainstream Linux/macOS/Windows targets also get a diagnostics bundle with
-  whipsynth, whepprobe, livewrk and their codec runtime. The live777-all
-  Docker workflow runs `smoke-test --standalone` on each final architecture
-  image before publishing the multi-arch manifest.
+  whipsynth, whepprobe, livewrk and their codec runtime. Each bundle carries
+  third-party license notices plus copied-library provenance, and a matching
+  source archive publishes the exact FFmpeg/dependency sources and a manifest
+  bound to the binary archive's SHA-256. The live777-all Docker workflow runs
+  `smoke-test --standalone` on each final architecture image before publishing
+  the multi-arch manifest.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
   `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
   (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.

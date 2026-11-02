@@ -342,8 +342,6 @@ async function main() {
                 };
                 if (params.channel) {
                     launchOptions.channel = params.channel;
-                } else if (params.browser === "chromium") {
-                    launchOptions.channel = "chromium";
                 }
                 browserInstance = await launcher.launch(launchOptions);
                 context = await browserInstance.newContext();

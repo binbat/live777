@@ -13,7 +13,26 @@ you can donwload binary from [here](https://github.com/binbat/live777/releases)
 Releases also publish `live777-diagnostics-<version>-<target>` archives with
 `whipsynth`, `whepprobe` and `livewrk`, all built with `rsmpeg`. The bundle
 includes the dynamic FFmpeg runtime and its codec dependencies; a separate
-FFmpeg installation is not required.
+FFmpeg installation is not required. The `licenses/` directory contains the
+third-party license texts and dependency notices.
+
+Every diagnostics binary archive has a matching source archive in the same
+release: `live777-diagnostics-sources-<version>-<target>.tar.gz` on Linux/macOS
+or `.zip` on Windows. It contains the Live777 source snapshot, exact FFmpeg
+source, dependency source downloads and build recipes. Its `MANIFEST.tsv` records
+the binary archive name, SHA-256, target and version; `REBUILD.md` explains how
+to use the sources. Release packaging fails if the required sources are missing.
+
+To download and inspect the corresponding sources on Linux or macOS:
+
+```bash
+TAG=v0.11.0
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-sources-${TAG}-${TARGET}.tar.gz"
+cat "live777-diagnostics-sources-${TAG}-${TARGET}/MANIFEST.tsv"
+cat "live777-diagnostics-sources-${TAG}-${TARGET}/REBUILD.md"
+```
 
 | Platform | Target |
 |----------|--------|

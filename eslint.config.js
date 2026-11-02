@@ -8,6 +8,7 @@ export default ts.config(
             'docs/.vitepress/cache/',
             'docs/.vitepress/dist/',
             'node_modules/',
+            '.playwright/',
             'target/',
             'web/**/dist/',
             'web/shared/tools/debugger/**/*.js'

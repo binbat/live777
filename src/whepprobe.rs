@@ -101,10 +101,8 @@ async fn run() -> Result<bool> {
         decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    let result = tokio::time::timeout(config.timeout, backend.probe(&config)).await;
-
-    match result {
-        Ok(Ok(result)) => {
+    match backend.probe(&config).await {
+        Ok(result) => {
             let success = result.success;
             print_result(&result, args.output);
             if success {
@@ -112,16 +110,10 @@ async fn run() -> Result<bool> {
             }
             Ok(success)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             // Emit a structured failure result for JSON consumers without
             // duplicating the diagnostics on stderr.
             let failed = ProbeResult::failed("rsmpeg", format!("{e:?}"));
-            print_result(&failed, args.output);
-            Ok(false)
-        }
-        Err(_) => {
-            let failed =
-                ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
             print_result(&failed, args.output);
             Ok(false)
         }
