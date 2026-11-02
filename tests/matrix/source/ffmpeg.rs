@@ -70,6 +70,12 @@ impl Source for FfmpegSource {
             for arg in codec.ffmpeg_extra_args() {
                 cmd.arg(arg);
             }
+            #[cfg(target_os = "windows")]
+            if codec == crate::profile::VideoCodec::Av1 {
+                // Chocolatey's libaom otherwise spends the whole codec-detection
+                // budget before emitting its first frame on Windows CI runners.
+                cmd.args(["-cpu-used", "8", "-threads", "4", "-row-mt", "1"]);
+            }
             // Use a short GOP so subscribers that connect after the first
             // keyframe get another keyframe quickly, even under load.
             let keyframe_interval = video.fps.min(5);

@@ -590,7 +590,8 @@ Integration test binaries live in `tests/`:
   synthetic publish and WHEP decode probes against in-process liveion,
   including JSON/exit-code success and failure contracts (needs `rsmpeg`)
 - `tests/whepwright_e2e.rs` — real browser CLI output and failure-artifact
-  contracts (needs `whepwright`)
+  contracts (needs `whepwright` for the browser and `rsmpeg` for the controlled
+  whipsynth publisher)
 - `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
   in private Linux namespaces; ignored by default and requiring
   `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn

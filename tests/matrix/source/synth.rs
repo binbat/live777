@@ -75,9 +75,13 @@ impl Source for SynthSource {
             width: video.width,
             height: video.height,
             fps: video.fps,
-            // Tests only need a few seconds of media; a longer duration wastes
-            // time and keeps the publisher alive after teardown.
-            duration: Some(Duration::from_secs(10)),
+            // Keep publishing through slow Windows ICE recovery and browser startup;
+            // other runners tear down promptly after the short media check.
+            duration: if crate::runner::windows_ci() {
+                Some(Duration::from_secs(60))
+            } else {
+                Some(Duration::from_secs(10))
+            },
             // Loopback test: host candidates suffice, no ICE servers needed.
             ice_servers: Vec::new(),
         };

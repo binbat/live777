@@ -1,4 +1,4 @@
-#![cfg(feature = "whepwright")]
+#![cfg(all(feature = "whepwright", feature = "rsmpeg"))]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ async fn wait_for_publisher(addr: SocketAddr, stream: &str, publisher: &mut Chil
     for _ in 0..300 {
         assert!(
             publisher.try_wait().unwrap().is_none(),
-            "FFmpeg exited before connecting"
+            "publisher exited before connecting"
         );
         let response = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
             .await
@@ -97,33 +97,21 @@ fn artifact_path<'a>(report: &'a serde_json::Value, name: &str) -> &'a Path {
 async fn success_emits_pure_json_and_cleans_diagnostics() {
     let addr = start_liveion().await;
     let stream = format!("whepwright-success-{}", std::process::id());
-    let mut publisher = Command::new("ffmpeg")
+    let mut publisher = Command::new(bin_path!("whipsynth"))
         .args([
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-re",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=size=320x240:rate=15",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "15",
-            "-keyint_min",
-            "15",
-            "-b:v",
-            "1M",
-            "-f",
-            "whip",
+            "-v",
+            "--whip",
             &format!("http://{addr}/whip/{stream}"),
+            "--vcodec",
+            "h264",
+            "--width",
+            "320",
+            "--height",
+            "240",
+            "--fps",
+            "15",
+            "--ice-server",
+            "",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
