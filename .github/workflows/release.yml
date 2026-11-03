@@ -355,12 +355,12 @@ jobs:
         if: runner.os == 'Windows'
         id: package-windows
         shell: pwsh
-        run: ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+        run: ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Verify extracted diagnostics package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+        run: ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Enable Debian source repositories (Linux)
         if: runner.os == 'Linux'
@@ -387,12 +387,12 @@ jobs:
         if: runner.os == 'Windows'
         id: sources-windows
         shell: pwsh
-        run: ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+        run: ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Verify diagnostics source archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${VERSION}"
+        run: ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Select diagnostics archives
         shell: bash
@@ -419,6 +419,68 @@ jobs:
             ${{ env.DIAGNOSTICS_SOURCE_ARCHIVE }}
 
       - name: Upload diagnostics release archives
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}" "${DIAGNOSTICS_SOURCE_ARCHIVE}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-diagnostics-musl:
+    name: diagnostics musl (${{ matrix.job.target }})
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-26.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-26.04-arm }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get the release version from the tag
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+            VERSION=$(git describe --tags)
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "version is: ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and verify static diagnostics bundle
+        shell: bash
+        run: >-
+          docker buildx build -f docker/Dockerfile.diagnostics-musl
+          --target export --output type=local,dest=dist/diagnostics
+          --build-arg TARGET=${{ matrix.job.target }}
+          --build-arg VERSION="${VERSION}" .
+
+      - name: Select diagnostics archives
+        shell: bash
+        run: |
+          DIAGNOSTICS_ARCHIVE="dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.tar.gz"
+          DIAGNOSTICS_SOURCE_ARCHIVE="dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.tar.gz"
+          [ -s "${DIAGNOSTICS_ARCHIVE}" ]
+          [ -s "${DIAGNOSTICS_SOURCE_ARCHIVE}" ]
+          echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
+          echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Artifact Upload static diagnostics bundle and sources
+        uses: actions/upload-artifact@v7
+        if: github.ref_type == 'tag'
+        with:
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
+          path: |
+            ${{ env.DIAGNOSTICS_ARCHIVE }}
+            ${{ env.DIAGNOSTICS_SOURCE_ARCHIVE }}
+
+      - name: Upload static diagnostics release archives
         shell: bash
         if: github.ref_type == 'tag'
         run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}" "${DIAGNOSTICS_SOURCE_ARCHIVE}"

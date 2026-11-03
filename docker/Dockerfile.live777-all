@@ -74,8 +74,12 @@ FROM rust:slim-trixie AS builder-rust
 
 # pkg-config: rusty_ffmpeg (rsmpeg's link_system_ffmpeg) locates FFmpeg through
 # it. libclang: rsmpeg's bindgen needs it; trixie's libclang (LLVM 19) predates
-# the LLVM 22 AST change that breaks bindgen 0.71.
-RUN apt update -y && apt install -y --no-install-recommends pkg-config libclang-dev
+# the LLVM 22 AST change that breaks bindgen 0.71. The codec development
+# packages also resolve the shared FFmpeg build's transitive link dependencies.
+RUN apt update -y && apt install -y --no-install-recommends \
+    pkg-config libclang-dev \
+    libaom-dev librav1e-dev libsvtav1enc-dev libvpx-dev libx264-dev \
+    libx265-dev libopus-dev libssl-dev
 
 WORKDIR /app
 

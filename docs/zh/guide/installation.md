@@ -14,9 +14,14 @@
 Release 和目标平台的资产可能不同，下载前请确认所选已发布 Release 的实际
 资产列表。包含诊断工具的 Release 会发布
 `live777-diagnostics-<版本>-<目标>` 压缩包，内含使用 `rsmpeg` 构建的
-`whipsynth`、`whepprobe` 和 `livewrk`。工具包已包含动态 FFmpeg 运行时及其
-编解码器依赖，无需另外安装 FFmpeg。`licenses/` 目录包含第三方许可证文本和
-依赖声明。
+`whipsynth`、`whepprobe` 和 `livewrk`。GNU/Linux、macOS 和 Windows 工具包
+已包含动态 FFmpeg 运行时及其编解码器依赖，无需另外安装 FFmpeg。
+`licenses/` 目录包含第三方许可证文本和依赖声明。
+
+GNU/Linux 动态链接包会继续保留。资产列表中包含 musl 包的 Release 还会为
+Alpine 等 musl Linux 系统提供全静态版本，其二进制不依赖动态 FFmpeg 或
+编解码器库。Release 支持诊断工具包并不代表一定提供 musl 资产，下载前请
+明确检查对应的 musl 目标。
 
 每个诊断二进制包在同一 Release 中都有对应的源码包：Linux/macOS 为
 `live777-diagnostics-sources-<版本>-<目标>.tar.gz`，Windows 为 `.zip`。
@@ -40,19 +45,36 @@ cat "live777-diagnostics-sources-${TAG}-${TARGET}/REBUILD.md"
 
 | 平台 | 目标 |
 |------|------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` |
+| Linux x86_64（GNU，动态） | `x86_64-unknown-linux-gnu` |
+| Linux ARM64（GNU，动态） | `aarch64-unknown-linux-gnu` |
+| Linux x86_64（musl，静态） | `x86_64-unknown-linux-musl` |
+| Linux ARM64（musl，静态） | `aarch64-unknown-linux-musl` |
 | macOS Intel | `x86_64-apple-darwin` |
 | macOS Apple silicon | `aarch64-apple-darwin` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
-在 Linux 和 macOS 上解压 `.tar.gz` 后，请运行 `bin/` 中的启动脚本。脚本会
-相对于解压目录定位随包的 `lib/`，因此整个目录可以移动；不要直接运行
-`.real` 二进制文件。
+对于动态链接的 GNU/Linux 和 macOS 包，解压 `.tar.gz` 后请运行 `bin/` 中的
+启动脚本。脚本会相对于解压目录定位随包的 `lib/`，因此整个目录可以移动；
+不要直接运行 `.real` 二进制文件。
 
 ```bash
 : "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+cd "live777-diagnostics-${TAG}-${TARGET}"
+./bin/whipsynth --version
+./bin/whepprobe --version
+./bin/livewrk --version
+```
+
+对于 musl 静态包，直接运行 `bin/` 中的二进制即可，不涉及动态启动脚本或
+`.real` 二进制。解压目录可以整体移动，但解码验证需要让 `livewrk` 和
+`whepprobe` 保持在同一目录。
+
+```bash
+: "${TAG:?Set TAG to a published release with the selected musl diagnostics asset}"
+TARGET=x86_64-unknown-linux-musl
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 cd "live777-diagnostics-${TAG}-${TARGET}"

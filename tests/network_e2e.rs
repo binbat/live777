@@ -551,9 +551,10 @@ fn assert_media_success(probe: &ProbeOutput) {
 }
 
 fn peer_state_logged(output: &str, state: &str) -> bool {
-    output.contains(&format!("Connection state changed: {state}"))
-        || output.contains(&format!("WHIP publish connection state changed: {state}"))
-        || output.contains(&format!("WHEP connection state changed: {state}"))
+    output.to_ascii_lowercase().contains(&format!(
+        "connection state changed: {}",
+        state.to_ascii_lowercase()
+    ))
 }
 
 fn assert_candidate(output: &str, kind: &str, address: &str) {
@@ -796,4 +797,29 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
     );
     drop(established);
     stack.topology.set_client_server_link(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_state_logged;
+
+    #[test]
+    fn peer_state_matching_is_case_insensitive() {
+        assert!(peer_state_logged(
+            "WHIP publish connection state changed: connected",
+            "Connected"
+        ));
+        assert!(peer_state_logged(
+            "WHEP connection state changed: disconnected",
+            "Disconnected"
+        ));
+        assert!(peer_state_logged(
+            "Connection state changed: Failed",
+            "failed"
+        ));
+        assert!(!peer_state_logged(
+            "WHIP publish connection state changed: connecting",
+            "Connected"
+        ));
+    }
 }

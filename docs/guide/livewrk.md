@@ -26,6 +26,12 @@ rebuild when invoked. Decode verification launches `whepprobe` as an isolated
 worker, so keep it beside `livewrk` (both are included in diagnostics bundles)
 or set `LIVE777_WHEPPROBE_BIN` to its path.
 
+When a release provides static musl diagnostics assets, those bundles also
+contain both executables and have no dynamic FFmpeg or codec dependencies. Move
+the extracted directory as a unit so `whepprobe` stays beside `livewrk`; static
+linking does not remove this worker requirement. Dynamically linked GNU/Linux
+diagnostics packages remain available.
+
 ## Usage
 
 Publish 100 synthetic streams (`load-0` .. `load-99`) for 60 seconds:

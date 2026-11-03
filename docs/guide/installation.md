@@ -14,10 +14,16 @@ Diagnostics bundle support starts with `v0.11.0`; earlier releases do not
 include these assets. Always check the selected published release's asset list,
 since availability can differ by release and target. Supported releases publish
 `live777-diagnostics-<version>-<target>` archives with `whipsynth`, `whepprobe`
-and `livewrk`, all built with `rsmpeg`. The bundle includes the dynamic FFmpeg
-runtime and its codec dependencies; a separate FFmpeg installation is not
-required. The `licenses/` directory contains the third-party license texts and
-dependency notices.
+and `livewrk`, all built with `rsmpeg`. On GNU/Linux, macOS and Windows, the
+bundle includes the dynamic FFmpeg runtime and its codec dependencies; a
+separate FFmpeg installation is not required. The `licenses/` directory contains
+the third-party license texts and dependency notices.
+
+The dynamically linked GNU/Linux packages remain available. Releases whose asset
+lists include musl packages additionally provide fully static Linux musl
+variants for Alpine and other musl-based systems. These binaries have no dynamic
+FFmpeg or codec dependencies. Diagnostics support in a release does not imply
+that its musl assets are present, so check for the musl target explicitly.
 
 Each diagnostics binary archive has a matching source archive in the same
 release: `live777-diagnostics-sources-<version>-<target>.tar.gz` on Linux/macOS
@@ -43,19 +49,37 @@ cat "live777-diagnostics-sources-${TAG}-${TARGET}/REBUILD.md"
 
 | Platform | Target |
 |----------|--------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` |
+| Linux x86_64 (GNU, dynamic) | `x86_64-unknown-linux-gnu` |
+| Linux ARM64 (GNU, dynamic) | `aarch64-unknown-linux-gnu` |
+| Linux x86_64 (musl, static) | `x86_64-unknown-linux-musl` |
+| Linux ARM64 (musl, static) | `aarch64-unknown-linux-musl` |
 | macOS Intel | `x86_64-apple-darwin` |
 | macOS Apple silicon | `aarch64-apple-darwin` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` |
 
-On Linux and macOS, extract the `.tar.gz` and run the launchers in `bin/`. They
-locate the bundled `lib/` relative to the extracted directory, so the whole
-directory can be moved. Do not invoke the `.real` binaries directly.
+For dynamically linked GNU/Linux and macOS packages, extract the `.tar.gz` and
+run the launchers in `bin/`. They locate the bundled `lib/` relative to the
+extracted directory, so the whole directory can be moved. Do not invoke the
+`.real` binaries directly.
 
 ```bash
 : "${TAG:?Set TAG to a published release with diagnostics assets}"
 TARGET=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
+cd "live777-diagnostics-${TAG}-${TARGET}"
+./bin/whipsynth --version
+./bin/whepprobe --version
+./bin/livewrk --version
+```
+
+For a static musl package, run the binaries in `bin/` directly; no dynamic
+launcher or `.real` binary is involved. The extracted directory can be moved,
+but keep `livewrk` and `whepprobe` together for decode verification.
+
+```bash
+: "${TAG:?Set TAG to a published release with the selected musl diagnostics asset}"
+TARGET=x86_64-unknown-linux-musl
 curl -LO "https://github.com/binbat/live777/releases/download/${TAG}/live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 tar xzf "live777-diagnostics-${TAG}-${TARGET}.tar.gz"
 cd "live777-diagnostics-${TAG}-${TARGET}"

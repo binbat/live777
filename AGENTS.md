@@ -207,6 +207,35 @@ CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64
 `livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT` to
 configure `pkg-config` and linker paths.
 
+### Static musl diagnostics
+
+Fully static diagnostics bundles for `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` are built in Alpine-based musl containers, not the
+GNU cross images:
+
+```bash
+docker buildx build -f docker/Dockerfile.diagnostics-musl --target export \
+  --output type=local,dest=dist/diagnostics \
+  --build-arg TARGET=<target> --build-arg VERSION=<version> .
+```
+
+The export writes `live777-diagnostics-<version>-<target>.tar.gz` and
+`live777-diagnostics-sources-<version>-<target>.tar.gz` directly into
+`dist/diagnostics/`, without an additional leading directory. The binaries
+statically link FFmpeg and the codecs; the dynamically linked GNU diagnostics
+bundles and their launcher/shared-library layout remain separate. The source
+archive includes the corresponding Alpine aports `APKBUILD` recipes and patches
+plus the upstream source downloads for the static dependency set.
+
+The independent `build-diagnostics-musl` Release job performs real builds on
+pull requests; artifact and GitHub Release uploads are tag-only. Musl package
+validation must cover static linkage, relocation and real media rather than just
+archive creation: check that the exported tools have no dynamic FFmpeg/codec
+requirements, move the extracted directory and run the relocated tools, and run
+an actual synthetic WHIP publish to WHEP decode smoke. Include `livewrk
+--verify-window` with `whepprobe` beside it to exercise worker discovery;
+`--version` checks alone do not validate codecs, media flow or relocation.
+
 ## Runtime Architecture
 
 - `live777` (`liveion`) is the edge SFU. It exposes WHIP publish endpoints,

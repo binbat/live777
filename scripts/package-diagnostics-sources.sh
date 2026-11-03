@@ -148,11 +148,11 @@ collect_macos_sources() {
         seen+="${formula}"$'\n'
         prefix=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(brew --prefix "${formula}")")
         cache=$(brew --cache --formula --build-from-source "${formula}")
-        if [[ ! -f ${cache} ]]; then
+        if [[ ! -d ${cache} && ! -s ${cache} ]]; then
             brew fetch --formula --build-from-source "${formula}"
             cache=$(brew --cache --formula --build-from-source "${formula}")
         fi
-        [[ -s ${cache} ]] || { echo "Homebrew source cache is missing for ${formula}: ${cache}" >&2; return 1; }
+        [[ -d ${cache} || -s ${cache} ]] || { echo "Homebrew source cache is missing for ${formula}: ${cache}" >&2; return 1; }
         destination=${SOURCE_DIR}/homebrew/formula/${formula}
         mkdir -p "${destination}"
         brew cat "${formula}" > "${destination}/${formula}.rb"
@@ -173,7 +173,7 @@ PY
             echo "Homebrew formula ${formula} provides ${expected}, but copied libraries came from ${actual}" >&2
             return 1
         }
-        cp "${cache}" "${SOURCE_DIR}/homebrew/downloads/${cache##*/}"
+        cp -R "${cache}" "${SOURCE_DIR}/homebrew/downloads/${cache##*/}"
         add_source homebrew-formula "${formula}" "${actual}" "homebrew/formula/${formula}"
         add_source homebrew-source "${formula}" "${actual}" "homebrew/downloads/${cache##*/}"
         found=true

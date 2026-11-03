@@ -22,6 +22,11 @@ cargo build --bin livewrk --bin whepprobe --features rsmpeg
 独立的 `whepprobe` worker，因此请将它与 `livewrk` 放在同一目录（诊断工具包已
 同时包含两者），或通过 `LIVE777_WHEPPROBE_BIN` 指定其路径。
 
+对于提供 musl 静态诊断资产的 Release，工具包同样包含这两个二进制，且不依赖
+动态 FFmpeg 或编解码器库。移动解压目录时应整体移动，确保 `whepprobe` 仍与
+`livewrk` 位于同一目录；静态链接并不会消除对 worker 的要求。GNU/Linux 动态
+链接诊断包会继续保留。
+
 ## 用法
 
 发布 100 路合成流（`load-0` .. `load-99`），运行 60 秒：
