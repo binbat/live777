@@ -173,9 +173,10 @@ impl ProbeBackend for RsmpegProbe {
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         // Keep a small margin for normal EOF, decoder flush, and child reaping.
+        // The caller's decode window is only bounded by the remaining probe
+        // budget; a hard cap here silently truncated `--decode-duration`.
         let decode_duration = self
             .decode_duration
-            .min(Duration::from_secs(10))
             .min(remaining.saturating_sub(Duration::from_secs(2)));
         if decode_duration.is_zero() {
             ct.cancel();
