@@ -14,7 +14,8 @@ description: >-
 |------|--------|
 | `401 Unauthorized` | 用 `-t <token>` 传入与服务器 `[auth] tokens` 完全一致的 token；不要再手动添加 `Bearer` 前缀。 |
 | `403 Forbidden` | 请求已通过认证，但被代理或集群策略拒绝；检查 Live777/liveman 的授权与路由规则。 |
-| `409 Conflict` | 该流已被发布者、会话或配置的 source 占用（或达到订阅上限）。停止占用者、更换流名或检查 `strategy.override_publisher`；cascade-pull 发布者不能被替换。 |
+| `409 Conflict` | 该流已被发布者、会话或配置的 source 占用。停止占用者、更换流名或检查 `strategy.override_publisher`；cascade-pull 发布者不能被替换。 |
+| `503 Service Unavailable` | 集群没有仍有订阅容量的可用节点；检查节点健康状态、容量限制与调度策略。 |
 
 `404` 表示端点路径本身不对（`/whip/<stream>` 与 `/whep/<stream>`），或者在禁用
 自动创建的策略下流不存在，也可能被反向代理改写了路径。各工具页面列出了自己

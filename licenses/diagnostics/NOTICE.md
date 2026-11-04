@@ -27,5 +27,6 @@ The texts are vendored so that packaging never depends on the runner's package
 manager. Refresh them when FFmpeg or a codec is upgraded: `GPL-2.0.txt`,
 `LGPL-2.1.txt`, `GPL-3.0.txt`, `LGPL-3.0.txt` and `Apache-2.0.txt` are the
 canonical texts, `FFmpeg-LICENSE.md` comes from the FFmpeg tree, and
-`MSVC-RUNTIME-NOTICE.md` covers the Windows runtime DLLs. Packaging fails when
-any of them is missing or empty, so a stale text is at least detectable.
+`MSVC-RUNTIME-NOTICE.md` covers the Windows runtime DLLs. Packaging checks that
+the required notices for each target are present and non-empty; review their
+content whenever upstream versions change.

@@ -13,7 +13,10 @@ $Stage = "live777-diagnostics-$Version-$Target"
 $Dist = "dist/diagnostics"
 $Archive = "$Dist/$Stage.zip"
 $Tools = @("whipsynth", "whepprobe", "livewrk")
-$Notices = @("NOTICE.md", "GPL-2.0.txt", "LGPL-2.1.txt", "GPL-3.0.txt", "LGPL-3.0.txt", "Apache-2.0.txt", "FFmpeg-LICENSE.md")
+$Notices = @(
+    "NOTICE.md", "GPL-2.0.txt", "LGPL-2.1.txt", "GPL-3.0.txt", "LGPL-3.0.txt",
+    "Apache-2.0.txt", "FFmpeg-LICENSE.md", "MSVC-RUNTIME-NOTICE.md"
+)
 
 function New-DiagnosticsPackage {
     $Work = Join-Path $Dist "work"

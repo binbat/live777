@@ -16,18 +16,6 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/diagnostics.sh
 source "${SCRIPT_DIR}/lib/diagnostics.sh"
 
-# Read the FFmpeg version the bundle actually links instead of hardcoding it;
-# the musl image and the source archive must agree with what was built.
-ffmpeg_version() {
-    local version
-    version=$(awk -F': *' '/^Version:/ {print $2; exit}' \
-        /opt/ffmpeg/lib/pkgconfig/libavcodec.pc 2>/dev/null) || version=
-    if [[ -z ${version} && -x /opt/ffmpeg/bin/ffmpeg ]]; then
-        version=$(/opt/ffmpeg/bin/ffmpeg -version 2>/dev/null | awk 'NR == 1 {print $3}')
-    fi
-    printf '%s\n' "${version:-8.1.2}"
-}
-
 collect_static_libraries() {
     local destination=$1
     local maps=${LINK_MAP_DIR:-/build/link-maps}
@@ -95,7 +83,7 @@ verify_static_elf() {
 }
 
 verify_musl() {
-    local bundle tool
+    local bundle tool expected_ffmpeg recorded_ffmpeg
     rm -rf "${VERIFY_DIR}"
     mkdir -p "${VERIFY_DIR}/home"
     tar -xzf "${ARCHIVE}" -C "${VERIFY_DIR}"
@@ -104,6 +92,12 @@ verify_musl() {
     [[ ! -e ${bundle}/lib ]] || { echo "A static diagnostics bundle must not contain a lib directory" >&2; return 1; }
     verify_diagnostics_notices "${bundle}"
     [[ -s ${bundle}/third-party/static-libraries.tsv ]] || { echo "Missing static-link provenance" >&2; return 1; }
+    expected_ffmpeg=$(ffmpeg_version) || return 1
+    recorded_ffmpeg=$(awk -F '\t' '$1 == "ffmpeg" {print $2}' "${bundle}/BUILD-INFO.tsv") || return 1
+    [[ ${recorded_ffmpeg} == "${expected_ffmpeg}" ]] || {
+        echo "FFmpeg version mismatch: expected ${expected_ffmpeg}, got ${recorded_ffmpeg}" >&2
+        return 1
+    }
     for tool in "${TOOLS[@]}"; do
         [[ -f ${bundle}/bin/${tool} && -x ${bundle}/bin/${tool} ]] || {
             echo "Missing direct static executable: ${tool}" >&2

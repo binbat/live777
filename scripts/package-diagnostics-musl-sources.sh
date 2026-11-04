@@ -54,13 +54,15 @@ collect_project_source() {
 
 collect_ffmpeg_source() {
     local destination=${SOURCE_DIR}/ffmpeg/ffmpeg-src
-    local commit tag
+    local commit tag version
     [[ -x ${FFMPEG_SOURCE}/configure && -s ${FFMPEG_SOURCE}/ffbuild/config.mak ]] || {
         echo "Configured FFmpeg working tree is missing: ${FFMPEG_SOURCE}" >&2
         return 1
     }
     commit=$(git -C "${FFMPEG_SOURCE}" rev-parse HEAD)
-    tag=$(git -C "${FFMPEG_SOURCE}" describe --tags --exact-match 2>/dev/null || printf 'n8.1.2')
+    tag=$(git -C "${FFMPEG_SOURCE}" describe --tags --exact-match 2>/dev/null || \
+        git -C "${FFMPEG_SOURCE}" describe --always --dirty)
+    version=$(ffmpeg_version) || return 1
     make -s -C "${FFMPEG_SOURCE}" clean
     mkdir -p "${destination}"
     (cd "${FFMPEG_SOURCE}" && tar --exclude='./.git' -cf - .) | tar -xf - -C "${destination}"
@@ -76,7 +78,7 @@ collect_ffmpeg_source() {
             return 1
         }
     done
-    add_source ffmpeg ffmpeg ffmpeg 8.1.2 "${commit}" ffmpeg/ffmpeg-src
+    add_source ffmpeg ffmpeg ffmpeg "${version}" "${commit}" ffmpeg/ffmpeg-src
 }
 
 apk_package_for_owner() {
@@ -278,8 +280,9 @@ version and exact aports commit.
 The `project/` archive is the exact Live777 Docker build context, including
 both musl packaging scripts and `docker/Dockerfile.diagnostics-musl` with the
 custom codec configure/CMake/Meson arguments and the final Rust static-link
-definitions. The `ffmpeg/ffmpeg-src/` tree is the configured FFmpeg n8.1.2 working tree after
-removing object files; `ffmpeg/configuration.txt` and `ffbuild/config.mak`
+definitions. The `ffmpeg/ffmpeg-src/` tree is the configured FFmpeg working tree
+recorded in `ffmpeg/revision.tsv`, after removing object files;
+`ffmpeg/configuration.txt` and `ffbuild/config.mak`
 retain the complete configuration. Use `make` in that tree to reproduce the
 same libraries.
 
@@ -331,7 +334,7 @@ package_sources() {
 }
 
 verify_sources() {
-    local temporary bundle expected actual count kind package origin source_version revision path
+    local temporary bundle expected actual count kind package origin source_version revision path expected_ffmpeg recorded_ffmpeg
     [[ -s ${SOURCE_ARCHIVE} ]] || { echo "Missing source archive: ${SOURCE_ARCHIVE}" >&2; return 1; }
     [[ -s ${BINARY_ARCHIVE} ]] || { echo "Missing binary archive: ${BINARY_ARCHIVE}" >&2; return 1; }
     temporary=$(mktemp -d)
@@ -381,6 +384,12 @@ verify_sources() {
     done < "${bundle}/SOURCES.tsv"
     [[ -f ${bundle}/ffmpeg/ffmpeg-src/configure && -s ${bundle}/ffmpeg/configuration.txt ]] || {
         echo "Exact FFmpeg source or configuration is missing" >&2
+        return 1
+    }
+    expected_ffmpeg=$(ffmpeg_version) || return 1
+    recorded_ffmpeg=$(awk -F '\t' '$1 == "ffmpeg" {print $4}' "${bundle}/SOURCES.tsv") || return 1
+    [[ ${recorded_ffmpeg} == "${expected_ffmpeg}" ]] || {
+        echo "Source FFmpeg version mismatch: expected ${expected_ffmpeg}, got ${recorded_ffmpeg}" >&2
         return 1
     }
     tar -tzf "${bundle}/project/live777-workspace.tar.gz" | grep '^\./Cargo\.toml$' >/dev/null || {

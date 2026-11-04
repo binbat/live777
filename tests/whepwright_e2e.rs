@@ -167,12 +167,12 @@ async fn start_auth_observing_proxy(
 
 #[cfg(unix)]
 async fn terminate_whepwright_tree_unix(child_id: Option<u32>) -> String {
-    // `run_whepwright` makes the runner its own process-group leader, so a
-    // single group SIGKILL also takes down the browser processes it started.
-    // The library's `terminate_runner` keeps the exhaustive process-table
-    // walk; the test only needs to not leave a stuck run behind.
     let Some(child_id) = child_id else {
         return "whepwright PID was unavailable; process-tree cleanup was not possible".to_string();
+    };
+    let tree_error = match playwright_whep::kill_process_tree(child_id).await {
+        Ok(message) => return message,
+        Err(error) => error,
     };
     let target = format!("-{child_id}");
     match Command::new("kill")
@@ -180,15 +180,15 @@ async fn terminate_whepwright_tree_unix(child_id: Option<u32>) -> String {
         .output()
         .await
     {
-        Ok(output) if output.status.success() => {
-            format!("killed the whepwright process group {child_id}")
-        }
+        Ok(output) if output.status.success() => format!(
+            "{tree_error}; killed the outer whepwright process group {child_id} as a fallback"
+        ),
         Ok(output) => format!(
-            "kill {target} exited with {}: {}",
+            "{tree_error}; kill {target} exited with {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         ),
-        Err(error) => format!("failed to run kill {target}: {error}"),
+        Err(error) => format!("{tree_error}; failed to run kill {target}: {error}"),
     }
 }
 

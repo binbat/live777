@@ -26,6 +26,18 @@ sha256_file() {
     fi
 }
 
+# Read the actual FFmpeg version for the musl binary and source archives.
+ffmpeg_version() {
+    local version
+    [[ -x /opt/ffmpeg/bin/ffmpeg ]] || { echo "FFmpeg executable is missing" >&2; return 1; }
+    version=$(/opt/ffmpeg/bin/ffmpeg -version 2>/dev/null | awk 'NR == 1 {print $3}') || {
+        echo "Unable to read the linked FFmpeg version" >&2
+        return 1
+    }
+    [[ -n ${version} ]] || { echo "The linked FFmpeg version is empty" >&2; return 1; }
+    printf '%s\n' "${version}"
+}
+
 manifest_value() {
     awk -F '\t' -v key="$2" '$1 == key {sub(/^[^\t]*\t/, ""); print; exit}' "$1"
 }

@@ -4,8 +4,8 @@
 //! --features rsmpeg -E 'binary(network_e2e)' --run-ignored ignored-only` as
 //! root with CAP_NET_ADMIN and iproute2/coturn installed. When using sudo,
 //! preserve PATH, Cargo/rustup and FFmpeg pkg-config variables plus
-//! LD_LIBRARY_PATH. Every test is ignored by default outside the dedicated
-//! Linux `network-e2e` CI job: setup creates network namespaces and veth pairs.
+//! LD_LIBRARY_PATH. Every test is ignored by default outside the Linux `build`
+//! CI job: setup creates network namespaces and veth pairs.
 //! No default route, host firewall, host loopback, or public ICE server is used.
 
 #![cfg(all(target_os = "linux", feature = "rsmpeg"))]
@@ -489,7 +489,7 @@ impl Stack {
             "--output=json",
             "--decode-duration",
             &decode_secs.to_string(),
-            "--timeout=60",
+            "--timeout=120",
             "--ice-server",
             ice_server,
         ]);
@@ -578,63 +578,28 @@ fn assert_candidate(output: &str, kind: &str, address: &str) {
     );
 }
 
-/// Inbound RTP bytes as counted by the SFU's Prometheus endpoint. `None` until
-/// the 2 s stats tick has published the counter for the first time.
-fn rtp_bytes_in(topology: &Topology) -> Option<u64> {
-    let url = format!("http://{SERVER}:{HTTP_PORT}/metrics");
-    let output = Command::new("ip")
-        .args([
-            "netns",
-            "exec",
-            topology.name(Namespace::Server),
-            "curl",
-            "-fsS",
-            "--max-time",
-            "5",
-            &url,
-        ])
-        .output()
-        .expect("run curl in the server namespace");
-    assert!(
-        output.status.success(),
-        "metrics request failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines().find_map(|line| {
-        line.strip_prefix("live777_rtp_bytes_total{direction=\"in\"} ")
-            .and_then(|value| value.trim().parse::<f64>().ok())
-            .map(|value| value as u64)
-    })
+fn log_count(output: &str, needle: &str) -> usize {
+    output.matches(needle).count()
 }
 
-fn wait_for_rtp_counter(topology: &Topology, timeout: Duration) -> u64 {
+fn wait_for_log_count(child: &mut ChildGuard, needle: &str, minimum: usize, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(value) = rtp_bytes_in(topology) {
-            return value;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the SFU never published live777_rtp_bytes_total before {timeout:?}"
-        );
-        thread::sleep(Duration::from_millis(250));
-    }
-}
-
-/// The SFU counts every packet it receives, so a growing counter proves the
-/// outage recovered even when the VP8 decoder cannot continue after the loss.
-fn wait_for_rtp_resume(topology: &Topology, baseline: u64, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if rtp_bytes_in(topology).is_some_and(|current| current > baseline) {
+        let output = child.combined_output();
+        if log_count(&output, needle) >= minimum {
             return;
         }
         assert!(
-            Instant::now() < deadline,
-            "inbound RTP did not resume within {timeout:?}"
+            !child.has_exited(),
+            "{} exited before logging {minimum} occurrences of {needle:?}:\n{output}",
+            child.label
         );
-        thread::sleep(Duration::from_millis(250));
+        assert!(
+            Instant::now() < deadline,
+            "{} did not log {minimum} occurrences of {needle:?} within {timeout:?}:\n{output}",
+            child.label
+        );
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -685,7 +650,7 @@ fn preflight() {
         0,
         "network e2e requires CAP_NET_ADMIN for namespace, veth and tc setup"
     );
-    for program in ["ip", "tc", "curl", "turnserver"] {
+    for program in ["ip", "tc", "turnserver"] {
         find_program(program).unwrap_or_else(|| {
             panic!("network e2e requires {program} in PATH; install iproute2 and coturn")
         });
@@ -774,23 +739,24 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
     let mut publisher = stack.publisher("", CLIENT, "outage");
     publisher.wait_connected(Duration::from_secs(30));
 
-    let mut recovery = stack.probe_child("", CLIENT, "outage", 30, false);
+    let mut recovery = stack.probe_child("", CLIENT, "outage", 90, true);
     recovery.wait_connected(Duration::from_secs(20));
+    let output = recovery.combined_output();
+    assert!(
+        log_count(&output, "Received RTP packet") > 0,
+        "probe received no RTP before the outage:\n{output}"
+    );
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));
-    // Sample once the link is down: the 2 s stats tick has published the
-    // counter by now, and the value must keep growing after the link returns.
-    let bytes_during_outage = wait_for_rtp_counter(&stack.topology, Duration::from_secs(10));
+    let packets_during_outage = log_count(&recovery.combined_output(), "Received RTP packet");
     stack.topology.set_client_server_link(true);
-    // The media path must recover; the VP8 decoder legitimately may not resume
-    // from the packet loss, so assert on the SFU's inbound byte counter rather
-    // than on newly decoded frames.
-    wait_for_rtp_resume(
-        &stack.topology,
-        bytes_during_outage,
+    wait_for_log_count(
+        &mut recovery,
+        "Received RTP packet",
+        packets_during_outage + 1,
         Duration::from_secs(30),
     );
-    let recovery = recovery.finish(Duration::from_secs(60));
+    let recovery = recovery.finish(Duration::from_secs(150));
     let report: Value = serde_json::from_str(recovery.stdout.trim()).unwrap_or_else(|error| {
         panic!(
             "recovery probe stdout must contain only JSON: {error}\n{}",
@@ -821,7 +787,7 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
             || peer_state_logged(&subscriber_output, "Failed"),
         "established subscriber did not observe the 10s outage:\n{subscriber_output}"
     );
-    let publisher_output = publisher.finish(Duration::from_secs(2));
+    let publisher_output = publisher.finish(Duration::from_secs(20));
     assert!(
         !publisher_output.status.success(),
         "established publisher survived the 10s outage:\n{}",

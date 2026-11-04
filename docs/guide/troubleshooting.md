@@ -15,7 +15,8 @@ the WebRTC and bridge diagnostics normally show which stage failed.
 |---------|---------------|
 | `401 Unauthorized` | Pass `-t <token>` and make sure it exactly matches the server's `[auth] tokens`; do not add a second `Bearer` prefix. |
 | `403 Forbidden` | Authentication reached the server but a proxy or cluster policy rejected it; check Live777/liveman authorization and routing rules. |
-| `409 Conflict` | A publisher, session or configured source already owns the stream (or the subscriber limit was reached). Stop it, use another stream, or review `strategy.override_publisher`; cascade-pull publishers cannot be displaced. |
+| `409 Conflict` | A publisher, session or configured source already owns the stream. Stop it, use another stream, or review `strategy.override_publisher`; cascade-pull publishers cannot be displaced. |
+| `503 Service Unavailable` | The cluster has no available node with remaining subscriber capacity; check node health, capacity limits and scheduling policy. |
 
 A `404` means the endpoint path itself is wrong (`/whip/<stream>` versus
 `/whep/<stream>`), the stream is missing under a policy that disables automatic
