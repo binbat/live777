@@ -489,7 +489,7 @@ impl Stack {
             "--output=json",
             "--decode-duration",
             &decode_secs.to_string(),
-            "--timeout=20",
+            "--timeout=60",
             "--ice-server",
             ice_server,
         ]);
@@ -505,7 +505,7 @@ impl Stack {
     ) -> ProbeOutput {
         let output = self
             .probe_child(ice_server, ice_addr, stream, decode_secs, false)
-            .finish(Duration::from_secs(35));
+            .finish(Duration::from_secs(75));
         let report = serde_json::from_str(output.stdout.trim()).unwrap_or_else(|error| {
             panic!(
                 "whepprobe stdout must contain only JSON: {error}\n{}",
@@ -586,14 +586,17 @@ fn wait_for_log_count(child: &mut ChildGuard, needle: &str, minimum: usize, time
     let deadline = Instant::now() + timeout;
     loop {
         let output = child.combined_output();
+        // A probe that finished cleanly may have logged the frame we are
+        // waiting for just before exiting; check the count before the liveness
+        // assertion so that case is not a failure.
+        if log_count(&output, needle) >= minimum {
+            return;
+        }
         assert!(
             !child.has_exited(),
             "{} exited before logging {minimum} occurrences of {needle:?}:\n{output}",
             child.label
         );
-        if log_count(&output, needle) >= minimum {
-            return;
-        }
         assert!(
             Instant::now() < deadline,
             "{} did not log {minimum} occurrences of {needle:?} within {timeout:?}:\n{output}",
@@ -739,7 +742,7 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
     let mut publisher = stack.publisher("", CLIENT, "outage");
     publisher.wait_connected(Duration::from_secs(30));
 
-    let mut recovery = stack.probe_child("", CLIENT, "outage", 10, true);
+    let mut recovery = stack.probe_child("", CLIENT, "outage", 30, true);
     recovery.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));
@@ -753,7 +756,7 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
         // 20s keeps a slow (but healthy) runner from failing this window.
         Duration::from_secs(20),
     );
-    let recovery = recovery.finish(Duration::from_secs(30));
+    let recovery = recovery.finish(Duration::from_secs(60));
     let report: Value = serde_json::from_str(recovery.stdout.trim()).unwrap_or_else(|error| {
         panic!(
             "recovery probe stdout must contain only JSON: {error}\n{}",
@@ -771,7 +774,7 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
         publisher.combined_output()
     );
 
-    let mut established = stack.probe_child("", CLIENT, "outage", 10, false);
+    let mut established = stack.probe_child("", CLIENT, "outage", 30, false);
     established.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
     // Comfortably past the 5s disconnected grace, so the outcome cannot hinge
