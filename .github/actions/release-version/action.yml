@@ -1,0 +1,13 @@
+name: Release version
+description: Resolve the release version from a tag or git describe and export VERSION.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        VERSION=${GITHUB_REF_NAME}
+        if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
+          VERSION=$(git describe --tags)
+        fi
+        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+        echo "version is: ${VERSION}"

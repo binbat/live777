@@ -11,6 +11,7 @@ on:
     paths:
       - '.github/workflows/release.yml'
       - '.github/actions/install-ffmpeg/**'
+      - '.github/actions/release-version/**'
       - '.github/vcpkg-overlays/**'
       - 'docker/Dockerfile.diagnostics-musl'
       - 'docker/smoke-test.sh'
@@ -59,29 +60,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Nodejs
-        uses: actions/setup-node@v6
-        with:
-          node-version: latest
-
-      - name: Install npm dependencies
-        run: pnpm install
-
       - name: Build WebUI
-        run: pnpm -r build
+        uses: ./.github/actions/build-webui
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=`git describe --tags`
-          fi
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -135,47 +118,11 @@ jobs:
           echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
           echo "PKG_NET4MQTT_NAME=net4mqtt-${PKG_BUILDNAME}" >> $GITHUB_ENV
 
-      - name: Create Live777 tarball
+      - name: Create release archives
         shell: bash
         run: |
-          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
-          TAR_BASENAME=live777-${{ env.VERSION }}-${{ matrix.job.target }}
-          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
-
-          # base compressed package
-          case ${{ matrix.job.target }} in
-          *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
-          *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
-          esac;
-
-          # Let subsequent steps know where to find the compressed package
-          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
-
-      - name: Create LiveMan tarball
-        shell: bash
-        run: |
-          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
-          TAR_BASENAME=liveman-${{ env.VERSION }}-${{ matrix.job.target }}
-          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "${{ env.BUILD_PATH }}/liveman${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/liveman.toml" "conf/liveman.service" "$ARCHIVE_DIR"
-
-          # base compressed package
-          case ${{ matrix.job.target }} in
-          *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
-          *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
-          esac;
-
-          # Let subsequent steps know where to find the compressed package
-          echo "TAR_LIVEMAN_NAME=${TAR_NAME}" >> $GITHUB_ENV
+          bash scripts/create-release-archive.sh live777 "${{ matrix.job.target }}" "${VERSION}" "${BUILD_PATH}" "${EXE_SUFFIX}"
+          bash scripts/create-release-archive.sh liveman "${{ matrix.job.target }}" "${VERSION}" "${BUILD_PATH}" "${EXE_SUFFIX}"
 
       - name: Rename binary
         shell: bash
@@ -225,47 +172,21 @@ jobs:
       - name: Use nFPM
         if: ${{ matrix.job.nfpm }}
         run: |
-          nfpm pkg --packager deb --config live777.yaml
-          nfpm pkg --packager deb --config liveman.yaml
-          nfpm pkg --packager deb --config net4mqtt.yaml
-          nfpm pkg --packager deb --config whipinto.yaml
-          nfpm pkg --packager deb --config whepfrom.yaml
+          for package in live777 liveman net4mqtt whipinto whepfrom; do
+            for packager in deb rpm archlinux; do
+              nfpm pkg --packager "${packager}" --config "${package}.yaml"
+            done
+          done
 
-          nfpm pkg --packager rpm --config live777.yaml
-          nfpm pkg --packager rpm --config liveman.yaml
-          nfpm pkg --packager rpm --config net4mqtt.yaml
-          nfpm pkg --packager rpm --config whipinto.yaml
-          nfpm pkg --packager rpm --config whepfrom.yaml
-
-          nfpm pkg --packager archlinux --config live777.yaml
-          nfpm pkg --packager archlinux --config liveman.yaml
-          nfpm pkg --packager archlinux --config net4mqtt.yaml
-          nfpm pkg --packager archlinux --config whipinto.yaml
-          nfpm pkg --packager archlinux --config whepfrom.yaml
-
-      - name: Artifact Upload deb package
+      - name: Artifact Upload nFPM packages
         uses: actions/upload-artifact@v7
         if: ${{ matrix.job.nfpm }}
         with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_deb
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_nfpm
           path: |
-              *.deb
-
-      - name: Artifact Upload rpm package
-        uses: actions/upload-artifact@v7
-        if: ${{ matrix.job.nfpm }}
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_rpm
-          path: |
-              *.rpm
-
-      - name: Artifact Upload archlinux package
-        uses: actions/upload-artifact@v7
-        if: ${{ matrix.job.nfpm }}
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_archlinux
-          path: |
-              *.pkg.tar.zst
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
 
       - name: Upload release archive
         shell: bash
@@ -301,14 +222,7 @@ jobs:
           fetch-depth: 0
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=$(git describe --tags)
-          fi
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -335,42 +249,12 @@ jobs:
         uses: ./.github/actions/install-ffmpeg
 
       - name: Build diagnostics tools
-        if: runner.os != 'Windows'
         shell: bash
         env:
-          RUSTFLAGS: -L native=${{ github.workspace }}/ffmpeg-install/lib
+          RUSTFLAGS: ${{ runner.os != 'Windows' && format('-L native={0}/ffmpeg-install/lib', github.workspace) || '' }}
         run: >-
           cargo build --locked --release --target=${{ matrix.job.target }}
           --bin=whipsynth --bin=whepprobe --bin=livewrk --features=rsmpeg
-
-      - name: Build diagnostics tools (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: >-
-          cargo build --locked --release --target=${{ matrix.job.target }}
-          --bin=whipsynth --bin=whepprobe --bin=livewrk --features=rsmpeg
-
-      - name: Package diagnostics tools (Unix)
-        if: runner.os != 'Windows'
-        id: package-unix
-        shell: bash
-        run: bash scripts/package-diagnostics.sh package "${{ matrix.job.target }}" "${VERSION}"
-
-      - name: Verify extracted diagnostics package (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: bash scripts/package-diagnostics.sh verify "${{ matrix.job.target }}" "${VERSION}"
-
-      - name: Package diagnostics tools (Windows)
-        if: runner.os == 'Windows'
-        id: package-windows
-        shell: pwsh
-        run: ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
-
-      - name: Verify extracted diagnostics package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Enable Debian source repositories (Linux)
         if: runner.os == 'Linux'
@@ -382,47 +266,33 @@ jobs:
           grep -q '^Types:.*deb-src' "${SOURCES}"
           sudo apt-get update -qq
 
-      - name: Package corresponding diagnostics sources (Unix)
+      - name: Package and verify diagnostics (Unix)
         if: runner.os != 'Windows'
-        id: sources-unix
-        shell: bash
-        run: bash scripts/package-diagnostics-sources.sh package "${{ matrix.job.target }}" "${VERSION}"
-
-      - name: Verify diagnostics source archive (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: bash scripts/package-diagnostics-sources.sh verify "${{ matrix.job.target }}" "${VERSION}"
-
-      - name: Package corresponding diagnostics sources (Windows)
-        if: runner.os == 'Windows'
-        id: sources-windows
-        shell: pwsh
-        run: ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
-
-      - name: Verify diagnostics source archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
-
-      - name: Select diagnostics archives
         shell: bash
         run: |
-          if [ "${RUNNER_OS}" = "Windows" ]; then
-            DIAGNOSTICS_ARCHIVE='${{ steps.package-windows.outputs.archive }}'
-            DIAGNOSTICS_SOURCE_ARCHIVE='${{ steps.sources-windows.outputs.source_archive }}'
-          else
-            DIAGNOSTICS_ARCHIVE='${{ steps.package-unix.outputs.archive }}'
-            DIAGNOSTICS_SOURCE_ARCHIVE='${{ steps.sources-unix.outputs.source_archive }}'
-          fi
-          [ -s "${DIAGNOSTICS_ARCHIVE}" ]
-          [ -s "${DIAGNOSTICS_SOURCE_ARCHIVE}" ]
-          echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
-          echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
+          bash scripts/package-diagnostics.sh package "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics.sh verify "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics-sources.sh package "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics-sources.sh verify "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Package and verify diagnostics (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
 
       - name: Upload diagnostics release archives
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}" "${DIAGNOSTICS_SOURCE_ARCHIVE}"
+        run: |
+          ARCHIVE_SUFFIX=tar.gz
+          if [ "${RUNNER_OS}" = "Windows" ]; then ARCHIVE_SUFFIX=zip; fi
+          gh release upload "${VERSION}" \
+            "dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.${ARCHIVE_SUFFIX}" \
+            "dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.${ARCHIVE_SUFFIX}"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -442,14 +312,7 @@ jobs:
           fetch-depth: 0
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] || expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=$(git describe --tags)
-          fi
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -462,20 +325,13 @@ jobs:
           --build-arg TARGET=${{ matrix.job.target }}
           --build-arg VERSION="${VERSION}" .
 
-      - name: Select diagnostics archives
-        shell: bash
-        run: |
-          DIAGNOSTICS_ARCHIVE="dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.tar.gz"
-          DIAGNOSTICS_SOURCE_ARCHIVE="dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.tar.gz"
-          [ -s "${DIAGNOSTICS_ARCHIVE}" ]
-          [ -s "${DIAGNOSTICS_SOURCE_ARCHIVE}" ]
-          echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
-          echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
-
       - name: Upload static diagnostics release archives
         shell: bash
         if: github.ref_type == 'tag'
-        run: gh release upload "${VERSION}" "${DIAGNOSTICS_ARCHIVE}" "${DIAGNOSTICS_SOURCE_ARCHIVE}"
+        run: >-
+          gh release upload "${VERSION}"
+          "dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.tar.gz"
+          "dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.tar.gz"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -499,29 +355,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Nodejs
-        uses: actions/setup-node@v6
-        with:
-          node-version: latest
-
-      - name: Install npm dependencies
-        run: pnpm install
-
       - name: Build WebUI
-        run: pnpm -r build
+        uses: ./.github/actions/build-webui
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=`git describe --tags`
-          fi
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -550,17 +388,7 @@ jobs:
 
       - name: Create ${{ matrix.job.variant }} live777 tarball
         shell: bash
-        run: |
-          TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
-          TAR_NAME=${TAR_BASENAME}.tar.gz
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "target/${TARGET}/release/live777" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
-          tar czf "${TAR_NAME}" "${TAR_BASENAME}"/*
-
-          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+        run: bash scripts/create-release-archive.sh live777 "${TARGET}" "${VERSION}" "target/${TARGET}/release" "" "${VARIANT}"
 
       - name: Artifact Upload ${{ matrix.job.variant }} live777
         uses: actions/upload-artifact@v7
