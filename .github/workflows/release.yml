@@ -8,6 +8,16 @@ on:
     types:
       - 'published'
   pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/actions/install-ffmpeg/**'
+      - '.github/vcpkg-overlays/**'
+      - 'docker/Dockerfile.diagnostics-musl'
+      - 'docker/smoke-test.sh'
+      - 'scripts/package-diagnostics*'
+      - 'licenses/diagnostics/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 jobs:
   build:
@@ -409,15 +419,6 @@ jobs:
           echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
           echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
 
-      - name: Artifact Upload diagnostics bundle and sources
-        uses: actions/upload-artifact@v7
-        if: github.ref_type == 'tag'
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
-          path: |
-            ${{ env.DIAGNOSTICS_ARCHIVE }}
-            ${{ env.DIAGNOSTICS_SOURCE_ARCHIVE }}
-
       - name: Upload diagnostics release archives
         shell: bash
         if: github.ref_type == 'tag'
@@ -470,15 +471,6 @@ jobs:
           [ -s "${DIAGNOSTICS_SOURCE_ARCHIVE}" ]
           echo "DIAGNOSTICS_ARCHIVE=${DIAGNOSTICS_ARCHIVE}" >> "$GITHUB_ENV"
           echo "DIAGNOSTICS_SOURCE_ARCHIVE=${DIAGNOSTICS_SOURCE_ARCHIVE}" >> "$GITHUB_ENV"
-
-      - name: Artifact Upload static diagnostics bundle and sources
-        uses: actions/upload-artifact@v7
-        if: github.ref_type == 'tag'
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_diagnostics
-          path: |
-            ${{ env.DIAGNOSTICS_ARCHIVE }}
-            ${{ env.DIAGNOSTICS_SOURCE_ARCHIVE }}
 
       - name: Upload static diagnostics release archives
         shell: bash

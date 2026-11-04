@@ -7,11 +7,20 @@ on:
     tags:
       - 'v*'
   pull_request:
+    paths:
+      - '.github/workflows/docker.yml'
+      - '.dockerignore'
+      - 'docker/**'
+      - 'scripts/docker-smoke.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
 
 jobs:
   docker:
     name: Docker Images (${{ matrix.app }} / linux/${{ matrix.arch }})
-    runs-on: ubuntu-26.04
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -51,8 +60,6 @@ jobs:
             type=sha
           flavor: |
             latest=auto
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Login to GitHub Container Registry
@@ -91,50 +98,22 @@ jobs:
           path: digest.txt
           if-no-files-found: error
 
-  docker-registry-test:
-    name: Local registry integration
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-      - name: Test digest pushes and multi-architecture manifests
-        run: bash scripts/docker-registry-test.sh
-
   docker-manifest:
-    name: Docker Manifest (${{ matrix.app }})
+    name: Docker Manifests
     if: startsWith(github.ref, 'refs/tags/')
-    needs:
-      - docker
-      - docker-registry-test
+    needs: docker
     runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        app:
-          - ffmpeg
-          - gstreamer
-          - live777-client
-          - live777-server
-          - liveion
-          - liveman
-          - net4mqtt
-          - whipinto
-          - whepfrom
-          - live777-all
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
       - name: Download tested image digests
         uses: actions/download-artifact@v7
         with:
-          pattern: ${{ matrix.app }}-digest-*
+          pattern: '*-digest-*'
+          path: digests
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/binbat/${{ matrix.app }}
+          images: ghcr.io/binbat/live777
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -153,12 +132,22 @@ jobs:
       - name: Publish manifests from tested image digests
         shell: bash
         env:
-          RELEASE_TAGS: ${{ steps.meta.outputs.tags }}
+          RELEASE_TAGS: ${{ steps.meta.outputs.tag-names }}
         run: |
-          amd64_digest=$(cat "${{ matrix.app }}-digest-amd64/digest.txt")
-          arm64_digest=$(cat "${{ matrix.app }}-digest-arm64/digest.txt")
-          [ -n "${amd64_digest}" ] && [ -n "${arm64_digest}" ]
-          while IFS= read -r tag; do
-            [ -n "${tag}" ] || continue
-            docker buildx imagetools create --tag "${tag}" "${amd64_digest}" "${arm64_digest}"
-          done < <(printf '%s\n' "${RELEASE_TAGS}")
+          set -euo pipefail
+          for amd64_file in digests/*-digest-amd64/digest.txt; do
+            [ -f "${amd64_file}" ] || { echo "No tested image digests found"; exit 1; }
+            app_dir=${amd64_file%/digest.txt}
+            app=${app_dir##*/}
+            app=${app%-digest-amd64}
+            arm64_file="digests/${app}-digest-arm64/digest.txt"
+            [ -f "${arm64_file}" ] || { echo "Missing arm64 digest for ${app}"; exit 1; }
+            amd64_digest=$(<"${amd64_file}")
+            arm64_digest=$(<"${arm64_file}")
+            [ -n "${amd64_digest}" ] && [ -n "${arm64_digest}" ]
+            while IFS= read -r tag; do
+              [ -n "${tag}" ] || continue
+              docker buildx imagetools create \
+                --tag "ghcr.io/binbat/${app}:${tag}" "${amd64_digest}" "${arm64_digest}"
+            done < <(printf '%s\n' "${RELEASE_TAGS}")
+          done

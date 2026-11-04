@@ -227,9 +227,9 @@ bundles and their launcher/shared-library layout remain separate. The source
 archive includes the corresponding Alpine aports `APKBUILD` recipes and patches
 plus the upstream source downloads for the static dependency set.
 
-The independent `build-diagnostics-musl` Release job performs real builds on
-pull requests; artifact and GitHub Release uploads are tag-only. Musl package
-validation must cover static linkage, relocation and real media rather than just
+The independent `build-diagnostics-musl` Release job performs real builds when
+diagnostics packaging inputs change on pull requests; GitHub Release uploads are
+tag-only. Musl package validation must cover static linkage, relocation and real media rather than just
 archive creation: check that the exported tools have no dynamic FFmpeg/codec
 requirements, move the extracted directory and run the relocated tools, and run
 an actual synthetic WHIP publish to WHEP decode smoke. Include `livewrk
@@ -628,11 +628,11 @@ Integration test binaries live in `tests/`:
   whipsynth publisher)
 - `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
   in private Linux namespaces; ignored by default and requiring
-  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn. The dedicated
-  Linux `network-e2e` job in `.github/workflows/rust.yml` installs these
-  dependencies and runs the ignored tests as root, preserving the Cargo/rustup
-  and FFmpeg dynamic-library environment through sudo; all other CI jobs and
-  default local runs leave them ignored.
+  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn. The Linux
+  `build` job in `.github/workflows/rust.yml` installs these dependencies and
+  runs the ignored tests as root against its release/all-features build,
+  preserving the Cargo/rustup and FFmpeg dynamic-library environment through
+  sudo; all other CI jobs and default local runs leave them ignored.
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -679,16 +679,13 @@ carries the check.
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
   `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix.
-  Each matrix job builds once, exporting a Docker tar for `docker load` and
-  `scripts/docker-smoke.sh` and, only on version tags, pushing that same build
-  by digest. Pull requests and the `docker` branch build and smoke every image
-  without pushing to GHCR. Version-tag manifests (without architecture-suffixed
-  tags) are created only after all image smoke tests and the local-registry
-  integration test pass. `bash scripts/docker-registry-test.sh` starts an
-  isolated `registry:2`, exercises Docker-tar plus digest-only outputs for
-  amd64/arm64, validates and pulls the two-architecture manifest, and runs the
-  pulled image. It needs Docker, Buildx, curl and jq, uses only localhost, and
-  never publishes to GHCR or creates a Release.
+  Each matrix job builds once on a native amd64 or arm64 runner, exporting a
+  Docker tar for `docker load` and `scripts/docker-smoke.sh` and, only on
+  version tags, pushing that same build by digest. Pull requests that change
+  Docker build/test inputs and pushes to the `docker` branch build and smoke
+  every image without pushing to GHCR. After all image smoke tests pass, one
+  tag-only job creates every multi-architecture manifest from the tested
+  digests, without architecture-suffixed tags.
 - **`live777-all` vs the slim `live777-server`/`live777-client` split**:
   `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
   whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check
