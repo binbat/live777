@@ -47,7 +47,7 @@ prefer_dmabuf = true  # DMA-BUF 零拷贝采集→编码（可选）
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
-bitrate = 2000000   # 上限——自适应码率（AIMD）只会从这里往下调
+bitrate = 3000000   # 上限——自适应码率（AIMD）只会从这里往下调
 profile = "baseline"
 level = "4.0"
 gop = 60            # 关键帧间隔（帧数）；GOP 越长越省带宽，
@@ -63,15 +63,11 @@ clock_rate = 90000
 # （亚秒级断帧，订阅者保持连接）；纯 encoder 档位原地无缝调整。
 # 省略 encoder.bitrate 时按档位几何参数推导（约 0.07 bpp）。
 [[stream.pi-cam.sources.tiers]]
-name = "std"
-capture = { width = 1920, height = 1080, fps = 30 }
-encoder = { bitrate = 2000000 }
-[[stream.pi-cam.sources.tiers]]
 name = "maxres"
 capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
 [[stream.pi-cam.sources.tiers]]
-name = "highfps"
+name = "fullview"
 capture = { width = 1296, height = 972, fps = 50 }
 encoder = { bitrate = 2000000 }
 [[stream.pi-cam.sources.tiers]]
@@ -88,7 +84,7 @@ capture = { width = 320, height = 240, fps = 10 }
 encoder = { bitrate = 150000 }
 ```
 
-`highfps` 虽然请求 50 fps，但 OV5647 在 1296×972 模式下的上限约为
+`fullview` 虽然请求 50 fps，但 OV5647 在 1296×972 模式下的上限约为
 46.34 fps；短时硬件实测约为 46–48 fps，未出现丢帧。
 
 自适应码率默认开启：AIMD 控制器跟随 WHEP 订阅者的 RTCP 反馈实时调整编码器，当前档位码率为上限、最低档为下限。语义详见

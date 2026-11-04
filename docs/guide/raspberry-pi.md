@@ -60,7 +60,7 @@ prefer_dmabuf = true  # DMA-BUF zero-copy capture → encode (optional)
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
-bitrate = 2000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
+bitrate = 3000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
 profile = "baseline"
 level = "4.0"
 gop = 60            # keyframe interval in frames; longer GOPs save bandwidth,
@@ -77,15 +77,11 @@ clock_rate = 90000
 # tier retunes in place. An omitted encoder.bitrate is derived from the
 # tier's geometry (~0.07 bpp).
 [[stream.pi-cam.sources.tiers]]
-name = "std"
-capture = { width = 1920, height = 1080, fps = 30 }
-encoder = { bitrate = 2000000 }
-[[stream.pi-cam.sources.tiers]]
 name = "maxres"
 capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
 [[stream.pi-cam.sources.tiers]]
-name = "highfps"
+name = "fullview"
 capture = { width = 1296, height = 972, fps = 50 }
 encoder = { bitrate = 2000000 }
 [[stream.pi-cam.sources.tiers]]
@@ -102,7 +98,7 @@ capture = { width = 320, height = 240, fps = 10 }
 encoder = { bitrate = 150000 }
 ```
 
-Although `highfps` requests 50 fps, the OV5647 caps its 1296x972 mode at
+Although `fullview` requests 50 fps, the OV5647 caps its 1296x972 mode at
 about 46.34 fps; a short hardware run measured about 46–48 fps with no
 dropped frames.
 

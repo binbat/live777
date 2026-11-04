@@ -145,7 +145,7 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.encoder]
 # backend = "v4l2-m2m"
 # codec = "h264"
-# bitrate = 2000000
+# bitrate = 3000000
 # or a 6-digit hex profile-level-id like "420028"
 # profile = "baseline"
 # required when profile is a name; 1080p needs >= 4.0
@@ -160,7 +160,7 @@ ice_udp_addrs = ["auto"]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Six-rung quality ladder (tested on OV5647), switchable at runtime via
+# Five-rung quality ladder (tested on OV5647), switchable at runtime via
 # POST /api/sources/pi-cam/tier {"tier": "maxres"} or the WebUI.
 # A tier is a named preset of source parameters: the capture block
 # overrides capture params (rebuilds the pipeline, brief frame gap), the
@@ -170,24 +170,19 @@ ice_udp_addrs = ["auto"]
 # becomes the AIMD's new ceiling — it keeps following network conditions
 # within the rung.
 #
-# The 1920x1080 boot and std/maxres rungs use the OV5647's cropped mode
-# at 30 fps, within the bcm2835 H.264 encoder's 1080p30 ceiling; std and
-# maxres differ only in bitrate. highfps selects the full-field-of-view
-# 2x2-binned 1296x972 mode at a requested 50 fps. The sensor caps that
-# mode at about 46.34 fps (about 46–48 fps measured with no dropped frames).
-# lowlatency trades pixels for 60 fps at 640x480, while lowbw* rungs cut
-# the frame rate to 10 fps for very slow links.
+# The 1920x1080 boot and maxres rung use the OV5647's cropped mode at
+# 30 fps, within the bcm2835 H.264 encoder's 1080p30 ceiling. fullview
+# selects the full-field-of-view 2x2-binned 1296x972 mode at a requested
+# 50 fps. The sensor caps that mode at about 46.34 fps (about 46–48 fps
+# measured with no dropped frames). lowlatency trades pixels for 60 fps
+# at 640x480, while lowbw* rungs cut the frame rate to 10 fps for slow links.
 #
-# [[stream.pi-cam.sources.tiers]]
-# name = "std"
-# capture = { width = 1920, height = 1080, fps = 30 }
-# encoder = { bitrate = 2000000 }
 # [[stream.pi-cam.sources.tiers]]
 # name = "maxres"
 # capture = { width = 1920, height = 1080, fps = 30 }
 # encoder = { bitrate = 3000000 }
 # [[stream.pi-cam.sources.tiers]]
-# name = "highfps"
+# name = "fullview"
 # capture = { width = 1296, height = 972, fps = 50 }
 # encoder = { bitrate = 2000000 }
 # [[stream.pi-cam.sources.tiers]]
