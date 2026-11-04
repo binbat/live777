@@ -36,8 +36,8 @@ cd live777-${TAG}-aarch64-unknown-linux-gnu-rpi
 [stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
-width = 1296        # OV5647 原生 2x2 合并模式：完整视野
-height = 972
+width = 1920        # OV5647 裁剪模式：最高约 32.81 fps
+height = 1080
 fps = 30
 pixel_format = "yuv420"
 prefer_dmabuf = true  # DMA-BUF 零拷贝采集→编码（可选）
@@ -64,11 +64,11 @@ clock_rate = 90000
 # 省略 encoder.bitrate 时按档位几何参数推导（约 0.07 bpp）。
 [[stream.pi-cam.sources.tiers]]
 name = "std"
-capture = { width = 1296, height = 972, fps = 30 }
+capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 2000000 }
 [[stream.pi-cam.sources.tiers]]
 name = "maxres"
-capture = { width = 1920, height = 1080, fps = 20 }
+capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
 [[stream.pi-cam.sources.tiers]]
 name = "lowlatency"
