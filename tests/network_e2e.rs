@@ -578,8 +578,9 @@ fn assert_candidate(output: &str, kind: &str, address: &str) {
     );
 }
 
-/// Inbound RTP bytes as counted by the SFU's Prometheus endpoint.
-fn rtp_bytes_in(topology: &Topology) -> u64 {
+/// Inbound RTP bytes as counted by the SFU's Prometheus endpoint. `None` until
+/// the 2 s stats tick has published the counter for the first time.
+fn rtp_bytes_in(topology: &Topology) -> Option<u64> {
     let url = format!("http://{SERVER}:{HTTP_PORT}/metrics");
     let output = Command::new("ip")
         .args([
@@ -600,13 +601,25 @@ fn rtp_bytes_in(topology: &Topology) -> u64 {
         String::from_utf8_lossy(&output.stderr).trim()
     );
     let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .find_map(|line| {
-            line.strip_prefix("live777_rtp_bytes_total{direction=\"in\"} ")
-                .and_then(|value| value.trim().parse::<f64>().ok())
-                .map(|value| value as u64)
-        })
-        .unwrap_or_else(|| panic!("metrics output has no RTP-in counter:\n{text}"))
+    text.lines().find_map(|line| {
+        line.strip_prefix("live777_rtp_bytes_total{direction=\"in\"} ")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(|value| value as u64)
+    })
+}
+
+fn wait_for_rtp_counter(topology: &Topology, timeout: Duration) -> u64 {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = rtp_bytes_in(topology) {
+            return value;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the SFU never published live777_rtp_bytes_total before {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// The SFU counts every packet it receives, so a growing counter proves the
@@ -614,13 +627,12 @@ fn rtp_bytes_in(topology: &Topology) -> u64 {
 fn wait_for_rtp_resume(topology: &Topology, baseline: u64, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        let current = rtp_bytes_in(topology);
-        if current > baseline {
+        if rtp_bytes_in(topology).is_some_and(|current| current > baseline) {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "inbound RTP did not resume within {timeout:?} (still {current} bytes)"
+            "inbound RTP did not resume within {timeout:?}"
         );
         thread::sleep(Duration::from_millis(250));
     }
@@ -764,16 +776,18 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
 
     let mut recovery = stack.probe_child("", CLIENT, "outage", 30, false);
     recovery.wait_connected(Duration::from_secs(20));
-    let bytes_before_outage = rtp_bytes_in(&stack.topology);
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));
+    // Sample once the link is down: the 2 s stats tick has published the
+    // counter by now, and the value must keep growing after the link returns.
+    let bytes_during_outage = wait_for_rtp_counter(&stack.topology, Duration::from_secs(10));
     stack.topology.set_client_server_link(true);
     // The media path must recover; the VP8 decoder legitimately may not resume
     // from the packet loss, so assert on the SFU's inbound byte counter rather
     // than on newly decoded frames.
     wait_for_rtp_resume(
         &stack.topology,
-        bytes_before_outage,
+        bytes_during_outage,
         Duration::from_secs(30),
     );
     let recovery = recovery.finish(Duration::from_secs(60));
