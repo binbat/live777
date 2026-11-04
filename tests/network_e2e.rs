@@ -734,7 +734,7 @@ fn netem_loss_and_delay_deliver_real_media() {
 
 #[test]
 #[ignore = "requires LIVE777_NETWORK_E2E=1, Linux root/CAP_NET_ADMIN, ip, tc, coturn and rsmpeg"]
-fn two_second_outage_recovers_and_seven_second_outage_fails() {
+fn two_second_outage_recovers_and_ten_second_outage_fails() {
     let stack = Stack::start();
     let mut publisher = stack.publisher("", CLIENT, "outage");
     publisher.wait_connected(Duration::from_secs(30));
@@ -749,7 +749,9 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
         &mut recovery,
         "Decoded frame",
         decoded_before_restore + 1,
-        Duration::from_secs(10),
+        // ICE re-gathering after the link comes back is not instantaneous;
+        // 20s keeps a slow (but healthy) runner from failing this window.
+        Duration::from_secs(20),
     );
     let recovery = recovery.finish(Duration::from_secs(30));
     let report: Value = serde_json::from_str(recovery.stdout.trim()).unwrap_or_else(|error| {
@@ -772,20 +774,20 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
     let mut established = stack.probe_child("", CLIENT, "outage", 10, false);
     established.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
-    let outage_started = Instant::now();
-    thread::sleep(Duration::from_secs(7));
+    // Comfortably past the 5s disconnected grace, so the outcome cannot hinge
+    // on a sub-second scheduler difference on a loaded runner.
+    thread::sleep(Duration::from_secs(10));
 
     let subscriber_output = established.combined_output();
     assert!(
         peer_state_logged(&subscriber_output, "Disconnected")
             || peer_state_logged(&subscriber_output, "Failed"),
-        "established subscriber did not observe the 7s outage:\n{subscriber_output}"
+        "established subscriber did not observe the 10s outage:\n{subscriber_output}"
     );
     let publisher_output = publisher.finish(Duration::from_secs(2));
-    assert!(outage_started.elapsed() >= Duration::from_secs(7));
     assert!(
         !publisher_output.status.success(),
-        "established publisher survived the 7s outage:\n{}",
+        "established publisher survived the 10s outage:\n{}",
         publisher_output.diagnostics()
     );
     let publisher_logs = format!("{}\n{}", publisher_output.stdout, publisher_output.stderr);

@@ -2,6 +2,7 @@ use std::{
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{OnceLock, mpsc},
     time::Duration,
 };
 
@@ -187,8 +188,7 @@ impl DecodeWorker {
             .stdout(Stdio::piped())
             // Protocol output is stdout only; diagnostics use the inherited
             // stderr, so no undrained pipe can block the child either.
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
+            .stderr(Stdio::inherit());
         let mut child = command
             .spawn()
             .with_context(|| format!("failed to spawn decode worker {}", path.display()))?;
@@ -360,6 +360,38 @@ impl DecodeWorker {
     }
 }
 
+/// A single long-lived thread reaps dropped workers. `Drop` runs on an async
+/// runtime thread, so it must not poll the kill: hand the child over and let
+/// this thread wait for it.
+static REAPER: OnceLock<Option<mpsc::Sender<Child>>> = OnceLock::new();
+
+fn reaper() -> Option<&'static mpsc::Sender<Child>> {
+    REAPER
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Child>();
+            std::thread::Builder::new()
+                .name("decode-worker-reaper".to_string())
+                .spawn(move || {
+                    while let Ok(mut child) = rx.recv() {
+                        let _ = child.start_kill();
+                        while let Ok(None) = child.try_wait() {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                    }
+                })
+                .ok()
+                .map(|_| tx)
+        })
+        .as_ref()
+}
+
+/// Fallback for the unlikely case where the reaper thread could not start.
+fn reap_blocking(mut child: Child) {
+    while let Ok(None) = child.try_wait() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 impl Drop for DecodeWorker {
     fn drop(&mut self) {
         self.stdin.take();
@@ -373,14 +405,13 @@ impl Drop for DecodeWorker {
                 let _ = child.start_kill();
             }
         }
-        // Drop cannot await. SIGKILL/TerminateProcess is not cooperative, so
-        // poll the direct child until the OS lets us reap it. Spawning a
-        // cleanup task here would merely detach the process we must not leak.
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(1)),
+        match reaper() {
+            Some(tx) => {
+                if let Err(error) = tx.send(child) {
+                    reap_blocking(error.0);
+                }
             }
+            None => reap_blocking(child),
         }
     }
 }
@@ -623,12 +654,20 @@ mod tests {
         }
 
         fn assert_killed_and_reaped(pid: u32) {
-            let status = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(!status.success(), "worker {pid} is still alive or a zombie");
+            // The reaper thread polls the killed child, so reaping is
+            // asynchronous with respect to `Drop`; give it a bounded window.
+            for _ in 0..200 {
+                let status = std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap();
+                if !status.success() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("worker {pid} is still alive or a zombie");
         }
 
         #[tokio::test]

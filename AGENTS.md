@@ -632,7 +632,9 @@ Integration test binaries live in `tests/`:
   `build` job in `.github/workflows/rust.yml` installs these dependencies and
   runs the ignored tests as root against its release/all-features build,
   preserving the Cargo/rustup and FFmpeg dynamic-library environment through
-  sudo; all other CI jobs and default local runs leave them ignored.
+  sudo; all other CI jobs and default local runs leave them ignored. They also
+  set `LIVE777_WEBRTC_DISABLE_MDNS=1` to skip mDNS candidate resolution in the
+  livetwo client peers (`utils::webrtc::setting_engine`).
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

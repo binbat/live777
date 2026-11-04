@@ -298,11 +298,10 @@ pub struct WhepBrowserPlayer {
     playwright_dir: Option<PathBuf>,
 }
 
-impl WhepBrowserPlayer {
-    /// Create a new subscriber for the given WHEP endpoint URL.
-    pub fn new(whep_url: impl Into<String>) -> Self {
+impl Default for WhepBrowserPlayer {
+    fn default() -> Self {
         Self {
-            subscribe_url: Some(whep_url.into()),
+            subscribe_url: None,
             publish_url: None,
             stream_id: None,
             mode: Mode::Subscribe,
@@ -319,25 +318,23 @@ impl WhepBrowserPlayer {
             playwright_dir: None,
         }
     }
+}
+
+impl WhepBrowserPlayer {
+    /// Create a new subscriber for the given WHEP endpoint URL.
+    pub fn new(whep_url: impl Into<String>) -> Self {
+        Self {
+            subscribe_url: Some(whep_url.into()),
+            ..Self::default()
+        }
+    }
 
     /// Create a new publisher for the given WHIP endpoint URL.
     pub fn publish(whip_url: impl Into<String>) -> Self {
         Self {
-            subscribe_url: None,
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Publish,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -349,19 +346,8 @@ impl WhepBrowserPlayer {
         Self {
             subscribe_url: Some(whep_url.into()),
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Both,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -727,6 +713,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncRead + Unpin,
 {
+    // Once stderr hits EOF, `next_line` resolves immediately on every poll.
+    // Keep polling it inside `select!` and the loop spins until stdout closes.
+    let mut stderr_open = true;
     loop {
         tokio::select! {
             line = stdout_lines.next_line() => {
@@ -741,14 +730,14 @@ where
                     Err(e) => return Err(anyhow!("Failed to read runner stdout: {e}")),
                 }
             }
-            line = stderr_lines.next_line() => {
+            line = stderr_lines.next_line(), if stderr_open => {
                 match line {
                     Ok(Some(line)) => {
                         if !line.trim().is_empty() {
                             warn!(target: "playwright-whep::runner::stderr", "{line}");
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => stderr_open = false,
                     Err(e) => return Err(anyhow!("Failed to read runner stderr: {e}")),
                 }
             }

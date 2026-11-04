@@ -11,51 +11,18 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 mod common;
-use common::shutdown_signal;
-
-static TRACING_INIT: Once = Once::new();
-
-fn init_test_environment() {
-    TRACING_INIT.call_once(|| {
-        // Both WebRTC peers run locally, in this process and in the spawned
-        // livewrk children (which inherit the variable). Pin ICE candidates
-        // to loopback so CI runners cannot choose an unroutable interface.
-        unsafe {
-            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
-        }
-
-        let filter = std::env::var("RUST_LOG")
-            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_test_writer()
-            .try_init();
-    });
-}
 
 /// Locate the livewrk binary built alongside this test run.
 fn livewrk_path() -> PathBuf {
-    // Cargo sets this for integration tests of the package that builds the
-    // binary; fall back to the conventional target directory layout.
-    option_env!("CARGO_BIN_EXE_livewrk").map_or_else(
-        || {
-            let mut path = std::env::current_exe().unwrap();
-            path.pop(); // deps/
-            path.pop(); // <profile>/
-            path.push("livewrk");
-            path
-        },
-        PathBuf::from,
-    )
+    crate::bin_path!("livewrk")
 }
 
 fn livewrk(args: &[&str]) -> Command {
@@ -157,17 +124,10 @@ impl SpawnedLivewrk {
     }
 }
 
-/// Start liveion on an ephemeral loopback port and return its address.
+/// Start liveion on an ephemeral loopback port with publisher override off, so
+/// a second WHIP publish on the same stream is rejected with 409.
 async fn start_liveion() -> SocketAddr {
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = vec!["*".to_string()].into();
-    cfg.strategy.override_publisher = false;
-    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
-    addr
+    common::start_liveion_with(None, |cfg| cfg.strategy.override_publisher = false).await
 }
 
 /// Wait until `stream_id` has a Connected publish session.
@@ -268,7 +228,6 @@ fn parse_json_report(stdout: &str, stderr: &str) -> serde_json::Value {
 /// checks long enough to drop publisher connections under load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whip_whep_publish_and_subscribe_with_verification() {
-    init_test_environment();
     let addr = start_liveion().await;
     let base = format!("http://{addr}");
 
@@ -530,7 +489,7 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
 /// Both subcommands exit non-zero when the server is unreachable.
 #[tokio::test]
 async fn whip_whep_fail_when_server_unreachable() {
-    init_test_environment();
+    common::init_test_environment();
     // Bind-then-drop hands us a loopback port that refuses connections, the
     // same trick `start_liveion` uses to find a free port.
     let port = {
@@ -604,7 +563,7 @@ async fn whip_whep_fail_when_server_unreachable() {
 /// Errors before session collection still produce the same JSON envelope.
 #[tokio::test]
 async fn whip_early_error_reports_json() {
-    init_test_environment();
+    common::init_test_environment();
     let output = tokio::time::timeout(
         Duration::from_secs(10),
         livewrk(&[

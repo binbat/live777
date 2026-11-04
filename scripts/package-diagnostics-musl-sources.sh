@@ -18,9 +18,9 @@ SOURCE_ARCHIVE=${DIST}/${SOURCE_STAGE}.tar.gz
 PROVENANCE=${WORK}/${BINARY_STAGE}/third-party/static-libraries.tsv
 SOURCE_COUNT=0
 
-sha256_file() {
-    sha256sum "$1" | awk '{print $1}'
-}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/diagnostics.sh
+source "${SCRIPT_DIR}/lib/diagnostics.sh"
 
 add_source() {
     local kind=$1
@@ -328,10 +328,6 @@ package_sources() {
     [[ -s ${SOURCE_ARCHIVE} ]] || { echo "Source archive is empty" >&2; return 1; }
     printf 'source_archive=%s\n' "${SOURCE_ARCHIVE}"
     printf 'source_sha256=%s\n' "$(sha256_file "${SOURCE_ARCHIVE}")"
-}
-
-manifest_value() {
-    awk -F '\t' -v key="$2" '$1 == key {sub(/^[^\t]*\t/, ""); print; exit}' "$1"
 }
 
 verify_sources() {

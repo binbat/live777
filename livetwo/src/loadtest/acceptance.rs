@@ -45,10 +45,12 @@ impl RunReport {
         let mut failures = Vec::new();
         let mut warnings = Vec::new();
 
-        if stats.sessions_connected == 0
+        // Reporting "all N sessions failed" and "N session(s) failed" for the
+        // same run only adds noise.
+        let all_failed = stats.sessions_connected == 0
             && stats.sessions_total > 0
-            && stats.sessions_cancelled < stats.sessions_total as u64
-        {
+            && stats.sessions_cancelled < stats.sessions_total as u64;
+        if all_failed {
             failures.push(format!(
                 "all {} loadtest session(s) failed",
                 stats.sessions_total
@@ -74,7 +76,7 @@ impl RunReport {
         }
 
         if criteria.fail_on_any_session {
-            if stats.sessions_failed > 0 {
+            if stats.sessions_failed > 0 && !all_failed {
                 failures.push(format!("{} session(s) failed", stats.sessions_failed));
             }
             if stats.sessions_aborted > 0 {
@@ -215,9 +217,21 @@ mod tests {
             },
             Case {
                 name: "all failed always fails",
-                stats: all_failed,
+                stats: all_failed.clone(),
                 verification: None,
                 criteria: AcceptanceCriteria::default(),
+                success: false,
+                failures: &["all 2 loadtest session(s) failed"],
+                warnings: &[],
+            },
+            Case {
+                name: "strict mode does not repeat the all-failed summary",
+                stats: all_failed,
+                verification: None,
+                criteria: AcceptanceCriteria {
+                    fail_on_any_session: true,
+                    ..Default::default()
+                },
                 success: false,
                 failures: &["all 2 loadtest session(s) failed"],
                 warnings: &[],

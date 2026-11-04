@@ -11,42 +11,6 @@ use tokio::process::{Child, Command};
 mod common;
 use common::shutdown_signal;
 
-macro_rules! bin_path {
-    ($name:literal) => {
-        option_env!(concat!("CARGO_BIN_EXE_", $name)).map_or_else(
-            || {
-                let mut path = std::env::current_exe().unwrap();
-                path.pop();
-                path.pop();
-                path.push($name);
-                path
-            },
-            PathBuf::from,
-        )
-    };
-}
-
-async fn start_liveion() -> SocketAddr {
-    start_liveion_with_auth(None).await
-}
-
-async fn start_liveion_with_auth(token: Option<&str>) -> SocketAddr {
-    unsafe {
-        std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
-    }
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let mut config = liveion::config::Config::default();
-    config.http.cors = vec!["*".to_string()].into();
-    if let Some(token) = token {
-        config.auth.tokens = vec![token.to_string()];
-    }
-    tokio::spawn(liveion::serve(config, listener, shutdown_signal()));
-    addr
-}
-
 async fn wait_for_publisher(
     addr: SocketAddr,
     stream: &str,
@@ -88,7 +52,7 @@ async fn start_publisher_with_codec(
     token: Option<&str>,
     codec: &str,
 ) -> Child {
-    let mut command = Command::new(bin_path!("whipsynth"));
+    let mut command = Command::new(crate::bin_path!("whipsynth"));
     command
         .args([
             "-v",
@@ -202,179 +166,30 @@ async fn start_auth_observing_proxy(
 }
 
 #[cfg(unix)]
-#[derive(Debug)]
-struct WatchdogProcess {
-    pid: i32,
-    ppid: i32,
-    pgid: i32,
-    state: String,
-}
-
-#[cfg(unix)]
-async fn watchdog_process_table() -> Result<Vec<WatchdogProcess>, String> {
-    let output = Command::new("ps")
-        .args(["-eo", "pid=,ppid=,pgid=,stat="])
-        .output()
-        .await
-        .map_err(|error| format!("failed to run ps: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "ps exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let stdout = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let mut columns = line.split_whitespace();
-            let mut number = |name: &str| {
-                columns
-                    .next()
-                    .and_then(|value| value.parse::<i32>().ok())
-                    .ok_or_else(|| format!("invalid {name} in ps output: {line}"))
-            };
-            let pid = number("PID")?;
-            let ppid = number("PPID")?;
-            let pgid = number("PGID")?;
-            let state = columns
-                .next()
-                .ok_or_else(|| format!("missing process state in ps output: {line}"))?
-                .to_string();
-            Ok(WatchdogProcess {
-                pid,
-                ppid,
-                pgid,
-                state,
-            })
-        })
-        .collect()
-}
-
-#[cfg(unix)]
 async fn terminate_whepwright_tree_unix(child_id: Option<u32>) -> String {
+    // `run_whepwright` makes the runner its own process-group leader, so a
+    // single group SIGKILL also takes down the browser processes it started.
+    // The library's `terminate_runner` keeps the exhaustive process-table
+    // walk; the test only needs to not leave a stuck run behind.
     let Some(child_id) = child_id else {
         return "whepwright PID was unavailable; process-tree cleanup was not possible".to_string();
     };
-    let root = match i32::try_from(child_id) {
-        Ok(root) => root,
-        Err(error) => return format!("invalid whepwright PID {child_id}: {error}"),
-    };
-    let table = match watchdog_process_table().await {
-        Ok(table) => table,
-        Err(error) => {
-            let target = format!("-{root}");
-            let kill = Command::new("kill")
-                .args(["-KILL", target.as_str()])
-                .output()
-                .await;
-            return format!(
-                "failed to enumerate whepwright descendants: {error}; root process-group kill result: {kill:?}"
-            );
-        }
-    };
-    if !table.iter().any(|process| process.pid == root) {
-        return format!("whepwright PID {root} was already absent from the process table");
-    }
-
-    let mut pids = std::collections::BTreeSet::from([root]);
-    loop {
-        let previous_len = pids.len();
-        for process in &table {
-            if pids.contains(&process.ppid) {
-                pids.insert(process.pid);
-            }
-        }
-        if pids.len() == previous_len {
-            break;
-        }
-    }
-    let process_groups: std::collections::BTreeMap<_, _> = table
-        .iter()
-        .filter(|process| pids.contains(&process.pid))
-        .map(|process| (process.pid, process.pgid))
-        .collect();
-    let mut groups = std::collections::BTreeSet::new();
-    for pgid in process_groups
-        .values()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
+    let target = format!("-{child_id}");
+    match Command::new("kill")
+        .args(["-KILL", target.as_str()])
+        .output()
+        .await
     {
-        if pids.contains(&pgid)
-            && table
-                .iter()
-                .filter(|process| process.pgid == pgid)
-                .all(|process| pids.contains(&process.pid))
-        {
-            groups.insert(pgid);
+        Ok(output) if output.status.success() => {
+            format!("killed the whepwright process group {child_id}")
         }
+        Ok(output) => format!(
+            "kill {target} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => format!("failed to run kill {target}: {error}"),
     }
-    let individual_pids: std::collections::BTreeSet<_> = process_groups
-        .into_iter()
-        .filter_map(|(pid, pgid)| (!groups.contains(&pgid)).then_some(pid))
-        .collect();
-
-    let mut failures = Vec::new();
-    for target in groups
-        .iter()
-        .map(|pgid| -pgid)
-        .chain(individual_pids.iter().copied())
-    {
-        let target = target.to_string();
-        match Command::new("kill")
-            .args(["-KILL", target.as_str()])
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => failures.push(format!(
-                "kill {target} exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(error) => failures.push(format!("failed to run kill {target}: {error}")),
-        }
-    }
-
-    let mut survivors = Vec::new();
-    let mut verification_error = None;
-    for attempt in 0..10 {
-        match watchdog_process_table().await {
-            Ok(table) => {
-                survivors = table
-                    .into_iter()
-                    .filter(|process| {
-                        pids.contains(&process.pid) && !process.state.starts_with(['Z', 'X'])
-                    })
-                    .map(|process| process.pid)
-                    .collect();
-                verification_error = None;
-            }
-            Err(error) => verification_error = Some(error),
-        }
-        if survivors.is_empty() || attempt == 9 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let mut details = vec![format!(
-        "watchdog targeted {} process groups and {} individual processes with SIGKILL",
-        groups.len(),
-        individual_pids.len()
-    )];
-    details.extend(failures);
-    if let Some(error) = verification_error {
-        details.push(format!("failed to verify process-tree cleanup: {error}"));
-    } else if survivors.is_empty() {
-        details.push("no processes from the watchdog snapshot remain alive".to_string());
-    } else {
-        details.push(format!(
-            "watchdog snapshot processes still alive after SIGKILL: {survivors:?}"
-        ));
-    }
-    details.join("; ")
 }
 
 #[cfg(windows)]
@@ -411,7 +226,7 @@ async fn terminate_timed_out_whepwright(child_id: Option<u32>) -> String {
 }
 
 async fn run_whepwright(args: &[&str]) -> Output {
-    let mut command = Command::new(bin_path!("whepwright"));
+    let mut command = Command::new(crate::bin_path!("whepwright"));
     command
         .args(args)
         .stdout(Stdio::piped())
@@ -452,7 +267,7 @@ fn artifact_path<'a>(report: &'a serde_json::Value, name: &str) -> &'a Path {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn success_emits_pure_json_and_cleans_diagnostics() {
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let stream = format!("whepwright-success-{}", std::process::id());
     let mut publisher = start_publisher(addr, &stream, None).await;
 
@@ -491,7 +306,7 @@ async fn success_emits_pure_json_and_cleans_diagnostics() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn auth_token_is_present_on_first_whep_request_and_redacted() {
     let token = "whepwright-liveion-auth-secret";
-    let addr = start_liveion_with_auth(Some(token)).await;
+    let addr = common::start_liveion(Some(token)).await;
     let unauthorized = reqwest::get(format!("http://{addr}{}", api::path::streams("")))
         .await
         .unwrap();
@@ -549,7 +364,7 @@ async fn auth_token_is_present_on_first_whep_request_and_redacted() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failure_retains_diagnostics_and_trace() {
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let temp = tempfile::tempdir().unwrap();
     let diagnostics = temp.path().join("diagnostics");
     let output = run_whepwright(&[
@@ -610,7 +425,7 @@ async fn failure_retains_diagnostics_and_trace() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failure_redacts_url_token_from_console_and_sdp_ice() {
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let temp = tempfile::tempdir().unwrap();
     let diagnostics = temp.path().join("diagnostics");
     let token = "whepwright-test-secret";

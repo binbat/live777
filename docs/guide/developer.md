@@ -204,3 +204,8 @@ These tests are ignored by default and never use public ICE servers. They
 create and remove their own network namespaces and veth pairs; they do not
 change the host firewall, default route or loopback interface.
 
+The tests also set `LIVE777_WEBRTC_DISABLE_MDNS=1`, which makes the livetwo
+peer `SettingEngine` skip mDNS candidate resolution. It affects only the client
+peers livetwo creates (`livetwo::utils::webrtc::setting_engine`); unset keeps
+the default mDNS behaviour.
+

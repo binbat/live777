@@ -46,7 +46,18 @@ pub async fn run(
     ct: CancellationToken,
 ) -> Result<LoadtestStats> {
     let stats = collect(config, publisher_config, ct).await?;
-    super::ensure_legacy_success(&stats)?;
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled < stats.sessions_total as u64
+    {
+        anyhow::bail!("all {} loadtest session(s) failed", stats.sessions_total);
+    }
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled == stats.sessions_total as u64
+    {
+        tracing::warn!("all sessions were cancelled before connecting; no traffic flowed");
+    }
     Ok(stats)
 }
 

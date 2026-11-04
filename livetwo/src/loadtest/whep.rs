@@ -83,17 +83,6 @@ pub struct VerifyStats {
     pub last_error: Option<String>,
 }
 
-/// Run subscribers with the original all-failed error contract.
-pub async fn run(
-    config: &LoadtestConfig,
-    params: WhepLoadParams,
-    ct: CancellationToken,
-) -> Result<(LoadtestStats, Option<VerifyStats>)> {
-    let (stats, verification) = collect(config, params, ct).await?;
-    super::ensure_legacy_success(&stats)?;
-    Ok((stats, verification))
-}
-
 /// Collect subscriber and optional verifier stats without applying acceptance
 /// rules, so callers can report even an all-failed run.
 pub async fn collect(
