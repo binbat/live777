@@ -49,8 +49,8 @@ quality ladder (source quality tiers, first shipped in
 [stream.pi-cam.sources.capture]
 backend = "libcamera"
 device = "0"
-width = 1296        # OV5647 native 2x2-binned mode: full field of view
-height = 972
+width = 1920        # OV5647 cropped mode: up to 32.81 fps
+height = 1080
 fps = 30
 pixel_format = "yuv420"
 prefer_dmabuf = true  # DMA-BUF zero-copy capture → encode (optional)
@@ -60,7 +60,7 @@ prefer_dmabuf = true  # DMA-BUF zero-copy capture → encode (optional)
 [stream.pi-cam.sources.encoder]
 backend = "v4l2-m2m"
 codec = "h264"
-bitrate = 2000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
+bitrate = 3000000   # ceiling — adaptive bitrate (AIMD) only lowers from here
 profile = "baseline"
 level = "4.0"
 gop = 60            # keyframe interval in frames; longer GOPs save bandwidth,
@@ -77,13 +77,13 @@ clock_rate = 90000
 # tier retunes in place. An omitted encoder.bitrate is derived from the
 # tier's geometry (~0.07 bpp).
 [[stream.pi-cam.sources.tiers]]
-name = "std"
-capture = { width = 1296, height = 972, fps = 30 }
-encoder = { bitrate = 2000000 }
-[[stream.pi-cam.sources.tiers]]
 name = "maxres"
-capture = { width = 1920, height = 1080, fps = 20 }
+capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
+[[stream.pi-cam.sources.tiers]]
+name = "fullview"
+capture = { width = 1296, height = 972, fps = 50 }
+encoder = { bitrate = 2000000 }
 [[stream.pi-cam.sources.tiers]]
 name = "lowlatency"
 capture = { width = 640, height = 480, fps = 60 }
@@ -97,6 +97,10 @@ name = "lowbwtiny"
 capture = { width = 320, height = 240, fps = 10 }
 encoder = { bitrate = 150000 }
 ```
+
+Although `fullview` requests 50 fps, the OV5647 caps its 1296x972 mode at
+about 46.34 fps; a short hardware run measured about 46–48 fps with no
+dropped frames.
 
 Adaptive bitrate is on by default: an AIMD controller follows WHEP
 subscriber RTCP feedback and retunes the running encoder, with the active
