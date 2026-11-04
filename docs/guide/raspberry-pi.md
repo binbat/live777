@@ -85,6 +85,10 @@ name = "maxres"
 capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
 [[stream.pi-cam.sources.tiers]]
+name = "highfps"
+capture = { width = 1296, height = 972, fps = 50 }
+encoder = { bitrate = 2000000 }
+[[stream.pi-cam.sources.tiers]]
 name = "lowlatency"
 capture = { width = 640, height = 480, fps = 60 }
 encoder = { bitrate = 1000000 }
@@ -97,6 +101,10 @@ name = "lowbwtiny"
 capture = { width = 320, height = 240, fps = 10 }
 encoder = { bitrate = 150000 }
 ```
+
+Although `highfps` requests 50 fps, the OV5647 caps its 1296x972 mode at
+about 46.34 fps; a short hardware run measured about 46–48 fps with no
+dropped frames.
 
 Adaptive bitrate is on by default: an AIMD controller follows WHEP
 subscriber RTCP feedback and retunes the running encoder, with the active

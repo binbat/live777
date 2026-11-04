@@ -138,8 +138,8 @@ ice_udp_addrs = ["auto"]
 # [stream.pi-cam.sources.capture]
 # backend = "libcamera"
 # device = "0"
-# width = 1296
-# height = 972
+# width = 1920
+# height = 1080
 # fps = 30
 # pixel_format = "yuv420"
 # [stream.pi-cam.sources.encoder]
@@ -160,7 +160,7 @@ ice_udp_addrs = ["auto"]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Five-rung quality ladder (tested on OV5647), switchable at runtime via
+# Six-rung quality ladder (tested on OV5647), switchable at runtime via
 # POST /api/sources/pi-cam/tier {"tier": "maxres"} or the WebUI.
 # A tier is a named preset of source parameters: the capture block
 # overrides capture params (rebuilds the pipeline, brief frame gap), the
@@ -170,26 +170,26 @@ ice_udp_addrs = ["auto"]
 # becomes the AIMD's new ceiling — it keeps following network conditions
 # within the rung.
 #
-# The 1296x972 boot is the OV5647's native 2x2-binned mode — full field
-# of view and better low-light SNR than a 720p crop, at an encode cost
-# indistinguishable from 720p30 (~33.4 vs ~33.3 ms measured, both
-# realtime with zero headroom).  Encoder throughput on a Pi Zero 2 W is
-# ~21 fps at 1080p and ~60 fps at 480p — every rung below stays inside
-# that budget:
-# - std/maxres trade fps for pixels,
-# - lowlatency trades pixels for fps (60 fps exists only at 640x480 on
-#   the OV5647: its 16:9 sibling 1280x720@60 overruns the encoder, and
-#   ISP-cropped 640x360 is clamped to 33 fps by sensor mode selection),
-# - lowbw* rungs cut the frame rate to 10 fps for very slow links.
+# The 1920x1080 boot and std/maxres rungs use the OV5647's cropped mode
+# at 30 fps, within the bcm2835 H.264 encoder's 1080p30 ceiling; std and
+# maxres differ only in bitrate. highfps selects the full-field-of-view
+# 2x2-binned 1296x972 mode at a requested 50 fps. The sensor caps that
+# mode at about 46.34 fps (about 46–48 fps measured with no dropped frames).
+# lowlatency trades pixels for 60 fps at 640x480, while lowbw* rungs cut
+# the frame rate to 10 fps for very slow links.
 #
 # [[stream.pi-cam.sources.tiers]]
 # name = "std"
-# capture = { width = 1296, height = 972, fps = 30 }
+# capture = { width = 1920, height = 1080, fps = 30 }
 # encoder = { bitrate = 2000000 }
 # [[stream.pi-cam.sources.tiers]]
 # name = "maxres"
-# capture = { width = 1920, height = 1080, fps = 20 }
+# capture = { width = 1920, height = 1080, fps = 30 }
 # encoder = { bitrate = 3000000 }
+# [[stream.pi-cam.sources.tiers]]
+# name = "highfps"
+# capture = { width = 1296, height = 972, fps = 50 }
+# encoder = { bitrate = 2000000 }
 # [[stream.pi-cam.sources.tiers]]
 # name = "lowlatency"
 # capture = { width = 640, height = 480, fps = 60 }
@@ -203,8 +203,7 @@ ice_udp_addrs = ["auto"]
 # capture = { width = 320, height = 240, fps = 10 }
 # encoder = { bitrate = 150000 }
 # Note: the OV5647's full 2592x1944 mode is capture-only territory —
-# the bcm2835 H.264 encoder tops out at 1080p, so 1080p20 is the top
-# rung here.
+# the bcm2835 H.264 encoder tops out at 1080p30.
 #
 # Raspberry Pi USB camera:
 #   cargo build --bin live777 --release --no-default-features --features native-rpi,webui

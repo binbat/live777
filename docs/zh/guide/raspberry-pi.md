@@ -71,6 +71,10 @@ name = "maxres"
 capture = { width = 1920, height = 1080, fps = 30 }
 encoder = { bitrate = 3000000 }
 [[stream.pi-cam.sources.tiers]]
+name = "highfps"
+capture = { width = 1296, height = 972, fps = 50 }
+encoder = { bitrate = 2000000 }
+[[stream.pi-cam.sources.tiers]]
 name = "lowlatency"
 capture = { width = 640, height = 480, fps = 60 }
 encoder = { bitrate = 1000000 }
@@ -83,6 +87,9 @@ name = "lowbwtiny"
 capture = { width = 320, height = 240, fps = 10 }
 encoder = { bitrate = 150000 }
 ```
+
+`highfps` 虽然请求 50 fps，但 OV5647 在 1296×972 模式下的上限约为
+46.34 fps；短时硬件实测约为 46–48 fps，未出现丢帧。
 
 自适应码率默认开启：AIMD 控制器跟随 WHEP 订阅者的 RTCP 反馈实时调整编码器，当前档位码率为上限、最低档为下限。语义详见
 [livehal](./livehal.md#adaptive-bitrate)。
