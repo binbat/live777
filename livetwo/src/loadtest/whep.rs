@@ -77,6 +77,9 @@ pub struct VerifyStats {
     pub sessions_covered: BTreeSet<usize>,
     /// Sessions with at least one failed window.
     pub sessions_failed: BTreeSet<usize>,
+    /// Verification was disabled because this build cannot decode the codec.
+    #[serde(skip)]
+    pub unsupported: bool,
     /// Why verification produced no windows (e.g. an unsupported codec).
     pub note: Option<String>,
     /// Error of the most recent failed window.
@@ -521,6 +524,7 @@ async fn run_verifier(
 
     if !crate::probe::decoder::supports_mime(&mime) {
         tracing::warn!(%mime, "decode verifier does not support this codec, verification disabled");
+        stats.unsupported = true;
         stats.note = Some(format!(
             "codec {mime} is not supported by the decode verifier"
         ));
@@ -876,6 +880,40 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
         assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, None);
+    }
+
+    #[cfg(feature = "rsmpeg")]
+    #[tokio::test]
+    async fn unsupported_codec_disables_verification_without_failed_windows() {
+        let (_verify_tx, verify_rx) = mpsc::channel(1);
+        let (target_tx, _target_rx) = watch::channel(None);
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+        let (_mime_tx, mime_rx) = watch::channel(Some("video/x-unknown".to_string()));
+        let stats = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_verifier(
+                verify_rx,
+                target_tx,
+                active,
+                mime_rx,
+                Duration::from_millis(1),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("unsupported codec did not disable verification");
+
+        assert!(stats.unsupported);
+        assert_eq!(stats.windows_total, 0);
+        assert_eq!(stats.windows_failed, 0);
+        assert!(stats.last_error.is_none());
+        assert!(
+            stats
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("video/x-unknown")),
+            "{stats:?}"
+        );
     }
 
     #[cfg(feature = "rsmpeg")]

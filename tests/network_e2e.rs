@@ -754,10 +754,11 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
 
     let mut recovery = stack.probe_child("", CLIENT, "outage", 90, true);
     recovery.wait_connected(Duration::from_secs(20));
-    let output = recovery.combined_output();
-    assert!(
-        log_count(&output, "Received RTP packet") > 0,
-        "probe received no RTP before the outage:\n{output}"
+    wait_for_log_count(
+        &mut recovery,
+        "Received RTP packet",
+        1,
+        Duration::from_secs(30),
     );
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));

@@ -106,7 +106,15 @@ impl RunReport {
         }
 
         if criteria.verification_requested {
+            if let Some(note) = verification
+                .as_ref()
+                .filter(|verify| verify.unsupported)
+                .and_then(|verify| verify.note.clone())
+            {
+                warnings.push(note);
+            }
             let verification_failure = match &verification {
+                Some(verify) if verify.unsupported => None,
                 Some(verify) if verify.windows_total == 0 => {
                     Some("verification enabled but no full decode window completed".to_string())
                 }
@@ -363,6 +371,21 @@ mod tests {
                 success: false,
                 failures: &["verification enabled but no full decode window completed"],
                 warnings: &[],
+            },
+            Case {
+                name: "unsupported verification codec remains successful",
+                stats: healthy.clone(),
+                verification: Some(VerifyStats {
+                    unsupported: true,
+                    note: Some(
+                        "codec video/x-unknown is not supported by the decode verifier".to_string(),
+                    ),
+                    ..Default::default()
+                }),
+                criteria: verification_required,
+                success: true,
+                failures: &[],
+                warnings: &["codec video/x-unknown is not supported by the decode verifier"],
             },
             Case {
                 name: "tolerant missing verifier result",
