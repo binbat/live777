@@ -740,9 +740,10 @@ carries the check.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
   `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
   (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.
-  After deployment, `.github/workflows/docs.yml` runs `llms-txt-check`
-  (`docs/scripts/llms-txt-check.sh`) against the deployed URL; it can also be
-  dispatched manually with a base URL.
+  Pushes to `test` and version tags run `.github/workflows/docs.yml`, which
+  checks `llms.txt` and key pages on `https://live777.pages.dev` with
+  `docs/scripts/llms-txt-check.sh`; the check polls until the deployment is
+  ready.
 
 ## Useful Local Recipes (justfile)
 

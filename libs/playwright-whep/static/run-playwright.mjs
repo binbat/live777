@@ -416,6 +416,12 @@ async function main() {
         }
         if (artifacts.retained && page) {
             await capture("screenshot", async () => {
+                const visibleText = await page.locator("body").innerText();
+                if (params.token && visibleText.includes(params.token)) {
+                    throw new Error(
+                        "refusing to capture a screenshot containing the authentication token",
+                    );
+                }
                 const file = artifactPath("screenshot.png");
                 await page.screenshot({ path: file, fullPage: true });
                 artifacts.screenshot = file;

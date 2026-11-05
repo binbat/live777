@@ -270,7 +270,10 @@ struct ChildGuard {
 
 impl ChildGuard {
     fn spawn(label: impl Into<String>, command: &mut Command) -> Self {
+        use std::os::unix::process::CommandExt;
+
         let label = label.into();
+        command.process_group(0);
         let mut child = command
             .spawn()
             .unwrap_or_else(|error| panic!("spawn {label}: {error}; command: {command:?}"));
@@ -287,6 +290,16 @@ impl ChildGuard {
             stderr,
             drains,
         }
+    }
+
+    fn kill(&mut self) {
+        let group = format!("-{}", self.child.id());
+        let _ = Command::new("kill")
+            .args(["-KILL", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = self.child.kill();
     }
 
     fn output(&self) -> (String, String) {
@@ -333,7 +346,7 @@ impl ChildGuard {
                 break status;
             }
             if Instant::now() >= deadline {
-                let _ = self.child.kill();
+                self.kill();
                 let status = self.child.wait().unwrap();
                 panic!(
                     "{} did not exit within {timeout:?}; status={status}:\n{}",
@@ -343,6 +356,8 @@ impl ChildGuard {
             }
             thread::sleep(Duration::from_millis(50));
         };
+        self.kill();
+        let _ = self.child.wait();
         self.join_drains();
         Completed {
             status,
@@ -360,9 +375,7 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-        }
+        self.kill();
         let _ = self.child.wait();
         self.join_drains();
     }
@@ -806,7 +819,34 @@ fn two_second_outage_recovers_and_ten_second_outage_fails() {
 
 #[cfg(test)]
 mod tests {
-    use super::peer_state_logged;
+    use super::{ChildGuard, peer_state_logged};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn child_guard_kills_descendants_before_joining_drains() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 60 & echo descendant-ready; wait"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = ChildGuard::spawn("process-group-test", &mut command);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !child.combined_output().contains("descendant-ready") {
+            assert!(Instant::now() < deadline, "descendant did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.finish(Duration::from_millis(1));
+        }));
+        assert!(result.is_err(), "timeout did not fire");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "process cleanup remained blocked on inherited output pipes"
+        );
+    }
 
     #[test]
     fn peer_state_matching_is_case_insensitive() {

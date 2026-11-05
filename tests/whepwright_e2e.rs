@@ -458,6 +458,8 @@ async fn failure_redacts_url_token_from_console_and_sdp_ice() {
     assert!(run_directory.starts_with(&diagnostics));
     assert!(run_directory.is_dir());
     assert!(!run_directory.join("trace.zip").exists());
+    let screenshot = std::fs::read(artifact_path(&report, "screenshot")).unwrap();
+    assert!(screenshot.starts_with(b"\x89PNG\r\n\x1a\n"));
     let console = std::fs::read_to_string(artifact_path(&report, "console_log")).unwrap();
     assert!(console.contains("Starting WHEP subscribe:"));
     assert!(

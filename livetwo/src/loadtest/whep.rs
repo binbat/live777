@@ -545,6 +545,19 @@ async fn run_verifier(
 
         match decode_window(&mime, &mut verify_rx, index, window, &ct).await {
             WindowOutcome::Cancelled => break,
+            WindowOutcome::WorkerStartFailed(error) => {
+                stats.windows_total += 1;
+                stats.sessions_covered.insert(index);
+                stats.windows_failed += 1;
+                stats.sessions_failed.insert(index);
+                stats.last_error = Some(format!("session {index}: {error:#}"));
+                tracing::warn!(
+                    session = index,
+                    error = ?error,
+                    "decode worker start failed; stopping verifier"
+                );
+                break;
+            }
             WindowOutcome::Done(result) => {
                 stats.windows_total += 1;
                 stats.sessions_covered.insert(index);
@@ -611,6 +624,9 @@ enum WindowOutcome {
     /// Shutdown or the end of all sessions cut the window short; it is not
     /// recorded in the stats.
     Cancelled,
+    /// The worker could not be located, spawned or initialized. Retrying it in
+    /// a tight loop would only produce failures and process churn.
+    WorkerStartFailed(anyhow::Error),
     /// The window ran its course (or the decoder died on its own); carries
     /// the decoder result `(width, height, frames)`.
     Done(Result<(u32, u32, u32)>),
@@ -657,7 +673,7 @@ async fn decode_window(
     {
         Ok(worker) => worker,
         Err(_) if ct.is_cancelled() => return WindowOutcome::Cancelled,
-        Err(error) => return WindowOutcome::Done(Err(error)),
+        Err(error) => return WindowOutcome::WorkerStartFailed(error),
     };
 
     // The deadline is absolute and shared with sends: a per-iteration sleep or
@@ -860,6 +876,53 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
         assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, None);
+    }
+
+    #[cfg(feature = "rsmpeg")]
+    #[tokio::test]
+    async fn worker_start_failure_stops_verifier_without_spinning() {
+        static WORKER_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        let _lock = WORKER_ENV_LOCK.lock().await;
+        let previous = std::env::var_os("LIVE777_WHEPPROBE_BIN");
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing-whepprobe");
+        unsafe {
+            std::env::set_var("LIVE777_WHEPPROBE_BIN", missing);
+        }
+
+        let (_verify_tx, verify_rx) = mpsc::channel(1);
+        let (target_tx, _target_rx) = watch::channel(None);
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::from([0])));
+        let (_mime_tx, mime_rx) = watch::channel(Some("video/vp8".to_string()));
+        let stats = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_verifier(
+                verify_rx,
+                target_tx,
+                active,
+                mime_rx,
+                Duration::from_millis(1),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("verifier retried a permanent worker startup error");
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("LIVE777_WHEPPROBE_BIN", value) },
+            None => unsafe { std::env::remove_var("LIVE777_WHEPPROBE_BIN") },
+        }
+        assert_eq!(stats.windows_total, 1);
+        assert_eq!(stats.windows_failed, 1);
+        assert_eq!(stats.sessions_failed, BTreeSet::from([0]));
+        assert!(
+            stats
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("failed to spawn decode worker")),
+            "{stats:?}"
+        );
     }
 
     #[tokio::test]

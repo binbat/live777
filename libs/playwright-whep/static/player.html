@@ -35,8 +35,17 @@
     <div id="log"></div>
     <script>
       const logEl = document.getElementById("log");
+      function redactLogMessage(value) {
+        const token = window.__LIVE777_TOKEN__ || "";
+        let message = String(value);
+        if (token) message = message.split(token).join("[REDACTED]");
+        return message.replace(
+          /([?&](?:token|access_token)=)[^&#\s]*/gi,
+          "$1[REDACTED]",
+        );
+      }
       function log(msg) {
-        const line = `[${new Date().toISOString()}] ${msg}`;
+        const line = `[${new Date().toISOString()}] ${redactLogMessage(msg)}`;
         console.log(line);
         logEl.textContent += `${line}\n`;
       }
