@@ -34,12 +34,12 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader, Lines};
 use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -191,6 +191,16 @@ pub enum HarnessResult {
     Publish(WhipPublishResult),
 }
 
+impl HarnessResult {
+    fn success(&self) -> bool {
+        match self {
+            Self::Both(result) => result.success,
+            Self::Subscribe(result) => result.success,
+            Self::Publish(result) => result.success,
+        }
+    }
+}
+
 /// Envelope returned by the Node.js Playwright runner.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,6 +209,70 @@ pub struct RunnerOutput<T> {
     pub mode: String,
     /// Typed result for that mode.
     pub result: T,
+}
+
+#[derive(Deserialize)]
+struct RunnerDiagnostics {
+    #[serde(default)]
+    artifacts: Option<DiagnosticArtifacts>,
+}
+
+/// Options for one browser diagnostics capture.
+#[derive(Debug, Clone)]
+pub struct DiagnosticsOptions {
+    /// Empty directory dedicated to this run.
+    pub directory: PathBuf,
+    /// Also retain a Playwright trace on failure.
+    pub trace: bool,
+}
+
+/// Paths and capture errors associated with a diagnostics directory.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DiagnosticArtifacts {
+    pub directory: PathBuf,
+    pub retained: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console_log: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdp_ice: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_errors: Vec<String>,
+}
+
+impl DiagnosticArtifacts {
+    /// Describe artifacts left in `directory` after an early runner failure.
+    pub async fn discover(directory: PathBuf) -> Self {
+        async fn existing(path: PathBuf) -> Option<PathBuf> {
+            tokio::fs::metadata(&path).await.ok().map(|_| path)
+        }
+
+        let retained = tokio::fs::metadata(&directory).await.is_ok();
+        let capture_errors = tokio::fs::read(directory.join("capture-errors.json"))
+            .await
+            .ok()
+            .and_then(|content| serde_json::from_slice(&content).ok())
+            .unwrap_or_default();
+        Self {
+            screenshot: existing(directory.join("screenshot.png")).await,
+            console_log: existing(directory.join("console.log")).await,
+            sdp_ice: existing(directory.join("sdp-ice.json")).await,
+            trace: existing(directory.join("trace.zip")).await,
+            directory,
+            retained,
+            capture_errors,
+        }
+    }
+}
+
+/// A harness result together with its diagnostics metadata.
+#[derive(Debug, Clone)]
+pub struct HarnessRun {
+    pub result: HarnessResult,
+    pub artifacts: DiagnosticArtifacts,
 }
 
 /// Builder for a browser-based WebRTC test harness.
@@ -224,11 +298,10 @@ pub struct WhepBrowserPlayer {
     playwright_dir: Option<PathBuf>,
 }
 
-impl WhepBrowserPlayer {
-    /// Create a new subscriber for the given WHEP endpoint URL.
-    pub fn new(whep_url: impl Into<String>) -> Self {
+impl Default for WhepBrowserPlayer {
+    fn default() -> Self {
         Self {
-            subscribe_url: Some(whep_url.into()),
+            subscribe_url: None,
             publish_url: None,
             stream_id: None,
             mode: Mode::Subscribe,
@@ -245,25 +318,23 @@ impl WhepBrowserPlayer {
             playwright_dir: None,
         }
     }
+}
+
+impl WhepBrowserPlayer {
+    /// Create a new subscriber for the given WHEP endpoint URL.
+    pub fn new(whep_url: impl Into<String>) -> Self {
+        Self {
+            subscribe_url: Some(whep_url.into()),
+            ..Self::default()
+        }
+    }
 
     /// Create a new publisher for the given WHIP endpoint URL.
     pub fn publish(whip_url: impl Into<String>) -> Self {
         Self {
-            subscribe_url: None,
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Publish,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -275,19 +346,8 @@ impl WhepBrowserPlayer {
         Self {
             subscribe_url: Some(whep_url.into()),
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Both,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -381,6 +441,46 @@ impl WhepBrowserPlayer {
 
     /// Launch the browser, perform the requested WebRTC flow, and return the result.
     pub async fn play(self) -> Result<HarnessResult> {
+        self.play_inner(None).await.map(|run| run.result)
+    }
+
+    /// Run the harness and retain diagnostics in `options.directory` on failure.
+    /// The directory must not already exist. A successful run removes only the
+    /// directory atomically created by this call.
+    pub async fn play_with_diagnostics(self, options: DiagnosticsOptions) -> Result<HarnessRun> {
+        if options.trace && self.token.is_some() {
+            return Err(anyhow!(
+                "Playwright traces may contain authentication tokens; --trace cannot be used with a token"
+            ));
+        }
+        let mut options = options;
+        if options.directory.is_relative() {
+            options.directory = std::env::current_dir()
+                .context("Failed to resolve diagnostics directory against the current directory")?
+                .join(&options.directory);
+        }
+        if let Some(parent) = options.directory.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create diagnostics parent directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        tokio::fs::create_dir(&options.directory)
+            .await
+            .with_context(|| {
+                format!(
+                    "Diagnostics directory must not already exist: {}",
+                    options.directory.display()
+                )
+            })?;
+        self.play_inner(Some(options)).await
+    }
+
+    async fn play_inner(self, diagnostics: Option<DiagnosticsOptions>) -> Result<HarnessRun> {
         let playwright_dir = self
             .playwright_dir
             .clone()
@@ -433,6 +533,8 @@ impl WhepBrowserPlayer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&playwright_dir);
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         if let Some(url) = &self.subscribe_url {
             cmd.arg("--whep-url").arg(url);
@@ -458,8 +560,13 @@ impl WhepBrowserPlayer {
         if let Some(channel) = &self.channel {
             cmd.arg("--channel").arg(channel);
         }
+        if let Some(options) = &diagnostics {
+            cmd.arg("--diagnostics-dir").arg(&options.directory);
+            cmd.arg("--trace")
+                .arg(if options.trace { "true" } else { "false" });
+        }
 
-        debug!(?cmd, "Spawning Playwright runner");
+        debug!(browser = ?self.browser, "Spawning Playwright runner");
 
         let mut child = cmd.spawn().context("Failed to spawn Playwright runner")?;
         let stdout = child
@@ -480,49 +587,35 @@ impl WhepBrowserPlayer {
 
         let child_id = child.id();
 
-        let wait_fut = async {
-            loop {
-                tokio::select! {
-                    line = stdout_lines.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                debug!(target: "playwright-whep::runner::stdout", "{line}");
-                                if !line.trim().is_empty() {
-                                    last_stdout_line = line;
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(e) => return Err(anyhow!("Failed to read runner stdout: {e}")),
-                        }
-                    }
-                    line = stderr_lines.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                if !line.trim().is_empty() {
-                                    warn!(target: "playwright-whep::runner::stderr", "{line}");
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => return Err(anyhow!("Failed to read runner stderr: {e}")),
-                        }
-                    }
-                }
-            }
-
-            let status = child.wait().await.context("Failed to wait for runner")?;
-            Ok::<_, anyhow::Error>(status)
-        };
-
         let total_timeout = self.timeout + Duration::from_secs(15);
-        let status = match timeout(total_timeout, wait_fut).await {
+        let status = match timeout(
+            total_timeout,
+            wait_for_runner(
+                &mut child,
+                &mut stdout_lines,
+                &mut stderr_lines,
+                &mut last_stdout_line,
+            ),
+        )
+        .await
+        {
             Ok(Ok(status)) => status,
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                graceful_kill_child(child_id, &mut child).await;
-                return Err(anyhow!(
-                    "Playwright runner timed out after {:?}",
-                    total_timeout
-                ));
+                let cleanup = terminate_runner(
+                    child_id,
+                    &mut child,
+                    &mut stdout_lines,
+                    &mut stderr_lines,
+                    &mut last_stdout_line,
+                )
+                .await;
+                let message =
+                    format!("Playwright runner timed out after {total_timeout:?}; {cleanup}");
+                if let Some(options) = &diagnostics {
+                    record_capture_error(&options.directory, &message).await;
+                }
+                return Err(anyhow!(message));
             }
         };
 
@@ -561,9 +654,45 @@ impl WhepBrowserPlayer {
                 HarnessResult::Both(out.result)
             }
         };
+        let runner_diagnostics: RunnerDiagnostics = serde_json::from_str(&last_stdout_line)
+            .with_context(|| format!("Failed to parse runner output: {last_stdout_line}"))?;
+        let mut artifacts = runner_diagnostics.artifacts.unwrap_or_default();
 
-        Ok(result)
+        if let Some(options) = diagnostics {
+            artifacts.directory = options.directory.clone();
+            if result.success() {
+                match tokio::fs::remove_dir_all(&options.directory).await {
+                    Ok(()) => artifacts.retained = false,
+                    Err(error) => {
+                        artifacts.retained = true;
+                        artifacts.capture_errors.push(format!(
+                            "failed to clean diagnostics directory {}: {error}",
+                            options.directory.display()
+                        ));
+                    }
+                }
+            } else {
+                artifacts.retained = true;
+            }
+        }
+
+        Ok(HarnessRun { result, artifacts })
     }
+}
+
+async fn record_capture_error(directory: &Path, message: &str) {
+    let path = directory.join("capture-errors.json");
+    let mut errors: Vec<String> = tokio::fs::read(&path)
+        .await
+        .ok()
+        .and_then(|content| serde_json::from_slice(&content).ok())
+        .unwrap_or_default();
+    errors.push(message.to_string());
+    let _ = tokio::fs::write(
+        path,
+        format!("{}\n", serde_json::to_string_pretty(&errors).unwrap()),
+    )
+    .await;
 }
 
 async fn write_asset(dir: &Path, name: &str, content: &str) -> Result<()> {
@@ -574,22 +703,379 @@ async fn write_asset(dir: &Path, name: &str, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Attempt to terminate the runner gracefully and fall back to a force kill
-/// if it does not exit in time. On Unix we send SIGTERM first so the runner's
-/// `finally` block has a chance to close the browser; on other platforms we
-/// kill the process directly.
-async fn graceful_kill_child(child_id: Option<u32>, child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child_id {
-        unsafe {
-            let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
-        // Give the runner a few seconds to shut down the browser cleanly.
-        if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
-            return;
+async fn wait_for_runner<R, W>(
+    child: &mut tokio::process::Child,
+    stdout_lines: &mut Lines<BufReader<R>>,
+    stderr_lines: &mut Lines<BufReader<W>>,
+    last_stdout_line: &mut String,
+) -> Result<ExitStatus>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncRead + Unpin,
+{
+    // Once stderr hits EOF, `next_line` resolves immediately on every poll.
+    // Keep polling it inside `select!` and the loop spins until stdout closes.
+    let mut stderr_open = true;
+    loop {
+        tokio::select! {
+            line = stdout_lines.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        debug!(target: "playwright-whep::runner::stdout", "{line}");
+                        if !line.trim().is_empty() {
+                            *last_stdout_line = line;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => return Err(anyhow!("Failed to read runner stdout: {e}")),
+                }
+            }
+            line = stderr_lines.next_line(), if stderr_open => {
+                match line {
+                    Ok(Some(line)) => {
+                        if !line.trim().is_empty() {
+                            warn!(target: "playwright-whep::runner::stderr", "{line}");
+                        }
+                    }
+                    Ok(None) => stderr_open = false,
+                    Err(e) => return Err(anyhow!("Failed to read runner stderr: {e}")),
+                }
+            }
         }
     }
-    let _ = child.start_kill();
+
+    child.wait().await.context("Failed to wait for runner")
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnixProcess {
+    pid: libc::pid_t,
+    ppid: libc::pid_t,
+    pgid: libc::pid_t,
+    state: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct RunnerProcessSnapshot {
+    pids: std::collections::BTreeSet<libc::pid_t>,
+    groups: std::collections::BTreeSet<libc::pid_t>,
+    individual_pids: std::collections::BTreeSet<libc::pid_t>,
+}
+
+#[cfg(unix)]
+impl RunnerProcessSnapshot {
+    async fn capture(child_id: u32) -> Result<Self> {
+        let root = libc::pid_t::try_from(child_id).context("Runner PID does not fit in pid_t")?;
+        let table = unix_process_table().await?;
+        if !table.iter().any(|process| process.pid == root) {
+            return Err(anyhow!(
+                "runner PID {root} was absent from the process snapshot"
+            ));
+        }
+
+        let mut pids = std::collections::BTreeSet::from([root]);
+        loop {
+            let previous_len = pids.len();
+            for process in &table {
+                if pids.contains(&process.ppid) {
+                    pids.insert(process.pid);
+                }
+            }
+            if pids.len() == previous_len {
+                break;
+            }
+        }
+
+        let process_groups: std::collections::BTreeMap<_, _> = table
+            .iter()
+            .filter(|process| pids.contains(&process.pid))
+            .map(|process| (process.pid, process.pgid))
+            .collect();
+        let mut groups = std::collections::BTreeSet::new();
+        for pgid in process_groups
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if pids.contains(&pgid)
+                && table
+                    .iter()
+                    .filter(|process| process.pgid == pgid)
+                    .all(|process| pids.contains(&process.pid))
+            {
+                groups.insert(pgid);
+            }
+        }
+        let individual_pids = process_groups
+            .into_iter()
+            .filter_map(|(pid, pgid)| (!groups.contains(&pgid)).then_some(pid))
+            .collect();
+        Ok(Self {
+            pids,
+            groups,
+            individual_pids,
+        })
+    }
+
+    fn root_only(child_id: u32) -> Self {
+        let root = libc::pid_t::try_from(child_id).ok();
+        Self {
+            pids: root.into_iter().collect(),
+            groups: root.into_iter().collect(),
+            individual_pids: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn signal(&self, signal: libc::c_int, name: &str) -> Vec<String> {
+        let mut failures = Vec::new();
+        for pgid in &self.groups {
+            if let Err(error) = send_unix_signal(-pgid, signal) {
+                failures.push(format!(
+                    "failed to send {name} to process group {pgid}: {error}"
+                ));
+            }
+        }
+        for pid in &self.individual_pids {
+            if let Err(error) = send_unix_signal(*pid, signal) {
+                failures.push(format!("failed to send {name} to process {pid}: {error}"));
+            }
+        }
+        failures
+    }
+
+    async fn surviving_pids_after_kill(&self) -> Result<Vec<libc::pid_t>> {
+        for attempt in 0..10 {
+            let survivors: Vec<_> = unix_process_table()
+                .await?
+                .into_iter()
+                .filter(|process| {
+                    self.pids.contains(&process.pid) && !process.state.starts_with(['Z', 'X'])
+                })
+                .map(|process| process.pid)
+                .collect();
+            if survivors.is_empty() || attempt == 9 {
+                return Ok(survivors);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        unreachable!()
+    }
+}
+
+/// Stop a process tree to include late descendants, then kill the final snapshot.
+#[cfg(unix)]
+pub async fn kill_process_tree(child_id: u32) -> Result<String> {
+    let mut snapshot = RunnerProcessSnapshot::capture(child_id).await?;
+    let mut stabilized = false;
+    for _ in 0..10 {
+        let stop_failures = snapshot.signal(libc::SIGSTOP, "SIGSTOP");
+        if !stop_failures.is_empty() {
+            return Err(anyhow!(stop_failures.join("; ")));
+        }
+        let paused = RunnerProcessSnapshot::capture(child_id).await?;
+        if paused.pids == snapshot.pids {
+            snapshot = paused;
+            stabilized = true;
+            break;
+        }
+        snapshot = paused;
+    }
+    if !stabilized {
+        return Err(anyhow!("process tree did not stabilize after SIGSTOP"));
+    }
+
+    let failures = snapshot.signal(libc::SIGKILL, "SIGKILL");
+    let survivors = snapshot.surviving_pids_after_kill().await?;
+    if !failures.is_empty() || !survivors.is_empty() {
+        return Err(anyhow!(
+            "process-tree cleanup failed: {}; surviving PIDs: {survivors:?}",
+            failures.join("; ")
+        ));
+    }
+    Ok(format!("killed the process tree rooted at {child_id}"))
+}
+
+#[cfg(unix)]
+fn send_unix_signal(pid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    if unsafe { libc::kill(pid, signal) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+async fn unix_process_table() -> Result<Vec<UnixProcess>> {
+    let output = Command::new("ps")
+        .args(["-eo", "pid=,ppid=,pgid=,stat="])
+        .output()
+        .await
+        .context("Failed to run ps for runner process cleanup")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "ps exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = std::str::from_utf8(&output.stdout).context("ps produced invalid UTF-8")?;
+    let mut table = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut columns = line.split_whitespace();
+        let pid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PID in ps output: {line}"))?;
+        let ppid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PPID in ps output: {line}"))?;
+        let pgid = columns
+            .next()
+            .and_then(|value| value.parse().ok())
+            .with_context(|| format!("Invalid PGID in ps output: {line}"))?;
+        let state = columns
+            .next()
+            .with_context(|| format!("Missing process state in ps output: {line}"))?
+            .to_string();
+        table.push(UnixProcess {
+            pid,
+            ppid,
+            pgid,
+            state,
+        });
+    }
+    Ok(table)
+}
+
+async fn terminate_runner<R, W>(
+    child_id: Option<u32>,
+    child: &mut tokio::process::Child,
+    stdout_lines: &mut Lines<BufReader<R>>,
+    stderr_lines: &mut Lines<BufReader<W>>,
+    last_stdout_line: &mut String,
+) -> String
+where
+    R: AsyncRead + Unpin,
+    W: AsyncRead + Unpin,
+{
+    #[cfg(unix)]
+    {
+        let Some(child_id) = child_id else {
+            let kill = child.start_kill().map_or_else(
+                |error| format!("direct runner kill failed: {error}"),
+                |_| "direct runner kill was requested".to_string(),
+            );
+            let wait = child.wait().await;
+            return format!(
+                "runner PID was unavailable, so descendants could not be enumerated; {kill}; wait result: {wait:?}; diagnostics may be incomplete"
+            );
+        };
+        let (snapshot, snapshot_error) = match RunnerProcessSnapshot::capture(child_id).await {
+            Ok(snapshot) => (snapshot, None),
+            Err(error) => (
+                RunnerProcessSnapshot::root_only(child_id),
+                Some(format!(
+                    "descendant snapshot failed: {error}; only the runner process group was targeted"
+                )),
+            ),
+        };
+
+        let term_failures = snapshot.signal(libc::SIGTERM, "SIGTERM");
+        let term_wait = timeout(
+            Duration::from_secs(5),
+            wait_for_runner(child, stdout_lines, stderr_lines, last_stdout_line),
+        )
+        .await;
+        let runner_reaped = matches!(&term_wait, Ok(Ok(_)));
+        let mut details = vec![match term_wait {
+            Ok(Ok(status)) => format!("runner exited with {status} after SIGTERM"),
+            Ok(Err(error)) => format!("runner cleanup failed after SIGTERM: {error}"),
+            Err(_) => "runner did not exit within 5s of SIGTERM".to_string(),
+        }];
+        details.extend(term_failures);
+        if let Some(error) = &snapshot_error {
+            details.push(error.clone());
+        }
+
+        let kill_failures = snapshot.signal(libc::SIGKILL, "SIGKILL");
+        details.extend(kill_failures);
+        if !runner_reaped {
+            match timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    details.push(format!("failed to wait for runner after SIGKILL: {error}"))
+                }
+                Err(_) => {
+                    details.push("runner did not exit within 5s of SIGKILL".to_string());
+                    if let Err(error) = child.start_kill() {
+                        details.push(format!("direct runner kill retry failed: {error}"));
+                    }
+                }
+            }
+        }
+
+        if snapshot_error.is_none() {
+            match snapshot.surviving_pids_after_kill().await {
+                Ok(survivors) if survivors.is_empty() => {
+                    details.push("no processes from the runner snapshot remain alive".to_string());
+                }
+                Ok(survivors) => details.push(format!(
+                    "runner snapshot processes still alive after SIGKILL: {survivors:?}"
+                )),
+                Err(error) => details.push(format!(
+                    "failed to verify runner descendant cleanup: {error}"
+                )),
+            }
+        }
+        details.push("diagnostics may be incomplete".to_string());
+        details.join("; ")
+    }
+    #[cfg(windows)]
+    {
+        let _ = (stdout_lines, stderr_lines, last_stdout_line);
+        let cleanup = if let Some(pid) = child_id {
+            let pid = pid.to_string();
+            match Command::new("taskkill")
+                .args(["/PID", pid.as_str(), "/T", "/F"])
+                .output()
+                .await
+            {
+                Ok(output) if output.status.success() => {
+                    "runner process tree killed with taskkill".to_string()
+                }
+                Ok(output) => {
+                    let _ = child.start_kill();
+                    format!(
+                        "taskkill exited with {}; runner force-killed",
+                        output.status
+                    )
+                }
+                Err(error) => {
+                    let _ = child.start_kill();
+                    format!("failed to run taskkill: {error}; runner force-killed")
+                }
+            }
+        } else {
+            let _ = child.start_kill();
+            "runner PID was unavailable; runner force-killed".to_string()
+        };
+        let _ = child.wait().await;
+        format!("{cleanup}; diagnostics may be incomplete")
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (child_id, stdout_lines, stderr_lines, last_stdout_line);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        "runner force-killed; diagnostics may be incomplete".to_string()
+    }
 }
 
 async fn resolve_playwright_module(node_path: &Path, dir: &Path) -> Result<PathBuf> {
@@ -634,5 +1120,346 @@ mod tests {
     fn mode_default_is_subscribe() {
         let player = WhepBrowserPlayer::new("http://localhost/whep/live");
         assert_eq!(player.mode, Mode::Subscribe);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_directory_must_be_new() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("existing");
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let sentinel = directory.join("keep.txt");
+        tokio::fs::write(&sentinel, "keep").await.unwrap();
+
+        let error = WhepBrowserPlayer::new("http://localhost/whep/live")
+            .play_with_diagnostics(DiagnosticsOptions {
+                directory: directory.clone(),
+                trace: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("must not already exist"));
+        assert!(directory.is_dir());
+        assert_eq!(tokio::fs::read_to_string(sentinel).await.unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn trace_rejects_token_before_creating_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("new-run");
+        let error = WhepBrowserPlayer::new("http://localhost/whep/live")
+            .token("secret")
+            .play_with_diagnostics(DiagnosticsOptions {
+                directory: directory.clone(),
+                trace: true,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("cannot be used with a token"));
+        assert!(!directory.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_diagnostics_directory_uses_rust_working_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let current_dir = std::env::current_dir().unwrap();
+        let temp = tempfile::tempdir_in(&current_dir).unwrap();
+        let playwright_dir = temp.path().join("playwright");
+        tokio::fs::create_dir(&playwright_dir).await.unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        let fake_node = temp.path().join("fake-node");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--diagnostics-dir") + 1];
+fs.writeFileSync(`${directory}/runner.json`, JSON.stringify({ directory, cwd: process.cwd() }));
+console.log(JSON.stringify({
+    mode: "subscribe",
+    result: { success: false, connected: false, error: "intentional failure" },
+}));
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &fake_node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-e\" ]; then exec node \"$@\"; fi\nexec node '{}' \"$@\"\n",
+                fake_runner.display()
+            ),
+        )
+        .await
+        .unwrap();
+        let mut permissions = tokio::fs::metadata(&fake_node).await.unwrap().permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&fake_node, permissions)
+            .await
+            .unwrap();
+
+        let directory = temp
+            .path()
+            .strip_prefix(&current_dir)
+            .unwrap()
+            .join("relative-diagnostics");
+        let expected_directory = current_dir.join(&directory);
+        let run = WhepBrowserPlayer::new("http://localhost/whep/live")
+            .node_path(&fake_node)
+            .playwright_dir(&playwright_dir)
+            .play_with_diagnostics(DiagnosticsOptions {
+                directory,
+                trace: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(run.artifacts.directory.is_absolute());
+        assert_eq!(run.artifacts.directory, expected_directory);
+        assert!(run.artifacts.retained);
+        let observation: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(expected_directory.join("runner.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Path::new(observation["directory"].as_str().unwrap()),
+            expected_directory
+        );
+        assert_eq!(
+            Path::new(observation["cwd"].as_str().unwrap()),
+            playwright_dir
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_terminates_detached_runner_descendants_and_preserves_capture_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        let fake_node = temp.path().join("fake-node");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--diagnostics-dir") + 1];
+const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+});
+child.unref();
+fs.writeFileSync(`${directory}/child.pid`, String(child.pid));
+process.on("SIGTERM", () => {
+    fs.writeFileSync(`${directory}/term-received`, "yes");
+    fs.writeFileSync(`${directory}/capture-errors.json`, JSON.stringify(["runner received SIGTERM"]));
+});
+setInterval(() => {}, 1000);
+"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &fake_node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-e\" ]; then exec node \"$@\"; fi\nexec node '{}' \"$@\"\n",
+                fake_runner.display()
+            ),
+        )
+        .await
+        .unwrap();
+        let mut permissions = tokio::fs::metadata(&fake_node).await.unwrap().permissions();
+        permissions.set_mode(0o755);
+        tokio::fs::set_permissions(&fake_node, permissions)
+            .await
+            .unwrap();
+
+        let directory = temp.path().join("timeout-run");
+        let error = WhepBrowserPlayer::new("http://localhost/whep/live")
+            .node_path(&fake_node)
+            .timeout(Duration::ZERO)
+            .play_with_diagnostics(DiagnosticsOptions {
+                directory: directory.clone(),
+                trace: false,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no processes from the runner snapshot remain alive"),
+            "{error}"
+        );
+        assert!(directory.join("term-received").is_file());
+
+        let artifacts = DiagnosticArtifacts::discover(directory.clone()).await;
+        assert!(
+            artifacts
+                .capture_errors
+                .contains(&"runner received SIGTERM".to_string())
+        );
+        assert!(
+            artifacts
+                .capture_errors
+                .iter()
+                .any(|error| error.contains("timed out"))
+        );
+        let pid: i32 = tokio::fs::read_to_string(directory.join("child.pid"))
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        for _ in 0..50 {
+            let table = unix_process_table().await.unwrap();
+            let alive = table
+                .iter()
+                .any(|process| process.pid == pid && !process.state.starts_with(['Z', 'X']));
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("detached runner descendant {pid} survived process-tree cleanup");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_handles_detached_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+});
+child.unref();
+fs.writeFileSync(process.argv[2], String(child.pid));
+setInterval(() => {}, 1000);
+"#,
+        )
+        .await
+        .unwrap();
+        let pid_file = temp.path().join("child.pid");
+        let mut child = Command::new("node")
+            .arg(&fake_runner)
+            .arg(&pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_id = child.id().unwrap();
+        for _ in 0..50 {
+            if pid_file.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(pid_file.is_file());
+
+        kill_process_tree(child_id).await.unwrap();
+        child.wait().await.unwrap();
+        let descendant: libc::pid_t = tokio::fs::read_to_string(pid_file)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let root = libc::pid_t::try_from(child_id).unwrap();
+        let table = unix_process_table().await.unwrap();
+        assert!(
+            table.iter().all(|process| {
+                (process.pid != root && process.pid != descendant)
+                    || process.state.starts_with(['Z', 'X'])
+            }),
+            "nested processes survived cleanup: {table:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn timeout_terminates_runner_process_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const args = process.argv.slice(2);
+const directory = args[args.indexOf("--diagnostics-dir") + 1];
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+    windowsHide: true,
+});
+fs.writeFileSync(`${directory}/child.pid`, String(child.pid));
+setInterval(() => {}, 1000);
+"#,
+        )
+        .await
+        .unwrap();
+
+        let directory = temp.path().join("timeout-run");
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let mut child = Command::new("node")
+            .arg(&fake_runner)
+            .arg("--diagnostics-dir")
+            .arg(&directory)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let child_id = child.id();
+        let mut stdout_lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut stderr_lines = BufReader::new(child.stderr.take().unwrap()).lines();
+        let mut last_stdout_line = String::new();
+        for _ in 0..50 {
+            if directory.join("child.pid").is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(directory.join("child.pid").is_file());
+
+        let cleanup = terminate_runner(
+            child_id,
+            &mut child,
+            &mut stdout_lines,
+            &mut stderr_lines,
+            &mut last_stdout_line,
+        )
+        .await;
+        assert!(cleanup.contains("taskkill"), "{cleanup}");
+        let pid: u32 = tokio::fs::read_to_string(directory.join("child.pid"))
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pid = pid.to_string();
+        let filter = format!("PID eq {pid}");
+        for _ in 0..50 {
+            let output = Command::new("tasklist")
+                .args(["/FI", filter.as_str(), "/FO", "CSV", "/NH"])
+                .output()
+                .await
+                .unwrap();
+            let running = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.split("\",\"").nth(1) == Some(pid.as_str()));
+            if !running {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("runner descendant {pid} survived taskkill process-tree cleanup");
     }
 }

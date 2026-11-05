@@ -207,6 +207,35 @@ CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64
 `livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT` to
 configure `pkg-config` and linker paths.
 
+### Static musl diagnostics
+
+Fully static diagnostics bundles for `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` are built in Alpine-based musl containers, not the
+GNU cross images:
+
+```bash
+docker buildx build -f docker/Dockerfile.diagnostics-musl --target export \
+  --output type=local,dest=dist/diagnostics \
+  --build-arg TARGET=<target> --build-arg VERSION=<version> .
+```
+
+The export writes `live777-diagnostics-<version>-<target>.tar.gz` and
+`live777-diagnostics-sources-<version>-<target>.tar.gz` directly into
+`dist/diagnostics/`, without an additional leading directory. The binaries
+statically link FFmpeg and the codecs; the dynamically linked GNU diagnostics
+bundles and their launcher/shared-library layout remain separate. The source
+archive includes the corresponding Alpine aports `APKBUILD` recipes and patches
+plus the upstream source downloads for the static dependency set.
+
+The independent `build-diagnostics-musl` Release job performs real builds when
+diagnostics packaging inputs change on pull requests; GitHub Release uploads are
+tag-only. Musl package validation must cover static linkage, relocation and real media rather than just
+archive creation: check that the exported tools have no dynamic FFmpeg/codec
+requirements, move the extracted directory and run the relocated tools, and run
+an actual synthetic WHIP publish to WHEP decode smoke. Include `livewrk
+--verify-window` with `whepprobe` beside it to exercise worker discovery;
+`--version` checks alone do not validate codecs, media flow or relocation.
+
 ## Runtime Architecture
 
 - `live777` (`liveion`) is the edge SFU. It exposes WHIP publish endpoints,
@@ -218,7 +247,12 @@ configure `pkg-config` and linker paths.
 - `livetwo` is the protocol-conversion engine used by `whipinto`/`whepfrom`
   and the `cascade` feature. `livetwo/src/whip/core.rs` is the single WHIP
   publish core (peer construction, connection waits, ICE diagnostics) shared
-  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher.
+  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher. FFmpeg
+  decoding for `whepprobe` and livewrk's rotating verifier runs in isolated
+  `whepprobe --decode-worker` processes (`livetwo/src/probe/worker.rs`), so a
+  stuck decoder can be killed and reaped without leaking threads. `livewrk`
+  finds the helper beside its executable (or via `LIVE777_WHEPPROBE_BIN`);
+  diagnostics bundles ship both binaries together.
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
 
@@ -589,6 +623,18 @@ Integration test binaries live in `tests/`:
 - `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
   synthetic publish and WHEP decode probes against in-process liveion,
   including JSON/exit-code success and failure contracts (needs `rsmpeg`)
+- `tests/whepwright_e2e.rs` — real browser CLI output and failure-artifact
+  contracts (needs `whepwright` for the browser and `rsmpeg` for the controlled
+  whipsynth publisher)
+- `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
+  in private Linux namespaces; ignored by default and requiring
+  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn. The Linux
+  `build` job in `.github/workflows/rust.yml` installs these dependencies and
+  runs the ignored tests as root against its release/all-features build,
+  preserving the Cargo/rustup and FFmpeg dynamic-library environment through
+  sudo; all other CI jobs and default local runs leave them ignored. They also
+  set `LIVE777_WEBRTC_DISABLE_MDNS=1` to skip mDNS candidate resolution in the
+  livetwo client peers (`utils::webrtc::setting_engine`).
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
@@ -634,7 +680,14 @@ carries the check.
   (all-in-one quickstart/AI-deploy image, see below), `liveion`
   (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
   `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
-  `ghcr.io/binbat/<app>`.
+  `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix.
+  Each matrix job builds once on a native amd64 or arm64 runner, exporting a
+  Docker tar for `docker load` and `scripts/docker-smoke.sh` and, only on
+  version tags, pushing that same build by digest. Pull requests that change
+  Docker build/test inputs and pushes to the `docker` branch build and smoke
+  every image without pushing to GHCR. After all image smoke tests pass, one
+  tag-only job creates every multi-architecture manifest from the tested
+  digests, without architecture-suffixed tags.
 - **`live777-all` vs the slim `live777-server`/`live777-client` split**:
   `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
   whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check
@@ -642,7 +695,9 @@ carries the check.
   first-run experience — run the container, then `smoke-test --standalone`
   (or `smoke-test` against an already-running server; `SMOKE_SERVER_URL` /
   `SMOKE_TOKEN` env tune it) publishes a synthetic WHIP stream and decodes it
-  back over WHEP. Because whepprobe/whipsynth need rsmpeg 0.18 — which cannot
+  back over WHEP. Standalone mode uses a temporary isolated config with
+  loopback ICE; `SMOKE_PORT` selects its HTTP port. Because
+  whepprobe/whipsynth need rsmpeg 0.18 — which cannot
   compile against Debian's field-privatized libav*-dev — the image builds
   upstream FFmpeg 8.1 *shared* (codec set mirrors `Dockerfile.live777-client`,
   installed to `/opt/ffmpeg`), points the rust builder at its
@@ -675,9 +730,20 @@ carries the check.
   (armv7 by default).
 - **Releases**: `.github/workflows/release.yml` builds for many targets
   including x86_64, aarch64, armv7, i686, riscv64, Android, Windows, and macOS.
+  Mainstream Linux/macOS/Windows targets also get a diagnostics bundle with
+  whipsynth, whepprobe, livewrk and their codec runtime. Each bundle carries
+  third-party license notices plus copied-library provenance, and a matching
+  source archive publishes the exact FFmpeg/dependency sources and a manifest
+  bound to the binary archive's SHA-256. The live777-all Docker workflow runs
+  `smoke-test --standalone` on each final architecture image before publishing
+  the multi-arch manifest.
 - **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
   `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
   (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.
+  Pushes to `test` and version tags run `.github/workflows/docs.yml`, which
+  checks `llms.txt` and key pages on `https://live777.pages.dev` with
+  `docs/scripts/llms-txt-check.sh`; the check polls until the deployment is
+  ready.
 
 ## Useful Local Recipes (justfile)
 
@@ -685,6 +751,8 @@ carries the check.
 just build            # web + Rust release build
 just run              # cargo run --features=webui
 just run-cluster      # local livenil cluster
+just smoke            # standalone WHIP/WHEP encode/decode smoke test
+just smoke-bridge     # synth -> WHIP -> WHEP -> RTP/SDP -> ffprobe decode
 just gst-whip-rtp-h264  # GStreamer WHIP ingest smoke test
 just ffmpeg-rtp-h264    # FFmpeg WHIP ingest smoke test
 just ffplay-rtp         # WHEP playback to ffplay via RTP
@@ -701,5 +769,12 @@ cycle tests; they are the fastest way to exercise a local `live777` instance.
 3. `pnpm -r build` if you changed WebUI code.
 4. Edit `live777.toml` or `conf/live777.toml` as needed.
 5. `cargo run --features=webui` or `just run`.
-6. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
+6. Run `just smoke` for the real standalone WHIP → WHEP decode check, or
+   `just smoke-bridge` for whipinto synth → live777 → whepfrom RTP/SDP →
+   ffprobe decode. Both build the required debug binaries with `rsmpeg`, use
+   isolated temporary configuration and loopback ICE, and clean up their own
+   processes; `CARGO_TARGET_DIR` is respected. The non-media safeguards are
+   covered by `tests/smoke_port_conflict.sh` and `tests/smoke_audio_required.sh`
+   (occupied HTTP/RTP endpoints and rejecting a video-only probe).
+7. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
    -D warnings`, and `cargo nextest run --workspace` before finishing.

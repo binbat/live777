@@ -78,7 +78,8 @@ impl Player for GstWhepPlayer {
                 video_tracks: 1,
                 audio_tracks: 0,
                 duration_ms,
-                codecs: vec![video.codec.ffprobe_name().to_string()],
+                video_codec: Some(video.codec.ffprobe_name().to_string()),
+                audio_codec: None,
                 ..Default::default()
             }),
             Ok(Ok(status)) => Ok(PlayResult {

@@ -1,0 +1,224 @@
+# syntax=docker/dockerfile:1.7
+ARG RUST_ALPINE_IMAGE=rust:1-alpine3.22
+FROM ${RUST_ALPINE_IMAGE} AS toolchain
+
+ARG TARGET=x86_64-unknown-linux-musl
+ARG APORTS_REF=3.22-stable
+ARG BUILD_JOBS=4
+ENV BUILD_JOBS=${BUILD_JOBS}
+
+RUN apk add --no-cache \
+        alpine-sdk abuild bash binutils ca-certificates clang20-libclang cmake \
+        coreutils curl dav1d-dev diffutils file git linux-headers meson nasm \
+        ninja openssl-dev openssl-libs-static opus-dev perl pkgconf samurai \
+        svt-av1-dev x264-dev x265-dev yasm zlib-dev zlib-static
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+RUN test "$(rustc -vV | awk '/^host:/ {print $2}')" = "${TARGET}" || { \
+        echo "TARGET=${TARGET} does not match the native Alpine Rust host; select the matching buildx platform" >&2; \
+        exit 1; \
+    }
+RUN git clone --depth 1 --branch "${APORTS_REF}" \
+        https://github.com/alpinelinux/aports.git /aports && \
+    git -C /aports rev-parse HEAD > /build-aports-revision && \
+    mkdir -p /build/recipes /opt/static /var/cache/distfiles && \
+    git -C /aports archive HEAD \
+        community/libvpx community/x265 community/svt-av1 main/dav1d main/opus | \
+        tar -x -C /build/recipes && \
+    cp /build-aports-revision /build/aports-revision
+
+# Alpine's libvpx package deliberately disables its static library. Build the
+# same patched source with static/PIC output instead of using a foreign sysroot.
+RUN cd /build/recipes/community/libvpx && \
+    export CARCH="$(abuild -A)" && \
+    abuild -F -d fetch unpack prepare && \
+    srcdir="$PWD/src" && . ./APKBUILD && \
+    cd "${builddir:-$PWD/src/libvpx-$pkgver}" && \
+    export CROSS=' ' CFLAGS='-O2 -fPIC -ffat-lto-objects' CXXFLAGS='-O2 -fPIC -ffat-lto-objects' && \
+    ./configure --prefix=/opt/static --disable-install-srcs --disable-shared \
+        --enable-static --enable-libs --enable-multithread --enable-pic \
+        --enable-postproc --enable-runtime-cpu-detect --enable-temporal-denoising \
+        --disable-unit-tests --disable-examples --disable-tools --disable-docs \
+        --enable-vp8 --enable-vp9 --enable-vp9-highbitdepth --enable-vp9-postproc \
+        --enable-vp9-temporal-denoising && \
+    make -j"${BUILD_JOBS}" && make install && \
+    printf '/opt/static/lib/libvpx.a\tlibvpx\tlibvpx\t%s-r%s\t%s\tcommunity\n' \
+        "${pkgver}" "${pkgrel}" "$(cat /build/aports-revision)" >> /build/static-origins.tsv
+
+# x265's aports build produces separate 8/10/12-bit static archives and its
+# package step removes the main one. Merge all three: the shared-build link does
+# not merge them into the installed static archive by itself.
+RUN cd /build/recipes/community/x265 && \
+    export CARCH="$(abuild -A)" && \
+    abuild -F -d fetch unpack prepare build && \
+    srcdir="$PWD/src" && . ./APKBUILD && \
+    cd "${builddir}" && DESTDIR=/build/x265-install cmake --install build && \
+    mkdir -p /opt/static/include /opt/static/lib/pkgconfig && \
+    printf 'CREATE /opt/static/lib/libx265.a\nADDLIB build/libx265.a\nADDLIB build-10/libx265.a\nADDLIB build-12/libx265.a\nSAVE\nEND\n' | ar -M && \
+    cp /build/x265-install/usr/include/x265.h /build/x265-install/usr/include/x265_config.h \
+        /opt/static/include/ && \
+    sed -e 's#^prefix=/usr$#prefix=/opt/static#' -e 's/-lgcc_s/-lgcc/g' \
+        /build/x265-install/usr/lib/pkgconfig/x265.pc > /opt/static/lib/pkgconfig/x265.pc && \
+    printf '/opt/static/lib/libx265.a\tx265\tx265\t%s-r%s\t%s\tcommunity\n' \
+        "${pkgver}" "${pkgrel}" "$(cat /build/aports-revision)" >> /build/static-origins.tsv
+
+RUN cd /build/recipes/community/svt-av1 && \
+    export CARCH="$(abuild -A)" && \
+    abuild -F -d fetch unpack prepare && \
+    srcdir="$PWD/src" && . ./APKBUILD && \
+    cd "${builddir}" && \
+    cmake -B build-static -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/static \
+        -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF . && \
+    cmake --build build-static --parallel "${BUILD_JOBS}" && \
+    cmake --install build-static && \
+    printf '/opt/static/lib/libSvtAv1Enc.a\tsvt-av1\tsvt-av1\t%s-r%s\t%s\tcommunity\n' \
+        "${pkgver}" "${pkgrel}" "$(cat /build/aports-revision)" >> /build/static-origins.tsv
+
+RUN cd /build/recipes/main/dav1d && \
+    export CARCH="$(abuild -A)" && \
+    abuild -F -d fetch unpack prepare && \
+    srcdir="$PWD/src" && . ./APKBUILD && \
+    cd "${builddir:-$PWD/src/dav1d-$pkgver}" && \
+    meson setup build-static --prefix=/opt/static --libdir=lib --buildtype=release \
+        --default-library=static -Db_staticpic=true -Db_lto=false \
+        -Denable_tools=false -Denable_tests=false -Dtestdata_tests=false \
+        -Dfuzzing_engine=none -Denable_asm=true && \
+    meson compile -C build-static -j "${BUILD_JOBS}" && \
+    meson install --no-rebuild -C build-static && \
+    printf '/opt/static/lib/libdav1d.a\tdav1d\tdav1d\t%s-r%s\t%s\tmain\n' \
+        "${pkgver}" "${pkgrel}" "$(cat /build/aports-revision)" >> /build/static-origins.tsv
+
+RUN cd /build/recipes/main/opus && \
+    export CARCH="$(abuild -A)" && \
+    abuild -F -d fetch unpack prepare && \
+    srcdir="$PWD/src" && . ./APKBUILD && \
+    cd "${builddir:-$PWD/src/opus-$pkgver}" && \
+    meson setup build-static --prefix=/opt/static --libdir=lib --buildtype=release \
+        --default-library=static -Db_staticpic=true -Db_lto=false \
+        -Dcustom-modes=true -Dextra-programs=disabled -Dtests=disabled && \
+    meson compile -C build-static -j "${BUILD_JOBS}" && \
+    meson install --no-rebuild -C build-static && \
+    printf '/opt/static/lib/libopus.a\topus\topus\t%s-r%s\t%s\tmain\n' \
+        "${pkgver}" "${pkgrel}" "$(cat /build/aports-revision)" >> /build/static-origins.tsv
+
+FROM toolchain AS ffmpeg
+ARG FFMPEG_REF=n8.1.2
+ENV PKG_CONFIG_ALL_STATIC=1
+RUN git clone --depth 1 --branch "${FFMPEG_REF}" \
+        https://github.com/FFmpeg/FFmpeg /src/ffmpeg
+WORKDIR /src/ffmpeg
+RUN export PKG_CONFIG_PATH=/opt/static/lib/pkgconfig:/usr/lib/pkgconfig && \
+    ./configure \
+        --prefix=/opt/ffmpeg \
+        --disable-debug --disable-doc --disable-autodetect \
+        --disable-shared --enable-static --enable-pic \
+        --enable-gpl --enable-version3 \
+        --enable-libvpx --enable-libx264 --enable-libx265 \
+        --enable-libsvtav1 --enable-libdav1d --enable-libopus \
+        --enable-openssl --enable-protocol=dtls --enable-muxer=whip \
+        --pkg-config-flags=--static \
+        --extra-cflags='-I/opt/static/include -fPIC' \
+        --extra-ldflags='-L/opt/static/lib -static -Wl,-z,stack-size=1048576' && \
+    make -j"${BUILD_JOBS}" && make install
+RUN for encoder in libvpx_vp8 libvpx_vp9 libx264 libx265 libsvtav1 libopus; do \
+        /opt/ffmpeg/bin/ffmpeg -hide_banner -encoders 2>/dev/null | \
+            grep "[[:space:]]${encoder}[[:space:]]" >/dev/null; \
+    done && \
+    /opt/ffmpeg/bin/ffmpeg -hide_banner -decoders 2>/dev/null | grep '[[:space:]]dav1d[[:space:]]' >/dev/null && \
+    /opt/ffmpeg/bin/ffmpeg -hide_banner -protocols 2>/dev/null | grep '^  dtls$' >/dev/null && \
+    /opt/ffmpeg/bin/ffmpeg -hide_banner -muxers 2>/dev/null | grep '[[:space:]]whip[[:space:]]' >/dev/null && \
+    ! readelf -lW /opt/ffmpeg/bin/ffmpeg | grep '[[:space:]]INTERP[[:space:]]' >/dev/null && \
+    ! readelf -dW /opt/ffmpeg/bin/ffmpeg 2>/dev/null | grep '(NEEDED)' >/dev/null
+
+FROM ffmpeg AS build
+ARG TARGET=x86_64-unknown-linux-musl
+ARG VERSION=dev
+ARG CARGO_BUILD_JOBS=4
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+    CARGO_HTTP_MULTIPLEXING=false \
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_NET_RETRY=10 \
+    DIAGNOSTICS_DIST=/out \
+    DIAGNOSTICS_WORK=/build/diagnostics-package \
+    LIVE777_VERSION=${VERSION} \
+    LIBCLANG_PATH=/usr/lib/llvm20/lib \
+    PKG_CONFIG_ALL_STATIC=1 \
+    PKG_CONFIG_LIBDIR=/opt/ffmpeg/lib/pkgconfig:/opt/static/lib/pkgconfig:/usr/lib/pkgconfig \
+    FFMPEG_PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig \
+    FFMPEG_INCLUDE_DIR=/opt/ffmpeg/include \
+    FFMPEG_LINK_MODE=static \
+    RUSTFLAGS='-C target-feature=-crt-static'
+WORKDIR /app
+COPY . .
+RUN arch="$(apk --print-arch)" && \
+    base="https://dl-cdn.alpinelinux.org/alpine/v3.22/main/${arch}" && \
+    for spec in libucontext:1.3.2-r0 libucontext-dev:1.3.2-r0 \
+        libunwind:1.8.1-r0 libunwind-dev:1.8.1-r0 libunwind-static:1.8.1-r0 \
+        xz:5.8.4-r0 xz-dev:5.8.4-r0 xz-static:5.8.4-r0; do \
+        package=${spec%%:*}; version=${spec#*:}; \
+        curl -fsSL --retry 8 --retry-all-errors --retry-delay 1 \
+            -o "/tmp/${package}.apk" "${base}/${package}-${version}.apk"; \
+    done && \
+    apk add --no-network \
+        /tmp/libucontext.apk /tmp/libucontext-dev.apk \
+        /tmp/libunwind.apk /tmp/libunwind-dev.apk /tmp/libunwind-static.apk \
+        /tmp/xz.apk /tmp/xz-dev.apk /tmp/xz-static.apk && \
+    rm -f /tmp/libucontext.apk /tmp/libucontext-dev.apk \
+        /tmp/libunwind.apk /tmp/libunwind-dev.apk /tmp/libunwind-static.apk \
+        /tmp/xz.apk /tmp/xz-dev.apk /tmp/xz-static.apk
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    test "$(rustc -vV | awk '/^host:/ {print $2}')" = "${TARGET}" && \
+    cargo check --locked --release --bin=whipsynth --features=rsmpeg && \
+    export FFMPEG_BINDING_PATH="$(find /app/target/release/build \
+        -path '*/rusty_ffmpeg-*/out/binding.rs' -print -quit)" && \
+    test -s "${FFMPEG_BINDING_PATH}" && \
+    mkdir -p /build/link-maps && \
+    ffmpeg_link_args=( \
+        -C link-arg=-Wl,--start-group \
+        -C link-arg=/opt/ffmpeg/lib/libavdevice.a \
+        -C link-arg=/opt/ffmpeg/lib/libavfilter.a \
+        -C link-arg=/opt/ffmpeg/lib/libavformat.a \
+        -C link-arg=/opt/ffmpeg/lib/libavcodec.a \
+        -C link-arg=/opt/ffmpeg/lib/libswscale.a \
+        -C link-arg=/opt/ffmpeg/lib/libswresample.a \
+        -C link-arg=/opt/ffmpeg/lib/libavutil.a \
+        -C link-arg=/opt/static/lib/libvpx.a \
+        -C link-arg=/opt/static/lib/libdav1d.a \
+        -C link-arg=/opt/static/lib/libopus.a \
+        -C link-arg=/opt/static/lib/libSvtAv1Enc.a \
+        -C link-arg=/usr/lib/libx264.a \
+        -C link-arg=/opt/static/lib/libx265.a \
+        -C link-arg=/usr/lib/libssl.a \
+        -C link-arg=/usr/lib/libcrypto.a \
+        -C link-arg=/usr/lib/libstdc++.a -C link-arg=/usr/lib/libssp_nonshared.a -C link-arg=-lgcc \
+        -C link-arg=/usr/lib/libz.a -C link-arg=/usr/lib/liblzma.a -C link-arg=/usr/lib/libunwind.a \
+        -C link-arg=/usr/lib/libm.a -C link-arg=/usr/lib/libpthread.a -C link-arg=/usr/lib/libdl.a \
+        -C link-arg=/usr/lib/librt.a -C link-arg=/usr/lib/libatomic.a -C link-arg=/usr/lib/libc.a \
+        -C link-arg=-Wl,--end-group \
+    ) && \
+    for tool in whipsynth whepprobe livewrk; do \
+        cargo rustc --locked --release --target="${TARGET}" --bin="${tool}" --features=rsmpeg -- \
+            -C target-feature=+crt-static -C link-self-contained=no -L native=/opt/static/lib \
+            "${ffmpeg_link_args[@]}" -C "link-arg=-Wl,-Map=/build/link-maps/${tool}.map"; \
+    done && \
+    cargo rustc --locked --release --target="${TARGET}" --bin=live777 -- \
+        -C target-feature=+crt-static -C link-self-contained=no -L native=/opt/static/lib \
+        -C link-arg=/usr/lib/liblzma.a -C 'link-arg=-Wl,-Map=/build/link-maps/live777.map' && \
+    mkdir -p "/build/final/${TARGET}/release" && \
+    cp "/app/target/${TARGET}/release/whipsynth" \
+        "/app/target/${TARGET}/release/whepprobe" \
+        "/app/target/${TARGET}/release/livewrk" \
+        "/app/target/${TARGET}/release/live777" \
+        "/build/final/${TARGET}/release/" && \
+    CARGO_TARGET_DIR=/build/final bash scripts/package-diagnostics-musl.sh package "${TARGET}" "${VERSION}" && \
+    CARGO_TARGET_DIR=/build/final bash scripts/package-diagnostics-musl.sh verify "${TARGET}" "${VERSION}"
+
+RUN CARGO_TARGET_DIR=/build/final bash scripts/package-diagnostics-musl.sh smoke "${TARGET}" "${VERSION}"
+
+RUN bash scripts/package-diagnostics-musl-sources.sh package "${TARGET}" "${VERSION}" && \
+    bash scripts/package-diagnostics-musl-sources.sh verify "${TARGET}" "${VERSION}"
+
+FROM scratch AS export
+COPY --from=build /out/ ./

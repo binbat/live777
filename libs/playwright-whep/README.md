@@ -14,10 +14,8 @@ end-to-end without building the full Live777 debugger frontend.
 - [Playwright](https://playwright.dev) installed in the working directory:
   ```bash
   pnpm add -D playwright
-  npx playwright install chromium --no-shell
+  npx playwright install chromium
   ```
-  `--no-shell` avoids downloading the separate headless-shell binary; the
-  harness launches the full Chromium binary in headless mode instead.
 - The WHIP/WHEP endpoint must allow cross-origin requests (CORS) or be served
   from the same origin as the test page.
 
@@ -82,6 +80,20 @@ assert!(result.success);
 assert!(result.publish.as_ref().unwrap().success);
 assert!(result.subscribe.as_ref().unwrap().success);
 ```
+
+## Diagnostics
+
+`play_with_diagnostics(DiagnosticsOptions)` captures browser diagnostics while
+`play()` retains its original behavior. The requested diagnostics directory must
+not already exist: the library atomically creates it and only ever removes that
+new directory after success. Existing directories, including `.`, are rejected.
+Tracing is rejected when a token is configured because Playwright traces can
+contain evaluated arguments and network authorization headers.
+
+On Unix, a runner timeout sends SIGTERM to its process group so the Node runner
+can capture diagnostics and close the browser. Rust then kills any remaining
+processes in that group. Timeout or capture failures are reported through
+`capture_errors`; partial diagnostics are retained for inspection.
 
 ## How it works
 

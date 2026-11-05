@@ -20,9 +20,10 @@ pub struct PlayResult {
     pub video_tracks: u32,
     pub audio_tracks: u32,
     pub duration_ms: u64,
-    /// Codec names reported by the player/validator for each received stream,
-    /// e.g. `["vp8", "opus"]`. Empty when the player does not probe codecs.
-    pub codecs: Vec<String>,
+    /// Codec name reported for the video stream, or `None` when not probed.
+    pub video_codec: Option<String>,
+    /// Codec name reported for the audio stream, or `None` when not probed.
+    pub audio_codec: Option<String>,
     /// Audio channel count of the first audio stream, when probed.
     pub audio_channels: u32,
 }

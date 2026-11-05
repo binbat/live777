@@ -1,0 +1,23 @@
+name: docs
+
+on:
+  push:
+    branches:
+      - test
+    tags:
+      - 'v*'
+
+jobs:
+  llms-txt-check:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check deployed llms.txt and key pages
+        env:
+          DOCS_BASE_URL: https://live777.pages.dev
+        run: bash docs/scripts/llms-txt-check.sh "$DOCS_BASE_URL"

@@ -87,7 +87,7 @@ docker exec live777 smoke-test
 ```
 
 `smoke-test` publishes a test stream over WHIP, plays it back over WHEP and decodes the
-video with FFmpeg. On success it prints a `whepprobe` JSON report and exits `0`; on
+audio and video with FFmpeg. On success it prints a `whepprobe` JSON report and exits `0`; on
 failure it exits non-zero and prints diagnostics. Then open your browser at
 `http://localhost:7777/`, and clean up with `docker stop live777`.
 

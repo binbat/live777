@@ -22,7 +22,7 @@ use tracing::info;
 use webrtc::peer_connection::{RTCIceServer, RTCPeerConnectionState};
 
 #[cfg(feature = "rsmpeg")]
-use std::sync::atomic::AtomicBool;
+use std::{future::Future, pin::Pin};
 
 use super::{LoadtestConfig, LoadtestStats, SessionMetrics, SessionOutcome, run_sessions};
 use crate::utils::shutdown::graceful_shutdown;
@@ -62,7 +62,7 @@ pub struct WhepLoadParams {
 }
 
 /// Aggregate stats of the rotating decode verifier.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct VerifyStats {
     /// Windows that ran to completion; windows cut short by shutdown are not
     /// counted.
@@ -77,17 +77,18 @@ pub struct VerifyStats {
     pub sessions_covered: BTreeSet<usize>,
     /// Sessions with at least one failed window.
     pub sessions_failed: BTreeSet<usize>,
+    /// Verification was disabled because this build cannot decode the codec.
+    #[serde(skip)]
+    pub unsupported: bool,
     /// Why verification produced no windows (e.g. an unsupported codec).
     pub note: Option<String>,
     /// Error of the most recent failed window.
     pub last_error: Option<String>,
 }
 
-/// Run `config.session_count` WHEP subscribers against `params.whep_url`.
-///
-/// Returns the aggregate loadtest stats and, when `params.verify_window` is
-/// set, the stats of the rotating decode verifier.
-pub async fn run(
+/// Collect subscriber and optional verifier stats without applying acceptance
+/// rules, so callers can report even an all-failed run.
+pub async fn collect(
     config: &LoadtestConfig,
     params: WhepLoadParams,
     ct: CancellationToken,
@@ -97,18 +98,21 @@ pub async fn run(
     let session_verify = verifier.session_verify();
 
     let run_ct = session_ct.clone();
-    let result = run_sessions(config, session_ct.clone(), move |i| {
-        let params = params.clone();
-        let verify = session_verify.clone();
-        let run_ct = run_ct.child_token();
-        async move { run_one(i, params, verify, run_ct).await }
-    })
-    .await;
-
-    // Stop the verifier however the sessions ended, and collect its stats
-    // before propagating any session error.
-    session_ct.cancel();
-    let verify_stats = verifier.finish().await;
+    let sessions = async {
+        let result = run_sessions(config, session_ct.clone(), move |i| {
+            let params = params.clone();
+            let verify = session_verify.clone();
+            let run_ct = run_ct.child_token();
+            async move { run_one(i, params, verify, run_ct).await }
+        })
+        .await;
+        session_ct.cancel();
+        result
+    };
+    // The verifier is a directly owned future, not a spawned task. If collect
+    // is dropped, its active decode worker is dropped and reaped in the same
+    // unwind instead of being left behind in a detached verifier task.
+    let (result, verify_stats) = tokio::join!(sessions, verifier.finish());
     let stats = result?;
     Ok((stats, verify_stats))
 }
@@ -157,48 +161,28 @@ async fn run_session(
         Err(e) => return (Duration::ZERO, Err(e)),
     };
     let mut client = Client::new(params.whep_url.clone(), auth);
-    let peer_ct = CancellationToken::new();
+    let peer_ct = ct.child_token();
 
-    // Race the setup (WHEP POST/answer + ICE) against cancellation so a
-    // session stopped while connecting still reports back instead of being
-    // aborted at the drain grace.
-    let (peer, _answer, _stats, mut dc_recv_rx, _dc_send_tx) = tokio::select! {
-        result = crate::whep::setup_whep_peer(
-            peer_ct.clone(),
-            &mut client,
-            video_tx,
-            audio_tx,
-            codec_info,
-            crate::whep::WhepPeerOptions {
-                ice_servers: params.ice_servers.clone(),
-                ..Default::default()
-            },
-            Some(state_tx),
-            verify.is_some().then_some(video_mime_tx),
-        ) => match result {
-            Ok(parts) => parts,
-            Err(e) => {
-                // Same cleanup as the cancel branch below: the WHEP POST may
-                // already have gone through (e.g. set_configuration or
-                // set_remote_description failed), so remove the server-side
-                // resource instead of leaking the session.
-                peer_ct.cancel();
-                if client.session_url.is_some() {
-                    let _ = client.remove_resource().await;
-                }
-                return (Duration::ZERO, Err(e));
-            }
+    let (peer, _answer, _stats, mut dc_recv_rx, _dc_send_tx) = match crate::whep::setup_whep_peer(
+        peer_ct.clone(),
+        &mut client,
+        video_tx,
+        audio_tx,
+        codec_info,
+        crate::whep::WhepPeerOptions {
+            ice_servers: params.ice_servers.clone(),
+            ..Default::default()
         },
-        _ = ct.cancelled() => {
-            // The half-built peer goes away with the setup future; remove the
-            // server-side resource when the WHEP POST already went through so
-            // the stream does not leak.
-            if client.session_url.is_some() {
-                let _ = client.remove_resource().await;
-            }
-            peer_ct.cancel();
+        Some(state_tx),
+        verify.is_some().then_some(video_mime_tx),
+    )
+    .await
+    {
+        Ok(parts) => parts,
+        Err(_) if ct.is_cancelled() => {
             return (Duration::ZERO, Ok(SessionOutcome::Cancelled));
         }
+        Err(e) => return (Duration::ZERO, Err(e)),
     };
 
     // The media path is ready: connected time starts here.
@@ -431,7 +415,7 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// Owns the verifier task; created by [`run`] when verification is enabled.
+/// Owns the verifier future; created by [`run`] when verification is enabled.
 struct VerifierHandle {
     #[cfg(feature = "rsmpeg")]
     inner: Option<VerifierInner>,
@@ -440,7 +424,7 @@ struct VerifierHandle {
 #[cfg(feature = "rsmpeg")]
 struct VerifierInner {
     session: SessionVerify,
-    task: tokio::task::JoinHandle<VerifyStats>,
+    future: Pin<Box<dyn Future<Output = VerifyStats> + Send>>,
 }
 
 impl VerifierHandle {
@@ -454,7 +438,7 @@ impl VerifierHandle {
         let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
         let (mime_tx, mime_rx) = watch::channel(None::<String>);
         let ct = parent_ct.child_token();
-        let task = tokio::spawn(run_verifier(
+        let future = Box::pin(run_verifier(
             verify_rx,
             target_tx,
             Arc::clone(&active),
@@ -470,7 +454,7 @@ impl VerifierHandle {
                     active,
                     mime_tx: Arc::new(mime_tx),
                 },
-                task,
+                future,
             }),
         })
     }
@@ -496,12 +480,7 @@ impl VerifierHandle {
     async fn finish(self) -> Option<VerifyStats> {
         #[cfg(feature = "rsmpeg")]
         if let Some(inner) = self.inner {
-            match inner.task.await {
-                Ok(stats) => return Some(stats),
-                Err(e) => {
-                    tracing::warn!(error = ?e, "WHEP verifier task failed; all decode verification results were lost")
-                }
-            }
+            return Some(inner.future.await);
         }
         None
     }
@@ -545,6 +524,7 @@ async fn run_verifier(
 
     if !crate::probe::decoder::supports_mime(&mime) {
         tracing::warn!(%mime, "decode verifier does not support this codec, verification disabled");
+        stats.unsupported = true;
         stats.note = Some(format!(
             "codec {mime} is not supported by the decode verifier"
         ));
@@ -569,6 +549,19 @@ async fn run_verifier(
 
         match decode_window(&mime, &mut verify_rx, index, window, &ct).await {
             WindowOutcome::Cancelled => break,
+            WindowOutcome::WorkerStartFailed(error) => {
+                stats.windows_total += 1;
+                stats.sessions_covered.insert(index);
+                stats.windows_failed += 1;
+                stats.sessions_failed.insert(index);
+                stats.last_error = Some(format!("session {index}: {error:#}"));
+                tracing::warn!(
+                    session = index,
+                    error = ?error,
+                    "decode worker start failed; stopping verifier"
+                );
+                break;
+            }
             WindowOutcome::Done(result) => {
                 stats.windows_total += 1;
                 stats.sessions_covered.insert(index);
@@ -635,6 +628,9 @@ enum WindowOutcome {
     /// Shutdown or the end of all sessions cut the window short; it is not
     /// recorded in the stats.
     Cancelled,
+    /// The worker could not be located, spawned or initialized. Retrying it in
+    /// a tight loop would only produce failures and process churn.
+    WorkerStartFailed(anyhow::Error),
     /// The window ran its course (or the decoder died on its own); carries
     /// the decoder result `(width, height, frames)`.
     Done(Result<(u32, u32, u32)>),
@@ -643,10 +639,10 @@ enum WindowOutcome {
 /// Why the packet forwarding loop of a window ended.
 #[cfg(feature = "rsmpeg")]
 enum ForwardEnd {
-    /// The window duration elapsed.
+    /// The window duration elapsed; close stdin and collect the flushed result.
     Expired,
-    /// The decoder thread is gone; its result carries the reason.
-    DecoderGone,
+    /// Sending to the decode worker failed or the worker exited.
+    DecoderFailed(anyhow::Error),
     /// Shutdown started or every session went away.
     Shutdown,
 }
@@ -662,85 +658,72 @@ async fn decode_window(
     window: Duration,
     ct: &CancellationToken,
 ) -> WindowOutcome {
-    /// Extra time the decoder thread gets past the window to flush; the join
-    /// timeout below adds a margin on top of its own deadline.
+    /// Extra time the worker gets past the window for EOF, decoder flush, and
+    /// process collection.
     const DECODER_GRACE: Duration = Duration::from_secs(2);
 
-    let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(VERIFY_CHANNEL_CAPACITY);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let decoder = tokio::task::spawn_blocking({
-        let mime = mime.to_string();
-        let cancelled = Arc::clone(&cancelled);
-        move || {
-            crate::probe::decoder::run_ffi_decoder(
-                mime,
-                None,
-                packet_rx,
-                cancelled,
-                window + DECODER_GRACE,
-            )
-        }
-    });
+    use crate::probe::worker::{DecodeSummary, DecodeWorker, DecodeWorkerConfig};
 
-    // Forward packets until the window expires, shutdown starts, every
-    // session is gone, or the decoder thread dies. Only shutdown skips
-    // recording; a dead decoder is exactly the failure the window measures.
-    // The deadline is created once and pinned: a per-iteration `sleep(window)`
-    // would restart on every packet and never fire under continuous traffic.
-    let deadline = tokio::time::sleep(window);
-    tokio::pin!(deadline);
-    let end = tokio::select! {
-        _ = ct.cancelled() => ForwardEnd::Shutdown,
-        end = async {
-            loop {
-                tokio::select! {
-                    packet = verify_rx.recv() => {
-                        match packet {
-                            Some((session, packet)) => {
-                                // Stale packet from a previously targeted
-                                // session whose forwarder had not observed the
-                                // target switch yet: drop it instead of feeding
-                                // a foreign sequence space to the decoder.
-                                if session != target {
-                                    continue;
-                                }
-                                match packet_tx.try_send(packet) {
-                                    Ok(()) => {}
-                                    // The decoder is backed up: drop the
-                                    // packet (RTP decoding tolerates loss)
-                                    // rather than stall the forward loop,
-                                    // mirroring the upstream try_send.
-                                    Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-                                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                                        break ForwardEnd::DecoderGone;
-                                    }
-                                }
-                            }
-                            None => break ForwardEnd::Shutdown,
-                        }
-                    }
-                    _ = &mut deadline => break ForwardEnd::Expired,
-                }
-            }
-        } => end,
+    let worker_deadline = tokio::time::Instant::now() + window + DECODER_GRACE * 2;
+    let mut worker = match DecodeWorker::start(
+        DecodeWorkerConfig {
+            mime_type: mime.to_string(),
+            sprop_params: None,
+        },
+        ct,
+        worker_deadline,
+    )
+    .await
+    {
+        Ok(worker) => worker,
+        Err(_) if ct.is_cancelled() => return WindowOutcome::Cancelled,
+        Err(error) => return WindowOutcome::WorkerStartFailed(error),
     };
 
-    cancelled.store(true, Ordering::Relaxed);
-    let result = tokio::time::timeout(DECODER_GRACE * 2, decoder).await;
-    if matches!(end, ForwardEnd::Shutdown) {
-        return WindowOutcome::Cancelled;
-    }
-    match result {
-        Ok(Ok(result)) => WindowOutcome::Done(result),
-        // A JoinError also covers cancellation from runtime shutdown, so only
-        // call it a panic when it actually is one.
-        Ok(Err(e)) if e.is_panic() => {
-            WindowOutcome::Done(Err(anyhow!("decoder task panicked: {e}")))
+    // The deadline is absolute and shared with sends: a per-iteration sleep or
+    // an unmonitored pipe write could otherwise extend the window forever under
+    // continuous traffic or backpressure.
+    let window_deadline = tokio::time::Instant::now() + window;
+    let end = loop {
+        tokio::select! {
+            _ = ct.cancelled() => break ForwardEnd::Shutdown,
+            packet = verify_rx.recv() => {
+                match packet {
+                    Some((session, packet)) => {
+                        // Stale packet from a previously targeted session whose
+                        // forwarder had not observed the target switch yet.
+                        if session != target {
+                            continue;
+                        }
+                        if let Err(error) = worker.send_rtp(&packet, ct, window_deadline).await {
+                            break ForwardEnd::DecoderFailed(error);
+                        }
+                    }
+                    None => break ForwardEnd::Shutdown,
+                }
+            }
+            _ = tokio::time::sleep_until(window_deadline) => break ForwardEnd::Expired,
         }
-        Ok(Err(e)) => WindowOutcome::Done(Err(anyhow!("decoder task was cancelled: {e}"))),
-        // Aborting a blocking task does not stop the thread; it still exits
-        // on its own deadline. Detach and count the window failed.
-        Err(_) => WindowOutcome::Done(Err(anyhow!("decoder thread did not stop after the window"))),
+    };
+
+    match end {
+        ForwardEnd::Shutdown => {
+            // Explicit drop runs the worker's synchronous kill+reap guard.
+            drop(worker);
+            WindowOutcome::Cancelled
+        }
+        ForwardEnd::DecoderFailed(_) if ct.is_cancelled() => WindowOutcome::Cancelled,
+        ForwardEnd::DecoderFailed(error) => WindowOutcome::Done(Err(error)),
+        ForwardEnd::Expired => match worker.finish(ct, worker_deadline).await {
+            Ok(DecodeSummary::Video(decoded)) => {
+                WindowOutcome::Done(Ok((decoded.width, decoded.height, decoded.frame_count)))
+            }
+            Ok(DecodeSummary::Audio(_)) => {
+                WindowOutcome::Done(Err(anyhow!("video decode worker returned an audio result")))
+            }
+            Err(_) if ct.is_cancelled() => WindowOutcome::Cancelled,
+            Err(error) => WindowOutcome::Done(Err(error)),
+        },
     }
 }
 
@@ -755,6 +738,9 @@ async fn wait_for_stop(
     mut state_rx: watch::Receiver<RTCPeerConnectionState>,
 ) -> StopReason {
     loop {
+        if ct.is_cancelled() {
+            return StopReason::Requested;
+        }
         let state = *state_rx.borrow_and_update();
         if matches!(
             state,
@@ -766,6 +752,7 @@ async fn wait_for_stop(
             // Disconnected is potentially transient (ICE may recover); only
             // treat it as fatal when it outlives the grace period.
             tokio::select! {
+                biased;
                 _ = ct.cancelled() => return StopReason::Requested,
                 _ = peer_ct.cancelled() => {
                     return StopReason::PeerEnded(*state_rx.borrow());
@@ -782,6 +769,7 @@ async fn wait_for_stop(
             }
         }
         tokio::select! {
+            biased;
             _ = ct.cancelled() => return StopReason::Requested,
             _ = peer_ct.cancelled() => {
                 return StopReason::PeerEnded(*state_rx.borrow());
@@ -894,10 +882,91 @@ mod tests {
         assert_eq!(pick_next_active(&active, &mut cursor, &ct).await, None);
     }
 
+    #[cfg(feature = "rsmpeg")]
     #[tokio::test]
-    async fn wait_for_stop_reports_requested_cancel() {
+    async fn unsupported_codec_disables_verification_without_failed_windows() {
+        let (_verify_tx, verify_rx) = mpsc::channel(1);
+        let (target_tx, _target_rx) = watch::channel(None);
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+        let (_mime_tx, mime_rx) = watch::channel(Some("video/x-unknown".to_string()));
+        let stats = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_verifier(
+                verify_rx,
+                target_tx,
+                active,
+                mime_rx,
+                Duration::from_millis(1),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("unsupported codec did not disable verification");
+
+        assert!(stats.unsupported);
+        assert_eq!(stats.windows_total, 0);
+        assert_eq!(stats.windows_failed, 0);
+        assert!(stats.last_error.is_none());
+        assert!(
+            stats
+                .note
+                .as_deref()
+                .is_some_and(|note| note.contains("video/x-unknown")),
+            "{stats:?}"
+        );
+    }
+
+    #[cfg(feature = "rsmpeg")]
+    #[tokio::test]
+    async fn worker_start_failure_stops_verifier_without_spinning() {
+        static WORKER_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        let _lock = WORKER_ENV_LOCK.lock().await;
+        let previous = std::env::var_os("LIVE777_WHEPPROBE_BIN");
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing-whepprobe");
+        unsafe {
+            std::env::set_var("LIVE777_WHEPPROBE_BIN", missing);
+        }
+
+        let (_verify_tx, verify_rx) = mpsc::channel(1);
+        let (target_tx, _target_rx) = watch::channel(None);
+        let active = Arc::new(std::sync::Mutex::new(BTreeSet::from([0])));
+        let (_mime_tx, mime_rx) = watch::channel(Some("video/vp8".to_string()));
+        let stats = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_verifier(
+                verify_rx,
+                target_tx,
+                active,
+                mime_rx,
+                Duration::from_millis(1),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("verifier retried a permanent worker startup error");
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("LIVE777_WHEPPROBE_BIN", value) },
+            None => unsafe { std::env::remove_var("LIVE777_WHEPPROBE_BIN") },
+        }
+        assert_eq!(stats.windows_total, 1);
+        assert_eq!(stats.windows_failed, 1);
+        assert_eq!(stats.sessions_failed, BTreeSet::from([0]));
+        assert!(
+            stats
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("failed to spawn decode worker")),
+            "{stats:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_stop_prioritizes_requested_cancel() {
         let ct = CancellationToken::new();
-        let peer_ct = CancellationToken::new();
+        let peer_ct = ct.child_token();
         let (_state_tx, state_rx) = watch::channel(RTCPeerConnectionState::New);
 
         ct.cancel();

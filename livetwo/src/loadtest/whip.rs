@@ -39,8 +39,31 @@ pub fn session_whip_url(base_url: &str, index: usize) -> Result<String> {
     Ok(url.to_string())
 }
 
-/// Run `config.session_count` synthetic WHIP publishers concurrently.
+/// Run publishers with the original all-failed error contract.
 pub async fn run(
+    config: &LoadtestConfig,
+    publisher_config: PublisherConfig,
+    ct: CancellationToken,
+) -> Result<LoadtestStats> {
+    let stats = collect(config, publisher_config, ct).await?;
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled < stats.sessions_total as u64
+    {
+        anyhow::bail!("all {} loadtest session(s) failed", stats.sessions_total);
+    }
+    if stats.sessions_connected == 0
+        && stats.sessions_total > 0
+        && stats.sessions_cancelled == stats.sessions_total as u64
+    {
+        tracing::warn!("all sessions were cancelled before connecting; no traffic flowed");
+    }
+    Ok(stats)
+}
+
+/// Collect publisher stats without applying acceptance rules, so callers can
+/// report even an all-failed run.
+pub async fn collect(
     config: &LoadtestConfig,
     publisher_config: PublisherConfig,
     ct: CancellationToken,

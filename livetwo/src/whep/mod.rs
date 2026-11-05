@@ -86,7 +86,7 @@ pub async fn from_with_state(
         Client::get_auth_header_map(token.clone())?,
     );
 
-    let (peer, answer, stats, dc_recv_rx, dc_send_tx) = webrtc::setup_whep_peer(
+    let (peer, answer, stats, dc_recv_rx, dc_send_tx) = match webrtc::setup_whep_peer(
         ct.clone(),
         &mut client,
         video_send,
@@ -100,7 +100,12 @@ pub async fn from_with_state(
         state_tx,
         None,
     )
-    .await?;
+    .await
+    {
+        Ok(setup) => setup,
+        Err(_) if ct.is_cancelled() => return Ok(()),
+        Err(error) => return Err(error),
+    };
     info!("WebRTC peer connection established");
 
     // Start DataChannel <-> UDP forwarding if cable_url is configured. The
@@ -497,6 +502,46 @@ fn start_initial_transport_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn setup_cancellation_returns_ok() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let ct = CancellationToken::new();
+        let handle = tokio::spawn(from(
+            ct.clone(),
+            "rtp://127.0.0.1:9000".to_string(),
+            format!("http://{addr}/whep/test"),
+            None,
+            None,
+            None,
+            None,
+            "-".to_string(),
+            Vec::new(),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), accepted_rx)
+            .await
+            .expect("WHEP POST was not started")
+            .unwrap();
+        ct.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("setup cancellation did not finish")
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
 
     #[test]
     fn codec_wait_requires_every_negotiated_track_without_output_filters() {

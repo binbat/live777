@@ -1,10 +1,40 @@
+---
+description: >-
+  Bridge a Live777 WHEP stream to RTP or RTSP, write receiver SDP, and
+  diagnose authentication, media, and ICE failures.
+---
+
 # WhepFrom
 
 `WHEP` to `RTP`/`RTSP` tool
 
-This tool has two working mode:
+This tool has two working modes:
 - `rtp`
 - `rtsp as client`
+
+Use [whipinto](/guide/whipinto) for the reverse RTP/RTSP → WHIP direction, or
+follow the [three-terminal loop](/guide/getting-started#verify-the-rtp-bridge-in-three-terminals).
+
+## Get it and prerequisites
+
+Download a package or prebuilt binary using the
+[installation guide](/guide/installation), or build from this repository with
+`cargo build --release --bin whepfrom`. You need a reachable Live777 WHEP
+endpoint with an active publisher. RTP playback also needs a receiver such as
+ffplay or VLC; RTSP output needs a running RTSP server.
+
+## Bearer token
+
+If `live777.toml` contains `tokens = ["live777"]` under `[auth]`, pass the
+same token with `-t`:
+
+```bash
+whepfrom -t live777 -w http://127.0.0.1:7777/whep/777 \
+  -o rtp://127.0.0.1:9000 --sdp-file output.sdp
+```
+
+Do not put tokens in URLs or commit them to shell history and configuration
+files intended for publication.
 
 ## Options
 
@@ -92,4 +122,16 @@ whepfrom -w http://localhost:7777/whep/777 -o rtsp://127.0.0.1:8554/777
 ```bash
 whepfrom -w http://localhost:7777/whep/test-rtsp -o rtsp://localhost:8554/test-rtsp?transport=tcp
 ```
+
+## Troubleshooting
+
+Run with `-vv` to include WebRTC and bridge diagnostics. Authentication, HTTP
+status codes and ICE failures are covered once in
+[Troubleshooting](/guide/troubleshooting); the rows below are specific to this
+tool.
+
+| Symptom | What to check |
+|---------|---------------|
+| `404 Not Found` | Check the `/whep/<stream>` URL, stream name, server port and reverse-proxy path. With the default `auto_create_whep=true`, subscribing creates a missing stream, so the publisher does not need to create it first. If automatic creation is disabled globally or for this stream, make sure the publisher or an administrator creates it before subscribing. |
+| Connected, but no media | Confirm the stream has an active publisher and negotiated tracks. For RTP, use `-o rtp://127.0.0.1:9000 --sdp-file output.sdp` (not a bare SDP output), open that SDP in the receiver, and check UDP firewall/port rules. |
 

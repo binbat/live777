@@ -273,14 +273,8 @@ pub async fn run_rtsp_roundtrip_gst<S: Source>(
             video_tracks: u32::from(profile.video.is_some()),
             audio_tracks: u32::from(profile.audio.is_some()),
             duration_ms,
-            codecs: [
-                profile.video.map(|v| v.codec.ffprobe_name()),
-                profile.audio.map(|a| a.ffprobe_name()),
-            ]
-            .into_iter()
-            .flatten()
-            .map(str::to_string)
-            .collect(),
+            video_codec: profile.video.map(|v| v.codec.ffprobe_name().to_string()),
+            audio_codec: profile.audio.map(|a| a.ffprobe_name().to_string()),
             audio_channels: profile.audio.map(|a| a.channels() as u32).unwrap_or(0),
         },
         other => PlayResult {
@@ -1254,14 +1248,19 @@ where
 
 fn assert_playback_ok(player_name: &str, profile: &MediaProfile, playback: &PlayResult) {
     /// Players report codec names in different conventions: ffprobe uses
-    /// lowercase (`h264`, `hevc`), the rsmpeg probe uses RTP names (`H264`,
-    /// `H265`). Compare case-insensitively and treat h265/hevc as aliases.
+    /// lowercase (`h264`, `hevc`, `adpcm_g722`), the rsmpeg probe uses RTP
+    /// names (`H264`, `H265`, `G722`). Compare aliases case-insensitively.
     fn codec_matches(reported: &str, expected: &str) -> bool {
         let reported = reported.to_lowercase();
         let expected = expected.to_lowercase();
         reported == expected
-            || (reported == "h265" && expected == "hevc")
-            || (reported == "hevc" && expected == "h265")
+            || matches!(
+                (reported.as_str(), expected.as_str()),
+                ("h265", "hevc")
+                    | ("hevc", "h265")
+                    | ("g722", "adpcm_g722")
+                    | ("adpcm_g722", "g722")
+            )
     }
 
     assert!(
@@ -1291,15 +1290,12 @@ fn assert_playback_ok(player_name: &str, profile: &MediaProfile, playback: &Play
                 playback.video_height, spec.height,
                 "{player_name} video height mismatch for {profile}"
             );
-            if !playback.codecs.is_empty() {
+            if let Some(codec) = &playback.video_codec {
                 assert!(
-                    playback
-                        .codecs
-                        .iter()
-                        .any(|c| codec_matches(c, spec.codec.ffprobe_name())),
+                    codec_matches(codec, spec.codec.ffprobe_name()),
                     "{player_name} expected video codec {} for {profile}, got {:?}",
                     spec.codec.ffprobe_name(),
-                    playback.codecs
+                    playback.video_codec
                 );
             }
         }
@@ -1322,15 +1318,12 @@ fn assert_playback_ok(player_name: &str, profile: &MediaProfile, playback: &Play
                     "{player_name} audio channel mismatch for {profile}"
                 );
             }
-            if !playback.codecs.is_empty() {
+            if let Some(codec) = &playback.audio_codec {
                 assert!(
-                    playback
-                        .codecs
-                        .iter()
-                        .any(|c| codec_matches(c, audio.ffprobe_name())),
+                    codec_matches(codec, audio.ffprobe_name()),
                     "{player_name} expected audio codec {} for {profile}, got {:?}",
                     audio.ffprobe_name(),
-                    playback.codecs
+                    playback.audio_codec
                 );
             }
         }
@@ -1573,4 +1566,32 @@ async fn wait_for_publish_connected(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(publish_connected, "Publish session did not reach Connected");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_playback_ok;
+    use crate::player::PlayResult;
+    use crate::profile::{AudioCodec, MediaProfile, VideoCodec};
+
+    #[test]
+    #[should_panic(expected = "expected video codec h264")]
+    fn swapped_track_codecs_fail_validation() {
+        let profile = MediaProfile::av(VideoCodec::H264, AudioCodec::Opus);
+        let playback = PlayResult {
+            success: true,
+            connected: true,
+            video_width: MediaProfile::DEFAULT_WIDTH,
+            video_height: MediaProfile::DEFAULT_HEIGHT,
+            video_tracks: 1,
+            audio_tracks: 1,
+            duration_ms: 1,
+            video_codec: Some(AudioCodec::Opus.ffprobe_name().to_string()),
+            audio_codec: Some(VideoCodec::H264.ffprobe_name().to_string()),
+            audio_channels: AudioCodec::Opus.channels() as u32,
+            ..Default::default()
+        };
+
+        assert_playback_ok("test", &profile, &playback);
+    }
 }

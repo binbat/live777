@@ -6,6 +6,28 @@
 - `rtp`
 - `rtsp as client`
 
+反向的 RTP/RTSP → WHIP 请使用 [whipinto](/zh/guide/whipinto)；完整本机闭环见
+[三终端验流步骤](/zh/guide/getting-started#用三个终端验证-rtp-桥接闭环)。
+
+## 获取工具与前置条件
+
+请按[安装指南](/zh/guide/installation)下载软件包或预编译二进制，或在仓库中
+运行 `cargo build --release --bin whepfrom` 从源码构建。运行前需要可访问且
+已有发布者的 Live777 WHEP 端点。RTP 播放还需要 ffplay 或 VLC 等接收端；
+RTSP 输出则需要运行中的 RTSP 服务器。
+
+## Bearer token
+
+如果 `live777.toml` 的 `[auth]` 下配置了 `tokens = ["live777"]`，请用
+`-t` 传入相同 token：
+
+```bash
+whepfrom -t live777 -w http://127.0.0.1:7777/whep/777 \
+  -o rtp://127.0.0.1:9000 --sdp-file output.sdp
+```
+
+不要把 token 放进 URL，也不要把真实 token 写入公开的 shell 历史或配置文件。
+
 ## 选项
 
 | 选项 | 默认值 | 说明 |
@@ -50,13 +72,13 @@ whepfrom -o rtp://230.1.1.1:1720 -w http://localhost:7777/whep/777 --sdp-file ou
 1）和 `?interface=...`（IPv4 组填 IPv4 网卡地址，IPv6 组填网卡序号
 或名称）。单播目标配置这两项会被拒绝。
 
-使用 [`ffplay`](/guide/ffmpeg) 来播放
+使用 [`ffplay`](/zh/guide/ffmpeg) 来播放
 
 ```bash
 ffplay -protocol_whitelist rtp,file,udp -i output.sdp
 ```
 
-使用 [`vlc`](/guide/vlc) 来播放
+使用 [`vlc`](/zh/guide/vlc) 来播放
 
 ```bash
 vlc output.sdp
@@ -90,4 +112,14 @@ whepfrom -w http://localhost:7777/whep/777 -o rtsp://127.0.0.1:8554/777
 ```bash
 whepfrom -w http://localhost:7777/whep/test-rtsp -o rtsp://localhost:8554/test-rtsp?transport=tcp
 ```
+
+## 排障
+
+使用 `-vv` 输出 WebRTC 和桥接诊断日志。认证、HTTP 状态码和 ICE 失败的通用检查
+见 [排障](/zh/guide/troubleshooting)；下表只列本工具特有的问题。
+
+| 现象 | 检查项 |
+|------|--------|
+| `404 Not Found` | 检查 `/whep/<stream>` URL、流名、端口和反向代理路径。默认 `auto_create_whep=true` 时，订阅会自动创建尚不存在的流，无需发布者先创建；如果全局或该流的配置禁用了自动创建，则需先由发布者或管理员创建该流再订阅。 |
+| 已连接但没有媒体 | 确认流有活动发布者并已协商轨道。RTP 模式必须使用 `-o rtp://127.0.0.1:9000 --sdp-file output.sdp`（不能只用裸 SDP 输出），让接收端打开该 SDP，并检查 UDP 防火墙和端口。 |
 

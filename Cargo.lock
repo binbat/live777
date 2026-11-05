@@ -2529,6 +2529,7 @@ dependencies = [
  "sdp",
  "sdp-types",
  "serde",
+ "serde_json",
  "socket2 0.6.4",
  "tempfile",
  "tokio",

@@ -1,12 +1,12 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use libwish::Client;
 use tokio::sync::Mutex;
@@ -14,16 +14,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use webrtc::peer_connection::RTCPeerConnectionState;
 
+use crate::probe::decoder::DecodedAudio;
+use crate::probe::worker::{DecodeSummary, DecodeWorker, DecodeWorkerConfig, VideoDecodeResult};
 use crate::probe::{ProbeBackend, ProbeConfig, ProbeResult};
 use crate::utils::shutdown::graceful_shutdown;
 
 /// WHEP probe backend that receives RTP payloads directly from the WebRTC
-/// peer connection, depacketizes them into encoded frames, and decodes them
-/// with rsmpeg/FFmpeg through FFI.
-///
-/// Unlike the previous implementation this avoids an intermediate RTP/UDP
-/// bridge: encoded frames travel from the Rust WebRTC stack to FFmpeg in the
-/// same process.
+/// peer connection and sends them to isolated whepprobe decode workers. The
+/// workers reuse the rsmpeg/FFmpeg RTP frame decoder; no RTP/UDP bridge or
+/// in-process FFmpeg decoding is involved.
 #[derive(Debug, Clone, Copy)]
 pub struct RsmpegProbe {
     /// How long to decode after the subscribe session becomes connected.
@@ -50,37 +49,18 @@ impl ProbeBackend for RsmpegProbe {
         info!(
             whep_url = %config.whep_url,
             codec = ?config.video_codec,
-            "Starting rsmpeg WHEP probe (FFI encoded-frame path)"
+            "Starting rsmpeg WHEP probe (decode-worker path)"
         );
 
         let ct = CancellationToken::new();
         let (state_tx, mut state_rx) = tokio::sync::watch::channel(RTCPeerConnectionState::New);
-        // Use a bounded channel so a slow decoder cannot cause unbounded memory
-        // growth. Backpressure will propagate to the WebRTC track reader.
-        let (video_tx, mut video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
-        // The rsmpeg probe only decodes video; give audio a small bounded
-        // channel and drain it so audio RTP does not accumulate in the WebRTC
-        // stack and spam the logs with drop warnings.
-        let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        // Bound the WebRTC track readers independently from the worker pipes so
+        // slow decoding cannot cause unbounded in-process memory growth.
+        let (video_tx, video_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+        let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
         let codec_info = Arc::new(Mutex::new(rtsp::CodecInfo::new()));
         let (video_mime_tx, mut video_mime_rx) = tokio::sync::watch::channel(None::<String>);
-
         let audio_bytes_received = Arc::new(AtomicU64::new(0));
-        let drain_ct = ct.clone();
-        let drain_bytes = audio_bytes_received.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some(packet) = audio_rx.recv() => {
-                        drain_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
-                    }
-                    _ = drain_ct.cancelled() => {
-                        debug!("rsmpeg probe audio drain task cancelled");
-                        break;
-                    }
-                }
-            }
-        });
 
         let mut client = Client::new(
             config.whep_url.clone(),
@@ -89,7 +69,7 @@ impl ProbeBackend for RsmpegProbe {
 
         // Create the peer connection in the current task so that the returned
         // `Arc<dyn PeerConnection>` stays alive for the whole probe duration.
-        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match crate::whep::setup_whep_peer(
+        let setup = crate::whep::setup_whep_peer(
             ct.clone(),
             &mut client,
             video_tx,
@@ -97,18 +77,16 @@ impl ProbeBackend for RsmpegProbe {
             codec_info.clone(),
             crate::whep::WhepPeerOptions {
                 ice_servers: config.ice_servers.clone(),
+                setup_timeout: Some(config.timeout),
                 ..Default::default()
             },
             Some(state_tx),
             Some(video_mime_tx),
         )
-        .await
-        {
+        .await;
+        let (peer, _answer, _stats, _dc_recv_rx, _dc_send_tx) = match setup {
             Ok(parts) => parts,
             Err(e) => {
-                // The audio drain task above waits on the cancellation token,
-                // and dropping a token does not cancel it; cancel explicitly
-                // so the task cannot leak when peer setup fails.
                 ct.cancel();
                 return Err(e);
             }
@@ -122,6 +100,9 @@ impl ProbeBackend for RsmpegProbe {
             // the configured expectation must not leak into failure results.
             video_codec: None,
             audio_codec: None,
+            audio_frame_count: 0,
+            audio_sample_rate: 0,
+            audio_channels: 0,
             width: 0,
             height: 0,
             frame_count: 0,
@@ -134,7 +115,7 @@ impl ProbeBackend for RsmpegProbe {
         };
 
         // The overall probe must respect config.timeout across all phases:
-        // connection, codec detection, and decoding.
+        // connection, codec detection, decoding, and worker collection.
         let deadline = start + config.timeout;
 
         let connected = wait_for_state(
@@ -191,10 +172,11 @@ impl ProbeBackend for RsmpegProbe {
         );
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        // Keep a small margin for the decoder thread to shut down cleanly.
+        // Keep a small margin for normal EOF, decoder flush, and child reaping.
+        // The caller's decode window is only bounded by the remaining probe
+        // budget; a hard cap here silently truncated `--decode-duration`.
         let decode_duration = self
             .decode_duration
-            .min(Duration::from_secs(10))
             .min(remaining.saturating_sub(Duration::from_secs(2)));
         if decode_duration.is_zero() {
             ct.cancel();
@@ -207,98 +189,233 @@ impl ProbeBackend for RsmpegProbe {
             return Ok(result);
         }
 
-        let sprop_params = config.sprop_params.clone();
-        let (packet_tx, packet_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-
-        // Forward RTP packets from the async WebRTC reader to the blocking
-        // FFmpeg decoder thread. Stop when cancelled or when the decode window
-        // has elapsed so the probe cannot outlive its timeout.
-        //
-        // Note: if packet_tx.send(packet) blocks because the decoder thread is
-        // not consuming, the sleep branch will not fire. The decoder thread uses
-        // a short recv_timeout loop and will drop packet_rx on its own timeout,
-        // which unblocks the forwarder and lets it exit.
-        let forward_ct = ct.clone();
         let video_bytes_received = Arc::new(AtomicU64::new(0));
-        let forward_bytes = video_bytes_received.clone();
-        let forward_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some(packet) = video_rx.recv() => {
-                        forward_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
-                        if packet_tx.send(packet).is_err() {
-                            break;
-                        }
-                    }
-                    _ = forward_ct.cancelled() => break,
-                    _ = tokio::time::sleep(decode_duration) => break,
-                }
-            }
-        });
+        // These futures are joined in-place rather than spawned. Dropping the
+        // probe therefore drops both workers and synchronously reaps them.
+        let video_decode = run_video_decoder(
+            mime_type,
+            config.sprop_params.clone(),
+            video_rx,
+            video_bytes_received.clone(),
+            ct.clone(),
+            decode_duration,
+            deadline,
+        );
+        let audio_decode = run_audio_decoder(
+            audio_rx,
+            codec_info.clone(),
+            audio_bytes_received.clone(),
+            ct.clone(),
+            decode_duration,
+            deadline,
+        );
+        let (decode_result, audio_decode_result) = tokio::join!(video_decode, audio_decode);
+        ct.cancel();
 
-        let decoder_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let decoder_handle = tokio::task::spawn_blocking(move || {
-            crate::probe::decoder::run_ffi_decoder(
-                mime_type,
-                sprop_params.as_deref(),
-                packet_rx,
-                cancelled_clone,
-                decode_duration + Duration::from_secs(2),
-            )
-        });
-
-        let abort_handle = decoder_handle.abort_handle();
-        let decode_result = {
-            let decoder = decoder_handle;
-            let abort = abort_handle;
-            tokio::select! {
-                res = decoder => Some(res),
-                _ = tokio::time::sleep(decoder_timeout) => {
-                    // Abort the blocking task so the decoder thread does
-                    // not keep consuming CPU after the probe has timed out.
-                    abort.abort();
-                    None
-                }
-            }
-        };
-
-        cancelled.store(true, Ordering::Relaxed);
-        let _ = forward_handle.await;
-
+        let mut video_success = false;
         match decode_result {
-            Some(Ok(Ok((width, height, frame_count)))) => {
-                result.width = width;
-                result.height = height;
-                result.frame_count = frame_count;
-                result.video_tracks = if frame_count > 0 { 1 } else { 0 };
-                result.success = frame_count > 0 && width > 0 && height > 0;
+            Ok(decoded) => {
+                result.width = decoded.width;
+                result.height = decoded.height;
+                result.frame_count = decoded.frame_count;
+                result.video_tracks = u32::from(decoded.frame_count > 0);
+                video_success = decoded.frame_count > 0 && decoded.width > 0 && decoded.height > 0;
             }
-            Some(Ok(Err(e))) => {
-                result.error = Some(format!("decoder error: {e:?}"));
-            }
-            Some(Err(e)) => {
-                result.error = Some(format!("decode task panicked: {e:?}"));
-            }
-            None => {
-                result.error = Some("decoder timed out".to_string());
+            Err(e) => {
+                append_decode_error(&mut result.error, format!("video decoder error: {e:?}"));
             }
         }
 
         result.video_bytes_received = video_bytes_received.load(Ordering::Relaxed);
         result.audio_bytes_received = audio_bytes_received.load(Ordering::Relaxed);
-        // The probe does not decode audio; treat received bytes as the track
-        // signal so AV profiles can assert on it.
         result.audio_tracks = u32::from(result.audio_bytes_received > 0);
-        // The negotiated audio codec is reported as well (no decoding needed)
-        // so AV profiles can assert on it.
         result.audio_codec = negotiated_audio_codec(&codec_info).await;
+
+        match audio_decode_result {
+            Some(Ok(decoded)) => {
+                result.audio_frame_count = decoded.frame_count;
+                result.audio_sample_rate = decoded.sample_rate;
+                result.audio_channels = decoded.channels;
+            }
+            Some(Err(e)) => {
+                append_decode_error(&mut result.error, format!("audio decoder error: {e:?}"));
+            }
+            None => {}
+        }
+        let audio_success = result.audio_bytes_received == 0 || result.audio_frame_count > 0;
+        if result.audio_bytes_received > 0
+            && result.audio_frame_count == 0
+            && result.error.is_none()
+        {
+            result.error = Some("audio decoder produced no frames".to_string());
+        }
+        result.success = video_success && audio_success && result.error.is_none();
 
         ct.cancel();
         graceful_shutdown("WHEP", &mut client, peer).await;
         result.duration_ms = start.elapsed().as_millis() as u64;
         Ok(result)
+    }
+}
+
+async fn run_video_decoder(
+    mime_type: String,
+    sprop_params: Option<String>,
+    video_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    bytes_received: Arc<AtomicU64>,
+    ct: CancellationToken,
+    decode_duration: Duration,
+    hard_deadline: tokio::time::Instant,
+) -> Result<VideoDecodeResult> {
+    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    let forward = forward_packets(
+        video_rx,
+        packet_tx,
+        "video",
+        bytes_received,
+        ct.clone(),
+        decode_duration,
+    );
+    let decode = async {
+        let mut worker = DecodeWorker::start(
+            DecodeWorkerConfig {
+                mime_type,
+                sprop_params,
+            },
+            &ct,
+            hard_deadline,
+        )
+        .await?;
+        while let Some(packet) = packet_rx.recv().await {
+            worker.send_rtp(&packet, &ct, hard_deadline).await?;
+        }
+        match worker.finish(&ct, hard_deadline).await? {
+            DecodeSummary::Video(decoded) => Ok(decoded),
+            DecodeSummary::Audio(_) => bail!("video decode worker returned an audio result"),
+        }
+    };
+    let (_, decoded) = tokio::join!(forward, decode);
+    decoded
+}
+
+async fn run_audio_decoder(
+    audio_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    bytes_received: Arc<AtomicU64>,
+    ct: CancellationToken,
+    decode_duration: Duration,
+    hard_deadline: tokio::time::Instant,
+) -> Option<Result<DecodedAudio>> {
+    let (packet_tx, packet_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    let forward = forward_packets(
+        audio_rx,
+        packet_tx,
+        "audio",
+        bytes_received,
+        ct.clone(),
+        decode_duration,
+    );
+    let (_, decoded) = tokio::join!(
+        forward,
+        decode_audio_packets(packet_rx, codec_info, ct, hard_deadline)
+    );
+    decoded
+}
+
+/// Preserve the original bounded packet queue ahead of FFmpeg. The forward and
+/// decode futures are joined in-place, so this extra buffering does not detach
+/// either side when the outer probe is dropped.
+async fn forward_packets(
+    mut source_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    packet_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    media_type: &'static str,
+    bytes_received: Arc<AtomicU64>,
+    ct: CancellationToken,
+    decode_duration: Duration,
+) {
+    let deadline = tokio::time::sleep(decode_duration);
+    tokio::pin!(deadline);
+    'forward: loop {
+        tokio::select! {
+            packet = source_rx.recv() => {
+                let Some(packet) = packet else { break };
+                let total_bytes = bytes_received.fetch_add(packet.len() as u64, Ordering::Relaxed)
+                    + packet.len() as u64;
+                debug!(media_type, total_bytes, "Received RTP packet");
+                tokio::select! {
+                    result = packet_tx.send(packet) => {
+                        if result.is_err() {
+                            break 'forward;
+                        }
+                    }
+                    _ = ct.cancelled() => break 'forward,
+                    _ = &mut deadline => break 'forward,
+                }
+            }
+            _ = ct.cancelled() => break,
+            _ = &mut deadline => break,
+        }
+    }
+}
+
+async fn decode_audio_packets(
+    mut packet_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    codec_info: Arc<Mutex<rtsp::CodecInfo>>,
+    ct: CancellationToken,
+    hard_deadline: tokio::time::Instant,
+) -> Option<Result<DecodedAudio>> {
+    let mut worker = None;
+    let result = async {
+        while let Some(packet) = packet_rx.recv().await {
+            if worker.is_none() {
+                let Some(mime_type) = negotiated_audio_mime(&codec_info).await else {
+                    return Err(anyhow!("audio RTP arrived without codec information"));
+                };
+                worker = Some(
+                    DecodeWorker::start(
+                        DecodeWorkerConfig {
+                            mime_type,
+                            sprop_params: None,
+                        },
+                        &ct,
+                        hard_deadline,
+                    )
+                    .await?,
+                );
+            }
+            worker
+                .as_mut()
+                .expect("audio worker was just initialized")
+                .send_rtp(&packet, &ct, hard_deadline)
+                .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        return Some(Err(error));
+    }
+
+    match worker {
+        Some(worker) => Some(
+            async {
+                match worker.finish(&ct, hard_deadline).await? {
+                    DecodeSummary::Audio(decoded) => Ok(decoded),
+                    DecodeSummary::Video(_) => bail!("audio decode worker returned a video result"),
+                }
+            }
+            .await,
+        ),
+        None => None,
+    }
+}
+
+fn append_decode_error(error: &mut Option<String>, new_error: String) {
+    if let Some(existing) = error {
+        existing.push_str("; ");
+        existing.push_str(&new_error);
+    } else {
+        *error = Some(new_error);
     }
 }
 
@@ -357,17 +474,40 @@ async fn wait_for_video_mime(
     }
 }
 
+async fn negotiated_audio_mime(codec_info: &Arc<Mutex<rtsp::CodecInfo>>) -> Option<String> {
+    codec_info
+        .lock()
+        .await
+        .audio_codec
+        .as_ref()
+        .map(|codec| codec.rtp_codec.mime_type.clone())
+}
+
 /// Read the audio codec negotiated for the WHEP session from the shared codec
 /// info, which the track reader populates once the first audio RTP packet
 /// arrives. Returns the bare codec name, e.g. `opus`.
 async fn negotiated_audio_codec(codec_info: &Arc<Mutex<rtsp::CodecInfo>>) -> Option<String> {
-    codec_info.lock().await.audio_codec.as_ref().map(|codec| {
-        codec
-            .rtp_codec
-            .mime_type
+    negotiated_audio_mime(codec_info).await.map(|mime_type| {
+        mime_type
             .rsplit('/')
             .next()
-            .unwrap_or(&codec.rtp_codec.mime_type)
+            .unwrap_or(&mime_type)
             .to_ascii_lowercase()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_decode_error;
+
+    #[test]
+    fn decode_errors_preserve_video_and_audio() {
+        let mut error = None;
+        append_decode_error(&mut error, "video decoder error: video".to_string());
+        append_decode_error(&mut error, "audio decoder error: audio".to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("video decoder error: video; audio decoder error: audio")
+        );
+    }
 }

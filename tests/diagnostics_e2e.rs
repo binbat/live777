@@ -9,65 +9,25 @@
 
 #![cfg(feature = "rsmpeg")]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 mod common;
-use common::shutdown_signal;
-
-static TRACING_INIT: Once = Once::new();
-
-fn init_test_environment() {
-    TRACING_INIT.call_once(|| {
-        // The server and both WebRTC children (which inherit the variable) run
-        // on this host. Pin ICE candidates to loopback so CI runners cannot
-        // choose an unroutable interface.
-        unsafe {
-            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
-        }
-
-        let filter = std::env::var("RUST_LOG")
-            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_test_writer()
-            .try_init();
-    });
-}
-
-/// Locate one of the workspace's binaries built alongside this test run.
-macro_rules! bin_path {
-    ($name:literal) => {
-        // Cargo sets CARGO_BIN_EXE_<name> for integration tests of the package
-        // that builds the binary; fall back to the conventional target
-        // directory layout.
-        option_env!(concat!("CARGO_BIN_EXE_", $name)).map_or_else(
-            || {
-                let mut path = std::env::current_exe().unwrap();
-                path.pop(); // deps/
-                path.pop(); // <profile>/
-                path.push($name);
-                path
-            },
-            PathBuf::from,
-        )
-    };
-}
 
 fn whipsynth_path() -> PathBuf {
-    bin_path!("whipsynth")
+    crate::bin_path!("whipsynth")
 }
 
 fn whepprobe_path() -> PathBuf {
-    bin_path!("whepprobe")
+    crate::bin_path!("whepprobe")
 }
 
 fn tool(path: PathBuf, args: &[&str]) -> Command {
@@ -172,18 +132,6 @@ impl SpawnedTool {
     }
 }
 
-/// Start liveion on an ephemeral loopback port and return its address.
-async fn start_liveion() -> SocketAddr {
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = vec!["*".to_string()].into();
-    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
-    addr
-}
-
 /// Wait until `stream_id` has a Connected publish session.
 ///
 /// The 30s budget outlasts the publisher's own connect timeout, so a
@@ -234,50 +182,62 @@ fn parse_probe_json(stdout: &str, stderr: &str) -> serde_json::Value {
     })
 }
 
-/// The default smoke flow closes the loop: whipsynth publishes VP8 video with
-/// opus audio, and whepprobe connects, decodes frames, and reports success.
-///
 /// Multi-threaded runtime: the in-process server handles ICE/DTLS/SRTP for
 /// both sessions, and a single-threaded runtime can stall ICE consent checks
 /// long enough to drop connections under load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn whipsynth_vp8_av_stream_probes_successfully() {
-    init_test_environment();
-    let addr = start_liveion().await;
+async fn whipsynth_vp8_opus_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", Some("opus")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_vp8_g722_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", Some("g722")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_av1_opus_stream_probes_successfully() {
+    assert_whipsynth_probe("av1", Some("opus")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn whipsynth_vp8_video_only_stream_probes_successfully() {
+    assert_whipsynth_probe("vp8", None).await;
+}
+
+async fn assert_whipsynth_probe(video_codec: &str, audio_codec: Option<&str>) {
+    let addr = common::start_liveion(None).await;
     let base = format!("http://{addr}");
-    let stream = format!("smoke-av-{}", std::process::id());
-
-    // Publish in the background until the cleanup below kills the publisher.
-    // `--ice-server ""` disables ICE servers on both peers, so the test sends
-    // no STUN/TURN traffic and passes on CI runners without UDP egress: every
-    // peer connects over loopback host candidates.
-    let mut publisher = spawn_tool(
-        whipsynth_path(),
-        &[
-            "-v",
-            "--whip",
-            &format!("{base}/whip/{stream}"),
-            "--vcodec",
-            "vp8",
-            "--acodec",
-            "opus",
-            "--ice-server",
-            "",
-        ],
+    let stream = format!(
+        "probe-{video_codec}-{}-{}",
+        audio_codec.unwrap_or("video-only"),
+        std::process::id()
     );
+    let whip_url = format!("{base}/whip/{stream}");
+    let whep_url = format!("{base}/whep/{stream}");
+    let mut publisher_args = vec![
+        "-v",
+        "--whip",
+        &whip_url,
+        "--vcodec",
+        video_codec,
+        "--ice-server",
+        "",
+    ];
+    if let Some(audio_codec) = audio_codec {
+        publisher_args.extend(["--acodec", audio_codec]);
+    }
+    let mut publisher = spawn_tool(whipsynth_path(), &publisher_args);
 
-    // Probe only once the publish session is up.
     wait_stream_connected(&addr, &stream, &mut publisher).await;
 
     let mut probe = tool(
         whepprobe_path(),
         &[
             "--whep",
-            &format!("{base}/whep/{stream}"),
+            &whep_url,
             "--output",
             "json",
-            // whipsynth emits one keyframe per second; leave one full GOP of
-            // slack instead of ending the decode window exactly at one GOP.
             "--decode-duration",
             "2",
             "--timeout",
@@ -286,7 +246,6 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
             "",
         ],
     );
-    // The probe's own timeout is 30s; give the process twice that to exit.
     let probe = tokio::time::timeout(Duration::from_secs(60), probe.output())
         .await
         .expect("whepprobe did not exit within 60s")
@@ -303,54 +262,41 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
     }
 
     let report = parse_probe_json(&probe_stdout, &probe_stderr);
-    assert_eq!(
-        Some(true),
-        report["success"].as_bool(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some(true),
-        report["connected"].as_bool(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert!(
-        report["frame_count"].as_u64().unwrap_or(0) > 0,
-        "probe decoded no frames:\n{probe_stdout}"
-    );
-    assert!(
-        report["width"].as_u64().unwrap_or(0) > 0,
-        "probe report has no width:\n{probe_stdout}"
-    );
-    assert!(
-        report["height"].as_u64().unwrap_or(0) > 0,
-        "probe report has no height:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some("vp8"),
-        report["video_codec"].as_str(),
-        "probe report:\n{probe_stdout}"
-    );
-    // The rsmpeg probe does not decode audio; it only reports the codec
-    // negotiated once the first audio RTP packet arrives and the bytes it
-    // drained. Assert on those reported fields only -- nothing here claims
-    // the audio was decoded.
-    assert_eq!(
-        Some("opus"),
-        report["audio_codec"].as_str(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert_eq!(
-        Some(1),
-        report["audio_tracks"].as_u64(),
-        "probe report:\n{probe_stdout}"
-    );
-    assert!(
-        report["audio_bytes_received"].as_u64().unwrap_or(0) > 0,
-        "probe received no audio bytes:\n{probe_stdout}"
-    );
+    assert_eq!(Some(true), report["success"].as_bool());
+    assert_eq!(Some(true), report["connected"].as_bool());
+    assert!(report["frame_count"].as_u64().unwrap_or(0) > 0);
+    assert!(report["width"].as_u64().unwrap_or(0) > 0);
+    assert!(report["height"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(Some(video_codec), report["video_codec"].as_str());
 
-    // The publisher must have survived the whole probe; a publisher that died
-    // mid-run would have silenced the stream underneath it.
+    if let Some(audio_codec) = audio_codec {
+        assert_eq!(Some(audio_codec), report["audio_codec"].as_str());
+        assert_eq!(Some(1), report["audio_tracks"].as_u64());
+        assert!(report["audio_bytes_received"].as_u64().unwrap_or(0) > 0);
+        assert!(
+            report["audio_frame_count"].as_u64().unwrap_or(0) > 0,
+            "probe received audio but decoded no audio frames:\n{probe_stdout}"
+        );
+        assert_eq!(
+            Some(if audio_codec == "opus" {
+                48_000
+            } else {
+                16_000
+            }),
+            report["audio_sample_rate"].as_u64()
+        );
+        assert_eq!(
+            Some(if audio_codec == "opus" { 2 } else { 1 }),
+            report["audio_channels"].as_u64()
+        );
+    } else {
+        assert!(report["audio_codec"].is_null());
+        assert_eq!(Some(0), report["audio_tracks"].as_u64());
+        assert_eq!(Some(0), report["audio_frame_count"].as_u64());
+        assert_eq!(Some(0), report["audio_sample_rate"].as_u64());
+        assert_eq!(Some(0), report["audio_channels"].as_u64());
+    }
+
     let alive = !publisher.has_exited();
     let (pub_stdout, pub_stderr) = publisher.captured_output();
     assert!(
@@ -358,16 +304,8 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
         "publisher exited during the probe:\nstdout:\n{pub_stdout}\nstderr:\n{pub_stderr}"
     );
 
-    // Cleanup: kill the publisher and wait for it and its drain tasks so no
-    // child process or tokio task leaks out of the test.
     let publisher = publisher.kill_and_wait().await;
-    let pub_stdout = String::from_utf8_lossy(&publisher.stdout);
-    let pub_stderr = String::from_utf8_lossy(&publisher.stderr);
-    assert!(
-        !publisher.status.success(),
-        "killed publisher should report a non-success status, got {:?}:\nstdout:\n{pub_stdout}\nstderr:\n{pub_stderr}",
-        publisher.status
-    );
+    assert!(!publisher.status.success());
 }
 
 /// The probe reports a structured failure for an endpoint that never delivers
@@ -376,8 +314,7 @@ async fn whipsynth_vp8_av_stream_probes_successfully() {
 /// accepts it and the peer connects but stays silent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whepprobe_reports_failure_without_media() {
-    init_test_environment();
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let stream = format!("no-media-{}", std::process::id());
 
     let mut probe = tool(
@@ -412,5 +349,161 @@ async fn whepprobe_reports_failure_without_media() {
         Some(false),
         report["success"].as_bool(),
         "probe report:\n{probe_stdout}"
+    );
+    for field in ["audio_frame_count", "audio_sample_rate", "audio_channels"] {
+        assert_eq!(
+            Some(0),
+            report[field].as_u64(),
+            "failure report must contain a stable zero {field}:\n{probe_stdout}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_codec_emits_structured_json_failure() {
+    let output = tool(
+        whepprobe_path(),
+        &[
+            "--whep",
+            "http://127.0.0.1:1/whep/live",
+            "--output",
+            "json",
+            "--codec",
+            "invalid",
+        ],
+    )
+    .output()
+    .await
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Invalid codec")),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn unresponsive_whep_http_respects_cli_timeout() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stalled_server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tool(
+            whepprobe_path(),
+            &[
+                "--whep",
+                &format!("http://{addr}/whep/live"),
+                "--output",
+                "json",
+                "--timeout",
+                "1",
+                "--ice-server",
+                "",
+            ],
+        )
+        .output(),
+    )
+    .await
+    .expect("whepprobe ignored its overall timeout")
+    .unwrap();
+    stalled_server.abort();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert_eq!(report["success"], false);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("timed out")),
+        "{report}"
+    );
+}
+
+async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "connection closed before HTTP headers arrived");
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return String::from_utf8_lossy(&request).into_owned();
+        }
+        assert!(request.len() < 65536, "HTTP headers are unexpectedly large");
+    }
+}
+
+#[tokio::test]
+async fn setup_timeout_deletes_created_whep_session() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut post, _) = listener.accept().await.unwrap();
+        let request = read_http_head(&mut post).await;
+        assert!(request.starts_with("POST /whep/live "), "{request}");
+        post.write_all(
+            b"HTTP/1.1 201 Created\r\nLocation: /session/test\r\nContent-Type: application/sdp\r\nContent-Length: 100\r\nConnection: keep-alive\r\n\r\nv=0\r\n",
+        )
+        .await
+        .unwrap();
+
+        let (mut delete, _) = listener.accept().await.unwrap();
+        let request = read_http_head(&mut delete).await;
+        delete
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        request
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tool(
+            whepprobe_path(),
+            &[
+                "--whep",
+                &format!("http://{addr}/whep/live"),
+                "--output",
+                "json",
+                "--timeout",
+                "1",
+                "--ice-server",
+                "",
+            ],
+        )
+        .output(),
+    )
+    .await
+    .expect("whepprobe did not finish setup timeout cleanup")
+    .unwrap();
+    let delete_request = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("whepprobe did not DELETE the created session")
+        .unwrap();
+    assert!(
+        delete_request.starts_with("DELETE /session/test "),
+        "{delete_request}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    let report = parse_probe_json(&stdout, &stderr);
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("timed out setting up WHEP peer")),
+        "{report}"
     );
 }

@@ -10,7 +10,8 @@
 # its own throwaway live777 first and stops only the processes it started.
 #
 # Env:
-#   SMOKE_SERVER_URL     live777 base URL (default http://127.0.0.1:7777)
+#   SMOKE_SERVER_URL     live777 base URL in server mode (default http://127.0.0.1:7777)
+#   SMOKE_PORT           standalone HTTP port (default 7777)
 #   SMOKE_TOKEN          Bearer token, passed as -t to both tools
 #   SMOKE_STREAM         stream name (default smoke-<epoch>-<pid>)
 #   SMOKE_ATTEMPTS       bounded probe attempts (default 5)
@@ -41,7 +42,22 @@ for arg in "$@"; do
     esac
 done
 
-SERVER_URL="${SMOKE_SERVER_URL:-http://127.0.0.1:7777}"
+PORT="${SMOKE_PORT:-7777}"
+case "$PORT" in
+    '' | *[!0-9]*)
+        echo "smoke-test: SMOKE_PORT must be an integer from 1 to 65535" >&2
+        exit 2
+        ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "smoke-test: SMOKE_PORT must be an integer from 1 to 65535" >&2
+    exit 2
+fi
+if [ "$STANDALONE" -eq 1 ]; then
+    SERVER_URL="http://127.0.0.1:$PORT"
+else
+    SERVER_URL="${SMOKE_SERVER_URL:-http://127.0.0.1:$PORT}"
+fi
 STREAM="${SMOKE_STREAM:-smoke-$(date +%s)-$$}"
 ATTEMPTS="${SMOKE_ATTEMPTS:-5}"
 READY_TIMEOUT="${SMOKE_READY_TIMEOUT:-30}"
@@ -58,13 +74,25 @@ if ! LOG_DIR="$(mktemp -d)"; then
     exit 1
 fi
 
+stop_pid() {
+    stop_pid_target=$1
+    [ -n "$stop_pid_target" ] || return 0
+    kill "$stop_pid_target" 2>/dev/null
+    (
+        sleep 5
+        kill -KILL "$stop_pid_target" 2>/dev/null
+    ) &
+    stop_pid_watchdog=$!
+    wait "$stop_pid_target" 2>/dev/null
+    kill "$stop_pid_watchdog" 2>/dev/null
+    wait "$stop_pid_watchdog" 2>/dev/null
+}
+
 cleanup() {
     # Only processes this script started are stopped; a pre-existing live777
     # (default mode) is left running.
-    [ -z "$SYNTH_PID" ] || kill "$SYNTH_PID" 2>/dev/null
-    [ -z "$LIVE777_PID" ] || kill "$LIVE777_PID" 2>/dev/null
-    [ -z "$SYNTH_PID" ] || wait "$SYNTH_PID" 2>/dev/null
-    [ -z "$LIVE777_PID" ] || wait "$LIVE777_PID" 2>/dev/null
+    stop_pid "$SYNTH_PID"
+    stop_pid "$LIVE777_PID"
     rm -rf "$LOG_DIR"
 }
 trap cleanup EXIT
@@ -85,11 +113,41 @@ wait_http_ready() {
 }
 
 if [ "$STANDALONE" -eq 1 ]; then
-    live777 -v >"$LOG_DIR/live777.log" 2>&1 &
+    if curl -s --max-time 2 -o /dev/null "$SERVER_URL/api/info"; then
+        echo "smoke-test: $SERVER_URL is already serving HTTP; refusing to start or publish standalone smoke" >&2
+        exit 1
+    fi
+    cat >"$LOG_DIR/live777.toml" <<EOF
+[http]
+listen = "127.0.0.1:$PORT"
+
+[rtsp]
+listen = "127.0.0.1:0"
+
+[webrtc]
+ice_udp_addrs = ["127.0.0.1:0"]
+EOF
+    LIVE777_WEBRTC_ICE_UDP_ADDRS="127.0.0.1:0"
+    export LIVE777_WEBRTC_ICE_UDP_ADDRS
+    live777 -v -c "$LOG_DIR/live777.toml" >"$LOG_DIR/live777.log" 2>&1 &
     LIVE777_PID=$!
     echo "smoke-test: started live777 (pid $LIVE777_PID), waiting for $SERVER_URL" >&2
-    if ! wait_http_ready "$SERVER_URL" "$READY_TIMEOUT"; then
-        echo "smoke-test: live777 did not become ready within ${READY_TIMEOUT}s; log:" >&2
+    i=0
+    READY=0
+    while [ "$i" -lt "$READY_TIMEOUT" ]; do
+        if ! kill -0 "$LIVE777_PID" 2>/dev/null; then
+            break
+        fi
+        if grep -q "Server listening on" "$LOG_DIR/live777.log" &&
+            curl -s --max-time 2 -o /dev/null "$SERVER_URL/api/info"; then
+            READY=1
+            break
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    if [ "$READY" -ne 1 ]; then
+        echo "smoke-test: own live777 did not become ready within ${READY_TIMEOUT}s; log:" >&2
         cat "$LOG_DIR/live777.log" >&2
         exit 1
     fi
@@ -102,10 +160,40 @@ fi
 # tools default to no ICE servers (host candidates only), so the check stays
 # off the internet. $TOKEN_OPT intentionally expands to two words.
 # shellcheck disable=SC2086
-whipsynth -v --whip "$SERVER_URL/whip/$STREAM" --ice-server "" $TOKEN_OPT \
+whipsynth -v --whip "$SERVER_URL/whip/$STREAM" --acodec opus --ice-server "" $TOKEN_OPT \
     >"$LOG_DIR/whipsynth.log" 2>&1 &
 SYNTH_PID=$!
 echo "smoke-test: publishing stream '$STREAM' with whipsynth (pid $SYNTH_PID)" >&2
+
+json_number_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+json_string_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\"[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+json_bool_field() {
+    printf '%s\n' "$1" |
+        sed -n "s/^[[:space:]]*\"$2\"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p"
+}
+
+probe_audio_valid() {
+    probe_success=$(json_bool_field "$1" success)
+    probe_audio_codec=$(json_string_field "$1" audio_codec)
+    probe_audio_frames=$(json_number_field "$1" audio_frame_count)
+    probe_audio_bytes=$(json_number_field "$1" audio_bytes_received)
+    [ "$probe_success" = "true" ] && [ "$probe_audio_codec" = "opus" ] || return 1
+    case "$probe_audio_frames" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    case "$probe_audio_bytes" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$probe_audio_frames" -gt 0 ] && [ "$probe_audio_bytes" -gt 0 ]
+}
 
 # Bounded retries: the WHEP subscribe also serves as publisher readiness —
 # a fresh stream needs a moment before the first probe can connect.
@@ -115,14 +203,17 @@ while [ "$attempt" -le "$ATTEMPTS" ]; do
     # shellcheck disable=SC2086
     if LAST_JSON=$(whepprobe --whep "$SERVER_URL/whep/$STREAM" --output json \
         --decode-duration 1 --timeout 10 --ice-server "" $TOKEN_OPT); then
-        echo "$LAST_JSON"
-        exit 0
+        if probe_audio_valid "$LAST_JSON"; then
+            echo "$LAST_JSON"
+            exit 0
+        fi
+        echo "smoke-test: probe attempt $attempt did not verify decoded opus audio" >&2
     fi
     attempt=$((attempt + 1))
     sleep 1
 done
 
-echo "smoke-test: probe failed after $ATTEMPTS attempts on $SERVER_URL/whep/$STREAM" >&2
+echo "smoke-test: probe failed or lacked decoded opus audio after $ATTEMPTS attempts on $SERVER_URL/whep/$STREAM" >&2
 if [ -n "$LAST_JSON" ]; then
     echo "smoke-test: last probe result:" >&2
     echo "$LAST_JSON" >&2

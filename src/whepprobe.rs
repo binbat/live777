@@ -22,8 +22,12 @@ struct Args {
     verbose: u8,
 
     /// WHEP endpoint URL, e.g. http://localhost:7777/whep/live
-    #[arg(short, long)]
-    whep: String,
+    #[arg(short, long, required_unless_present = "decode_worker")]
+    whep: Option<String>,
+
+    /// Internal RTP decode worker; its stdin/stdout are a private binary protocol.
+    #[arg(long, hide = true)]
+    decode_worker: bool,
 
     /// Output format: human, json
     #[arg(short, long, value_enum, default_value = "human")]
@@ -82,13 +86,27 @@ async fn run() -> Result<bool> {
         "whepprobe={},livetwo={},webrtc={}",
         log_level, log_level, webrtc_level,
     );
+    if args.decode_worker {
+        // The worker reserves stdout for binary framing; all diagnostics,
+        // including verbose decoder logs, belong exclusively on stderr.
+        log::set_stderr(filter);
+        livetwo::probe::worker::run_stdio().await?;
+        return Ok(true);
+    }
     if matches!(args.output, OutputFormat::Json) {
         log::set_stderr(filter);
     } else {
         log::set(filter);
     }
 
-    let config = build_config(&args)?;
+    let config = match build_config(&args) {
+        Ok(config) => config,
+        Err(error) => {
+            let failed = ProbeResult::failed("rsmpeg", format!("{error:?}"));
+            print_result(&failed, args.output);
+            return Ok(false);
+        }
+    };
 
     info!(
         whep_url = %config.whep_url,
@@ -101,9 +119,8 @@ async fn run() -> Result<bool> {
         decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    let result = tokio::time::timeout(config.timeout, backend.probe(&config)).await;
-
-    match result {
+    let hard_timeout = config.timeout + Duration::from_secs(5);
+    match tokio::time::timeout(hard_timeout, backend.probe(&config)).await {
         Ok(Ok(result)) => {
             let success = result.success;
             print_result(&result, args.output);
@@ -112,10 +129,8 @@ async fn run() -> Result<bool> {
             }
             Ok(success)
         }
-        Ok(Err(e)) => {
-            // Emit a structured failure result for JSON consumers without
-            // duplicating the diagnostics on stderr.
-            let failed = ProbeResult::failed("rsmpeg", format!("{e:?}"));
+        Ok(Err(error)) => {
+            let failed = ProbeResult::failed("rsmpeg", format!("{error:?}"));
             print_result(&failed, args.output);
             Ok(false)
         }
@@ -135,7 +150,10 @@ fn build_config(args: &Args) -> Result<ProbeConfig> {
     };
 
     Ok(ProbeConfig {
-        whep_url: args.whep.clone(),
+        whep_url: args
+            .whep
+            .clone()
+            .context("WHEP URL is required outside decode-worker mode")?,
         timeout: Duration::from_secs(args.timeout),
         video_codec: codec,
         sprop_params: args.sprop_params.clone(),
@@ -166,7 +184,14 @@ fn print_result(result: &ProbeResult, format: OutputFormat) {
                 println!("Resolution:     {}x{}", result.width, result.height);
             }
             if result.frame_count > 0 {
-                println!("Frames decoded: {}", result.frame_count);
+                println!("Video frames:   {}", result.frame_count);
+            }
+            if result.audio_frame_count > 0 {
+                println!("Audio frames:   {}", result.audio_frame_count);
+                println!(
+                    "Audio format:   {} Hz, {} channels",
+                    result.audio_sample_rate, result.audio_channels
+                );
             }
             if result.video_tracks > 0 {
                 println!("Video tracks:   {}", result.video_tracks);

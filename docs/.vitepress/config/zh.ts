@@ -42,6 +42,7 @@ export const zh: LocaleConfig = {
                             { text: 'WhepWright', link: 'whepwright' },
                             { text: 'LiveWrk', link: 'livewrk' },
                             { text: 'NET4MQTT', link: 'net4mqtt' },
+                            { text: '排障', link: 'troubleshooting' },
                         ]
                     },
                     {

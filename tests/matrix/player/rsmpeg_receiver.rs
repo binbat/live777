@@ -13,10 +13,10 @@ use super::{PlayResult, Player};
 use crate::profile::MediaProfile;
 
 /// WHEP player that receives RTP via `livetwo::probe::rsmpeg::RsmpegProbe` and
-/// decodes it with rsmpeg/FFmpeg.
+/// decodes it in isolated whepprobe workers using rsmpeg/FFmpeg.
 ///
-/// This is the most self-contained baseline: both source and player are
-/// in-process FFmpeg, so browser/ICE/container issues are excluded.
+/// This is the most self-contained baseline: the source and decode worker both
+/// use the bundled FFmpeg runtime, so browser/container issues are excluded.
 #[derive(Debug, Clone)]
 pub struct RsmpegWhepReceiver {
     pub timeout_seconds: u64,
@@ -100,15 +100,11 @@ impl From<ProbeResult> for PlayResult {
             video_height: result.height,
             video_tracks: result.video_tracks,
             audio_tracks: result.audio_tracks,
+            audio_channels: result.audio_channels,
             duration_ms: result.duration_ms,
-            // Both the decoded video codec and the negotiated audio codec are
-            // reported so AV profiles can assert on each.
-            codecs: [result.video_codec, result.audio_codec]
-                .into_iter()
-                .flatten()
-                .collect(),
+            video_codec: result.video_codec,
+            audio_codec: result.audio_codec,
             error: result.error,
-            ..Default::default()
         }
     }
 }

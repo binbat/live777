@@ -10,6 +10,27 @@
 - `rtp`
 - `rtsp as client`
 
+反向的 WHEP → RTP/RTSP 请使用 [whepfrom](/zh/guide/whepfrom)；完整本机闭环见
+[三终端验流步骤](/zh/guide/getting-started#用三个终端验证-rtp-桥接闭环)。
+
+## 获取工具与前置条件
+
+请按[安装指南](/zh/guide/installation)下载软件包或预编译二进制，或在仓库中
+运行 `cargo build --release --bin whipinto` 从源码构建。运行前需要可访问的
+Live777 WHIP 端点，以及已编码的 RTP/RTSP 源。只有下面的示例需要 FFmpeg；
+`synth://` 输入需要以 `--features=rsmpeg` 构建。
+
+## Bearer token
+
+如果 `live777.toml` 的 `[auth]` 下配置了 `tokens = ["live777"]`，请用
+`-t` 传入相同 token：
+
+```bash
+whipinto -i input.sdp -t live777 -w http://127.0.0.1:7777/whip/777
+```
+
+不要把 token 放进 URL，也不要把真实 token 写入公开的 shell 历史或配置文件。
+
 ## 选项
 
 | 选项 | 默认值 | 说明 |
@@ -117,4 +138,14 @@ Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722`
 
 - :star: 正常运行
 - :shit: 不支持
+
+## 排障
+
+使用 `-vv` 输出 WebRTC 和桥接诊断日志。认证、HTTP 状态码和 ICE 失败的通用检查
+见 [排障](/zh/guide/troubleshooting)；下表只列本工具特有的问题。
+
+| 现象 | 检查项 |
+|------|--------|
+| `404 Not Found` | 检查 `/whip/<stream>` URL、流名、端口和反向代理路径，确认目标是 WHIP 而不是 WHEP 端点。 |
+| 已连接但没有媒体 | 确认发送端正在向 SDP 端口发包、SDP 编码与实际输入一致，且 RTSP/SDP 输入可访问；同时检查上面的包大小和编码支持。 |
 

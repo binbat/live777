@@ -7,9 +7,24 @@ on:
   release:
     types:
       - 'published'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/actions/install-ffmpeg/**'
+      - '.github/actions/release-version/**'
+      - '.github/vcpkg-overlays/**'
+      - 'docker/Dockerfile.diagnostics-musl'
+      - 'docker/smoke-test.sh'
+      - 'scripts/package-diagnostics*'
+      - 'scripts/lib/diagnostics.sh'
+      - 'licenses/diagnostics/**'
+      - 'LICENSE'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 jobs:
   build:
+    if: github.event_name != 'pull_request'
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
     strategy:
@@ -47,29 +62,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Nodejs
-        uses: actions/setup-node@v6
-        with:
-          node-version: latest
-
-      - name: Install npm dependencies
-        run: pnpm install
-
       - name: Build WebUI
-        run: pnpm -r build
+        uses: ./.github/actions/build-webui
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=`git describe --tags`
-          fi
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -105,10 +102,9 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          # rsmpeg is excluded from release builds: it requires native FFmpeg
-          # dev libraries that aren't available in cross-compilation Docker
-          # images. The rsmpeg-enabled tools (whepprobe, whipsynth) are
-          # built and tested in CI but are not part of the release matrix.
+          # The general release matrix stays unchanged; rsmpeg tools and their
+          # dynamic FFmpeg runtime are packaged by build-diagnostics on native
+          # runners because the cross-compilation images lack FFmpeg dev libs.
           $BUILD_CMD $BUILD_NDK build --locked --all-targets \
             --features source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp,rtsp \
             --release --target=${{ matrix.job.target }}
@@ -124,47 +120,11 @@ jobs:
           echo "PKG_WHIPINTO_NAME=whipinto-${PKG_BUILDNAME}" >> $GITHUB_ENV
           echo "PKG_NET4MQTT_NAME=net4mqtt-${PKG_BUILDNAME}" >> $GITHUB_ENV
 
-      - name: Create Live777 tarball
+      - name: Create release archives
         shell: bash
         run: |
-          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
-          TAR_BASENAME=live777-${{ env.VERSION }}-${{ matrix.job.target }}
-          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "${{ env.BUILD_PATH }}/live777${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
-
-          # base compressed package
-          case ${{ matrix.job.target }} in
-          *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
-          *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
-          esac;
-
-          # Let subsequent steps know where to find the compressed package
-          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
-
-      - name: Create LiveMan tarball
-        shell: bash
-        run: |
-          TAR_SUFFIX=".tar.gz" ; case ${{ matrix.job.target }} in *-pc-windows-*) TAR_SUFFIX=".zip" ;; esac;
-          TAR_BASENAME=liveman-${{ env.VERSION }}-${{ matrix.job.target }}
-          TAR_NAME=${TAR_BASENAME}${TAR_SUFFIX}
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "${{ env.BUILD_PATH }}/liveman${{ env.EXE_SUFFIX }}" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/liveman.toml" "conf/liveman.service" "$ARCHIVE_DIR"
-
-          # base compressed package
-          case ${{ matrix.job.target }} in
-          *-pc-windows-*) 7z -y a "${TAR_NAME}" "${TAR_BASENAME}"/* | tail -2 ;;
-          *) tar czf "${TAR_NAME}" "${TAR_BASENAME}"/* ;;
-          esac;
-
-          # Let subsequent steps know where to find the compressed package
-          echo "TAR_LIVEMAN_NAME=${TAR_NAME}" >> $GITHUB_ENV
+          bash scripts/create-release-archive.sh live777 "${{ matrix.job.target }}" "${VERSION}" "${BUILD_PATH}" "${EXE_SUFFIX}"
+          bash scripts/create-release-archive.sh liveman "${{ matrix.job.target }}" "${VERSION}" "${BUILD_PATH}" "${EXE_SUFFIX}"
 
       - name: Rename binary
         shell: bash
@@ -214,47 +174,21 @@ jobs:
       - name: Use nFPM
         if: ${{ matrix.job.nfpm }}
         run: |
-          nfpm pkg --packager deb --config live777.yaml
-          nfpm pkg --packager deb --config liveman.yaml
-          nfpm pkg --packager deb --config net4mqtt.yaml
-          nfpm pkg --packager deb --config whipinto.yaml
-          nfpm pkg --packager deb --config whepfrom.yaml
+          for package in live777 liveman net4mqtt whipinto whepfrom; do
+            for packager in deb rpm archlinux; do
+              nfpm pkg --packager "${packager}" --config "${package}.yaml"
+            done
+          done
 
-          nfpm pkg --packager rpm --config live777.yaml
-          nfpm pkg --packager rpm --config liveman.yaml
-          nfpm pkg --packager rpm --config net4mqtt.yaml
-          nfpm pkg --packager rpm --config whipinto.yaml
-          nfpm pkg --packager rpm --config whepfrom.yaml
-
-          nfpm pkg --packager archlinux --config live777.yaml
-          nfpm pkg --packager archlinux --config liveman.yaml
-          nfpm pkg --packager archlinux --config net4mqtt.yaml
-          nfpm pkg --packager archlinux --config whipinto.yaml
-          nfpm pkg --packager archlinux --config whepfrom.yaml
-
-      - name: Artifact Upload deb package
+      - name: Artifact Upload nFPM packages
         uses: actions/upload-artifact@v7
         if: ${{ matrix.job.nfpm }}
         with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_deb
+          name: ${{ env.VERSION }}_${{ matrix.job.target }}_nfpm
           path: |
-              *.deb
-
-      - name: Artifact Upload rpm package
-        uses: actions/upload-artifact@v7
-        if: ${{ matrix.job.nfpm }}
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_rpm
-          path: |
-              *.rpm
-
-      - name: Artifact Upload archlinux package
-        uses: actions/upload-artifact@v7
-        if: ${{ matrix.job.nfpm }}
-        with:
-          name: ${{ env.VERSION }}_${{ matrix.job.target }}_archlinux
-          path: |
-              *.pkg.tar.zst
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
 
       - name: Upload release archive
         shell: bash
@@ -271,7 +205,140 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
 
+  build-diagnostics:
+    name: diagnostics (${{ matrix.job.target }})
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get the release version from the tag
+        uses: ./.github/actions/release-version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.job.target }}
+
+      - name: Install LLVM 20 for bindgen (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20"
+          directory: ${{ github.workspace }}/clang20
+
+      - name: Expose LLVM 20 to the FFmpeg setup (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          SRC=$(find "${{ github.workspace }}/clang20" -name 'libclang.so*' -type f | head -1)
+          [ -n "${SRC}" ] || { echo "ERROR: libclang.so not found"; exit 1; }
+          sudo mkdir -p /usr/lib/llvm-20/lib
+          sudo ln -sf "${SRC}" /usr/lib/llvm-20/lib/libclang-20.so
+
+      - name: Install FFmpeg for rsmpeg
+        uses: ./.github/actions/install-ffmpeg
+
+      - name: Build diagnostics tools
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ runner.os != 'Windows' && format('-L native={0}/ffmpeg-install/lib', github.workspace) || '' }}
+        run: >-
+          cargo build --locked --release --target=${{ matrix.job.target }}
+          --bin=whipsynth --bin=whepprobe --bin=livewrk --features=rsmpeg
+
+      - name: Enable Debian source repositories (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          SOURCES=/etc/apt/sources.list.d/ubuntu.sources
+          [ -f "${SOURCES}" ] || { echo "Missing Ubuntu repository definition: ${SOURCES}"; exit 1; }
+          sudo sed -i -E 's/^Types: deb$/Types: deb deb-src/' "${SOURCES}"
+          grep -q '^Types:.*deb-src' "${SOURCES}"
+          sudo apt-get update -qq
+
+      - name: Package and verify diagnostics (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash scripts/package-diagnostics.sh package "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics.sh verify "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics-sources.sh package "${{ matrix.job.target }}" "${VERSION}"
+          bash scripts/package-diagnostics-sources.sh verify "${{ matrix.job.target }}" "${VERSION}"
+
+      - name: Package and verify diagnostics (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/package-diagnostics.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics-sources.ps1 -Mode package -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+          ./scripts/package-diagnostics-sources.ps1 -Mode verify -Target "${{ matrix.job.target }}" -Version "${{ env.VERSION }}"
+
+      - name: Upload diagnostics release archives
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: |
+          ARCHIVE_SUFFIX=tar.gz
+          if [ "${RUNNER_OS}" = "Windows" ]; then ARCHIVE_SUFFIX=zip; fi
+          gh release upload "${VERSION}" \
+            "dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.${ARCHIVE_SUFFIX}" \
+            "dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.${ARCHIVE_SUFFIX}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-diagnostics-musl:
+    name: diagnostics musl (${{ matrix.job.target }})
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-26.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-26.04-arm }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get the release version from the tag
+        uses: ./.github/actions/release-version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and verify static diagnostics bundle
+        shell: bash
+        run: >-
+          docker buildx build -f docker/Dockerfile.diagnostics-musl
+          --target export --output type=local,dest=dist/diagnostics
+          --build-arg TARGET=${{ matrix.job.target }}
+          --build-arg VERSION="${VERSION}" .
+
+      - name: Upload static diagnostics release archives
+        shell: bash
+        if: github.ref_type == 'tag'
+        run: >-
+          gh release upload "${VERSION}"
+          "dist/diagnostics/live777-diagnostics-${VERSION}-${{ matrix.job.target }}.tar.gz"
+          "dist/diagnostics/live777-diagnostics-sources-${VERSION}-${{ matrix.job.target }}.tar.gz"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-native:
+    if: github.event_name != 'pull_request'
     name: aarch64-unknown-linux-gnu-${{ matrix.job.variant }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
     strategy:
@@ -290,29 +357,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Nodejs
-        uses: actions/setup-node@v6
-        with:
-          node-version: latest
-
-      - name: Install npm dependencies
-        run: pnpm install
-
       - name: Build WebUI
-        run: pnpm -r build
+        uses: ./.github/actions/build-webui
 
       - name: Get the release version from the tag
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME}
-          if expr "${VERSION}" : '[^0-9]*$' > /dev/null; then
-            VERSION=`git describe --tags`
-          fi
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "version is: ${VERSION}"
+        uses: ./.github/actions/release-version
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -341,17 +390,7 @@ jobs:
 
       - name: Create ${{ matrix.job.variant }} live777 tarball
         shell: bash
-        run: |
-          TAR_BASENAME=live777-${VERSION}-${TARGET}-${VARIANT}
-          TAR_NAME=${TAR_BASENAME}.tar.gz
-          ARCHIVE_DIR="${TAR_BASENAME}/"
-
-          mkdir -p "${ARCHIVE_DIR}"
-          cp "target/${TARGET}/release/live777" "$ARCHIVE_DIR"
-          cp "README.md" "LICENSE" "conf/live777.toml" "conf/live777.service" "$ARCHIVE_DIR"
-          tar czf "${TAR_NAME}" "${TAR_BASENAME}"/*
-
-          echo "TAR_LIVE777_NAME=${TAR_NAME}" >> $GITHUB_ENV
+        run: bash scripts/create-release-archive.sh live777 "${TARGET}" "${VERSION}" "target/${TARGET}/release" "" "${VARIANT}"
 
       - name: Artifact Upload ${{ matrix.job.variant }} live777
         uses: actions/upload-artifact@v7

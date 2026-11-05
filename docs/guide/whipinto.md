@@ -1,3 +1,9 @@
+---
+description: >-
+  Bridge RTP, RTSP, or synthetic test media into a Live777 WHIP endpoint,
+  with authentication and troubleshooting examples.
+---
+
 # WhipInto
 
 `RTP`/`RTSP` to `WHIP` tool
@@ -14,6 +20,29 @@ synthetic test sources).
 This tool has two working modes:
 - `rtp`
 - `rtsp as client`
+
+Use [whepfrom](/guide/whepfrom) for the reverse WHEP → RTP/RTSP direction, or
+follow the [three-terminal loop](/guide/getting-started#verify-the-rtp-bridge-in-three-terminals).
+
+## Get it and prerequisites
+
+Download a package or prebuilt binary using the
+[installation guide](/guide/installation), or build from this repository with
+`cargo build --release --bin whipinto`. You need a reachable Live777 WHIP
+endpoint and an already-encoded RTP/RTSP source. FFmpeg is required only for
+the examples below; `synth://` input requires a build with `--features=rsmpeg`.
+
+## Bearer token
+
+If `live777.toml` contains `tokens = ["live777"]` under `[auth]`, pass the
+same token with `-t`:
+
+```bash
+whipinto -i input.sdp -t live777 -w http://127.0.0.1:7777/whip/777
+```
+
+Do not put tokens in URLs or commit them to shell history and configuration
+files intended for publication.
 
 ## Options
 
@@ -124,4 +153,16 @@ Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722`
 
 - :star: It's working
 - :shit: Don't support
+
+## Troubleshooting
+
+Run with `-vv` to include WebRTC and bridge diagnostics. Authentication, HTTP
+status codes and ICE failures are covered once in
+[Troubleshooting](/guide/troubleshooting); the rows below are specific to this
+tool.
+
+| Symptom | What to check |
+|---------|---------------|
+| `404 Not Found` | Check the `/whip/<stream>` URL, server port and reverse-proxy path. Confirm you are publishing to Live777 rather than a WHEP endpoint. |
+| Connected, but no media | Confirm the sender is emitting to the SDP ports, the SDP codecs match the encoded input, and RTSP/SDP inputs are reachable. Check packet size and codec support above. |
 

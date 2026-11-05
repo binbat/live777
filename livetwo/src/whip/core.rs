@@ -100,6 +100,7 @@ pub async fn create_publish_peer(
         PeerConnectionBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
+            .with_setting_engine(utils::webrtc::setting_engine())
             .with_handler(handler)
             .with_udp_addrs(utils::webrtc::ice_udp_addrs())
             .with_configuration(config)
