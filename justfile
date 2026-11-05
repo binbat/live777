@@ -675,7 +675,7 @@ livewrk-whip sessions="100" duration="60":
 [group('loadtest')]
 livewrk-whep sessions="100" duration="60" target_stream=stream:
     cargo build --release --features=rsmpeg --bin livewrk --bin whepprobe
-    ./target/release/livewrk whep \
+    {{target_dir}}/release/livewrk whep \
         --whep {{server}}/whep/{{target_stream}} --sessions {{sessions}} --duration {{duration}}
 
 [group('loadtest')]

@@ -55,7 +55,7 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `-v` | `warn` | 提高日志级别（`-v` info，`-vv` debug，`-vvv` trace） |
 | `--codec` | 自动检测 | 预期视频编码：`vp8`、`vp9`、`h264`、`h265`、`av1`。`rsmpeg` 后端会从 WHEP 会话自动检测编码，因此该选项仅影响报告结果。 |
 | `--sprop-params` | 无 | H.265 sprop 参数（`sprop-vps=...;sprop-sps=...;sprop-pps=...`） |
-| `--decode-duration` | `5` | WHEP 连接成功后持续解码的秒数。超过 `10` 的值会被静默截断。 |
+| `--decode-duration` | `5` | WHEP 连接成功后持续解码的秒数；实际窗口受剩余 `--timeout` 预算限制，并为清理预留 2 秒。 |
 | `--output` | `human` | 输出格式：`human`、`json` |
 | `--timeout` | `30` | 整体超时时间（秒） |
 | `--ice-server` | 无 | ICE 收集使用的服务器，可重复指定；格式 `<url>[,<username>[,<credential>]]`。默认为空——仅使用 host candidate（WHIP/WHEP 端点会通过 Link 头通告自己的 ICE 服务器） |

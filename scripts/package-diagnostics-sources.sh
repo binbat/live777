@@ -39,12 +39,29 @@ collect_project_source() {
 }
 
 collect_ffmpeg_source() {
-    local tag source destination commit
+    local tag source destination commit ffmpeg_bin actual_version
     case $(uname -s) in
         Linux) tag=n8.1.2 ;;
         Darwin) tag=n8.1.2 ;;
         *) echo "Unsupported Unix host: $(uname -s)" >&2; return 1 ;;
     esac
+    if [[ -n ${FFMPEG_BIN:-} ]]; then
+        ffmpeg_bin=${FFMPEG_BIN}
+    elif [[ -x ${WORKSPACE}/ffmpeg-install/bin/ffmpeg ]]; then
+        ffmpeg_bin=${WORKSPACE}/ffmpeg-install/bin/ffmpeg
+    else
+        ffmpeg_bin=$(command -v ffmpeg) || { echo "FFmpeg executable is missing" >&2; return 1; }
+    fi
+    [[ -x ${ffmpeg_bin} ]] || { echo "FFmpeg executable is missing: ${ffmpeg_bin}" >&2; return 1; }
+    actual_version=$("${ffmpeg_bin}" -version 2>/dev/null | awk 'NR == 1 {print $3}') || {
+        echo "Unable to read the linked FFmpeg version" >&2
+        return 1
+    }
+    [[ -n ${actual_version} ]] || { echo "The linked FFmpeg version is empty" >&2; return 1; }
+    [[ ${actual_version#n} == "${tag#n}" ]] || {
+        echo "FFmpeg source/binary version mismatch: source ${tag}, binary ${actual_version}" >&2
+        return 1
+    }
     source=${WORKSPACE}/ffmpeg-src
     if [[ ! -f ${source}/configure ]]; then
         source=${DIST}/source-input/ffmpeg-src

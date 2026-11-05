@@ -73,6 +73,17 @@ function New-SourcePackage {
     if (-not (Test-Path -LiteralPath (Join-Path $VcpkgRoot "vcpkg.exe") -PathType Leaf)) {
         throw "vcpkg installation is missing: $VcpkgRoot"
     }
+    $ExpectedFfmpegVersion = "8.1.2"
+    $StatusText = Get-Content -LiteralPath (Join-Path $VcpkgRoot "installed/vcpkg/status") -Raw
+    $PackageBlock = [regex]::Match($StatusText, '(?ms)^Package:\s+ffmpeg\s*$(.*?)(?=^Package:|\z)')
+    $VersionMatch = [regex]::Match($PackageBlock.Value, '(?m)^Version:\s*(?<version>[^\r\n]+)')
+    if (-not $PackageBlock.Success -or -not $VersionMatch.Success) {
+        throw "Unable to read the linked FFmpeg version from vcpkg status"
+    }
+    $ActualFfmpegVersion = $VersionMatch.Groups["version"].Value.Trim()
+    if ($ActualFfmpegVersion -ne $ExpectedFfmpegVersion) {
+        throw "FFmpeg source/binary version mismatch: source $ExpectedFfmpegVersion, binary $ActualFfmpegVersion"
+    }
     $DownloadFiles = @(Get-ChildItem -LiteralPath $Downloads -Recurse -File)
     if ($DownloadFiles.Count -eq 0) { throw "vcpkg downloads are empty: $Downloads" }
     if (-not ($DownloadFiles | Where-Object { $_.Name -match "ffmpeg" -and $_.Length -gt 0 })) {

@@ -61,7 +61,7 @@ whepprobe -w http://localhost:7777/whep/live --output json
 | `-v` | `warn` | Increase verbosity (`-v` info, `-vv` debug, `-vvv` trace) |
 | `--codec` | auto-detect | Expected video codec: `vp8`, `vp9`, `h264`, `h265`, `av1`. The `rsmpeg` backend auto-detects the codec from the WHEP session, so this option only affects the reported result. |
 | `--sprop-params` | none | H.265 sprop parameters (`sprop-vps=...;sprop-sps=...;sprop-pps=...`) |
-| `--decode-duration` | `5` | Seconds to decode after the WHEP session connects. Values above `10` are silently capped. |
+| `--decode-duration` | `5` | Seconds to decode after the WHEP session connects, limited by the remaining `--timeout` budget (2 seconds are reserved for cleanup). |
 | `--output` | `human` | Output format: `human`, `json` |
 | `--timeout` | `30` | Overall timeout in seconds |
 | `--ice-server` | none | ICE server for gathering, repeatable; format `<url>[,<username>[,<credential>]]`. Defaults to none — host candidates only (WHIP/WHEP endpoints advertise their own ICE servers via Link headers) |

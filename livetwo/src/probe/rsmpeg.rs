@@ -222,7 +222,7 @@ impl ProbeBackend for RsmpegProbe {
                 video_success = decoded.frame_count > 0 && decoded.width > 0 && decoded.height > 0;
             }
             Err(e) => {
-                result.error = Some(format!("video decoder error: {e:?}"));
+                append_decode_error(&mut result.error, format!("video decoder error: {e:?}"));
             }
         }
 
@@ -238,7 +238,7 @@ impl ProbeBackend for RsmpegProbe {
                 result.audio_channels = decoded.channels;
             }
             Some(Err(e)) => {
-                result.error = Some(format!("audio decoder error: {e:?}"));
+                append_decode_error(&mut result.error, format!("audio decoder error: {e:?}"));
             }
             None => {}
         }
@@ -410,6 +410,15 @@ async fn decode_audio_packets(
     }
 }
 
+fn append_decode_error(error: &mut Option<String>, new_error: String) {
+    if let Some(existing) = error {
+        existing.push_str("; ");
+        existing.push_str(&new_error);
+    } else {
+        *error = Some(new_error);
+    }
+}
+
 /// Wait until the peer connection reaches `target_state` or the timeout expires.
 async fn wait_for_state(
     state_rx: &mut tokio::sync::watch::Receiver<RTCPeerConnectionState>,
@@ -485,4 +494,20 @@ async fn negotiated_audio_codec(codec_info: &Arc<Mutex<rtsp::CodecInfo>>) -> Opt
             .unwrap_or(&mime_type)
             .to_ascii_lowercase()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_decode_error;
+
+    #[test]
+    fn decode_errors_preserve_video_and_audio() {
+        let mut error = None;
+        append_decode_error(&mut error, "video decoder error: video".to_string());
+        append_decode_error(&mut error, "audio decoder error: audio".to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("video decoder error: video; audio decoder error: audio")
+        );
+    }
 }
