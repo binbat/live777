@@ -14,13 +14,9 @@ SOURCE_ARCHIVE=${DIST}/${SOURCE_STAGE}.tar.gz
 PROVENANCE=${DIST}/work/${BINARY_STAGE}/third-party/copied-files.tsv
 SOURCE_COUNT=0
 
-sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    else
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/diagnostics.sh
+source "${SCRIPT_DIR}/lib/diagnostics.sh"
 
 add_source() {
     local kind=$1
@@ -45,7 +41,7 @@ collect_project_source() {
 collect_ffmpeg_source() {
     local tag source destination commit
     case $(uname -s) in
-        Linux) tag=n8.0 ;;
+        Linux) tag=n8.1.2 ;;
         Darwin) tag=n8.1.2 ;;
         *) echo "Unsupported Unix host: $(uname -s)" >&2; return 1 ;;
     esac
@@ -72,19 +68,6 @@ collect_ffmpeg_source() {
     fi
     [[ -s ${SOURCE_DIR}/ffmpeg/configuration.txt ]] || { echo "Unable to record the exact FFmpeg configuration" >&2; return 1; }
     add_source ffmpeg ffmpeg "${tag}-${commit}" ffmpeg/ffmpeg-src
-}
-
-linux_package_for_file() {
-    local origin=$1
-    local owner
-    owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
-    if [[ -z ${owner} ]]; then
-        origin=$(readlink -f "${origin}")
-        owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
-    fi
-    [[ -n ${owner} ]] || return 1
-    owner=${owner%%$'\n'*}
-    printf '%s\n' "${owner%%: *}"
 }
 
 collect_linux_sources() {
@@ -273,10 +256,6 @@ package_sources() {
     if [[ -n ${GITHUB_OUTPUT:-} ]]; then
         echo "source_archive=${SOURCE_ARCHIVE}" >> "${GITHUB_OUTPUT}"
     fi
-}
-
-manifest_value() {
-    awk -F '\t' -v key="$2" '$1 == key {sub(/^[^\t]*\t/, ""); print; exit}' "$1"
 }
 
 verify_sources() {

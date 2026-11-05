@@ -11,11 +11,10 @@ STAGE=live777-diagnostics-${VERSION}-${TARGET}
 STAGE_DIR=${WORK}/${STAGE}
 ARCHIVE=${DIST}/${STAGE}.tar.gz
 VERIFY_DIR=${WORK}/verify
-TOOLS=(whipsynth whepprobe livewrk)
 
-sha256_file() {
-    sha256sum "$1" | awk '{print $1}'
-}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/diagnostics.sh
+source "${SCRIPT_DIR}/lib/diagnostics.sh"
 
 collect_static_libraries() {
     local destination=$1
@@ -34,16 +33,6 @@ collect_static_libraries() {
     }
 }
 
-copy_notices() {
-    local required
-    mkdir -p "${STAGE_DIR}/licenses"
-    cp -R licenses/diagnostics/. "${STAGE_DIR}/licenses/"
-    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
-        [[ -s ${STAGE_DIR}/licenses/${required} ]] || { echo "Missing license notice: ${required}" >&2; return 1; }
-    done
-    cp LICENSE "${STAGE_DIR}/LICENSE"
-}
-
 package_musl() {
     local tool
     rm -rf "${STAGE_DIR}"
@@ -53,12 +42,13 @@ package_musl() {
         cp "${BUILD_DIR}/${tool}" "${STAGE_DIR}/bin/${tool}"
         chmod 0755 "${STAGE_DIR}/bin/${tool}"
     done
-    copy_notices
+    copy_diagnostics_notices "${STAGE_DIR}"
+    cp LICENSE "${STAGE_DIR}/LICENSE"
     collect_static_libraries "${STAGE_DIR}/third-party/static-libraries.tsv"
     {
         printf 'target\t%s\n' "${TARGET}"
         printf 'version\t%s\n' "${VERSION}"
-        printf 'ffmpeg\t8.1.2\n'
+        printf 'ffmpeg\t%s\n' "$(ffmpeg_version)"
         printf 'linkage\tstatic\n'
     } > "${STAGE_DIR}/BUILD-INFO.tsv"
     rm -f "${ARCHIVE}"
@@ -93,17 +83,21 @@ verify_static_elf() {
 }
 
 verify_musl() {
-    local bundle tool required
+    local bundle tool expected_ffmpeg recorded_ffmpeg
     rm -rf "${VERIFY_DIR}"
     mkdir -p "${VERIFY_DIR}/home"
     tar -xzf "${ARCHIVE}" -C "${VERIFY_DIR}"
     mv "${VERIFY_DIR}/${STAGE}" "${VERIFY_DIR}/relocated bundle"
     bundle="${VERIFY_DIR}/relocated bundle"
     [[ ! -e ${bundle}/lib ]] || { echo "A static diagnostics bundle must not contain a lib directory" >&2; return 1; }
-    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
-        [[ -s ${bundle}/licenses/${required} ]] || { echo "Missing bundled license: ${required}" >&2; return 1; }
-    done
+    verify_diagnostics_notices "${bundle}"
     [[ -s ${bundle}/third-party/static-libraries.tsv ]] || { echo "Missing static-link provenance" >&2; return 1; }
+    expected_ffmpeg=$(ffmpeg_version) || return 1
+    recorded_ffmpeg=$(awk -F '\t' '$1 == "ffmpeg" {print $2}' "${bundle}/BUILD-INFO.tsv") || return 1
+    [[ ${recorded_ffmpeg} == "${expected_ffmpeg}" ]] || {
+        echo "FFmpeg version mismatch: expected ${expected_ffmpeg}, got ${recorded_ffmpeg}" >&2
+        return 1
+    }
     for tool in "${TOOLS[@]}"; do
         [[ -f ${bundle}/bin/${tool} && -x ${bundle}/bin/${tool} ]] || {
             echo "Missing direct static executable: ${tool}" >&2

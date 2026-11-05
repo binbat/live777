@@ -45,10 +45,11 @@ impl RunReport {
         let mut failures = Vec::new();
         let mut warnings = Vec::new();
 
-        if stats.sessions_connected == 0
-            && stats.sessions_total > 0
-            && stats.sessions_cancelled < stats.sessions_total as u64
-        {
+        // Reporting "all N sessions failed" and "N session(s) failed" for the
+        // same run only adds noise.
+        let all_failed =
+            stats.sessions_total > 0 && stats.sessions_failed == stats.sessions_total as u64;
+        if all_failed {
             failures.push(format!(
                 "all {} loadtest session(s) failed",
                 stats.sessions_total
@@ -74,7 +75,7 @@ impl RunReport {
         }
 
         if criteria.fail_on_any_session {
-            if stats.sessions_failed > 0 {
+            if stats.sessions_failed > 0 && !all_failed {
                 failures.push(format!("{} session(s) failed", stats.sessions_failed));
             }
             if stats.sessions_aborted > 0 {
@@ -86,6 +87,13 @@ impl RunReport {
             }
             if stats.sessions_aborted > 0 {
                 warnings.push(format!("{} session(s) aborted", stats.sessions_aborted));
+            }
+        } else if !all_failed {
+            if stats.sessions_failed > 0 {
+                failures.push(format!("{} session(s) failed", stats.sessions_failed));
+            }
+            if stats.sessions_aborted > 0 {
+                failures.push(format!("{} session(s) aborted", stats.sessions_aborted));
             }
         }
 
@@ -215,11 +223,70 @@ mod tests {
             },
             Case {
                 name: "all failed always fails",
-                stats: all_failed,
+                stats: all_failed.clone(),
                 verification: None,
                 criteria: AcceptanceCriteria::default(),
                 success: false,
                 failures: &["all 2 loadtest session(s) failed"],
+                warnings: &[],
+            },
+            Case {
+                name: "strict mode does not repeat the all-failed summary",
+                stats: all_failed,
+                verification: None,
+                criteria: AcceptanceCriteria {
+                    fail_on_any_session: true,
+                    ..Default::default()
+                },
+                success: false,
+                failures: &["all 2 loadtest session(s) failed"],
+                warnings: &[],
+            },
+            Case {
+                name: "mixed failure and cancellation keeps the exact failure count",
+                stats: LoadtestStats {
+                    sessions_total: 2,
+                    sessions_connected: 0,
+                    sessions_failed: 1,
+                    sessions_cancelled: 1,
+                    ..healthy.clone()
+                },
+                verification: None,
+                criteria: AcceptanceCriteria {
+                    fail_on_any_session: true,
+                    ..Default::default()
+                },
+                success: false,
+                failures: &["1 session(s) failed"],
+                warnings: &[],
+            },
+            Case {
+                name: "mixed failure and cancellation fails without strict mode",
+                stats: LoadtestStats {
+                    sessions_total: 2,
+                    sessions_connected: 0,
+                    sessions_failed: 1,
+                    sessions_cancelled: 1,
+                    ..healthy.clone()
+                },
+                verification: None,
+                criteria: AcceptanceCriteria::default(),
+                success: false,
+                failures: &["1 session(s) failed"],
+                warnings: &[],
+            },
+            Case {
+                name: "all aborted remains a failure without strict mode",
+                stats: LoadtestStats {
+                    sessions_total: 2,
+                    sessions_connected: 0,
+                    sessions_aborted: 2,
+                    ..healthy.clone()
+                },
+                verification: None,
+                criteria: AcceptanceCriteria::default(),
+                success: false,
+                failures: &["2 session(s) aborted"],
                 warnings: &[],
             },
             Case {

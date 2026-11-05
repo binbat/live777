@@ -13,6 +13,10 @@ $Stage = "live777-diagnostics-$Version-$Target"
 $Dist = "dist/diagnostics"
 $Archive = "$Dist/$Stage.zip"
 $Tools = @("whipsynth", "whepprobe", "livewrk")
+$Notices = @(
+    "NOTICE.md", "GPL-2.0.txt", "LGPL-2.1.txt", "GPL-3.0.txt", "LGPL-3.0.txt",
+    "Apache-2.0.txt", "FFmpeg-LICENSE.md", "MSVC-RUNTIME-NOTICE.md"
+)
 
 function New-DiagnosticsPackage {
     $Work = Join-Path $Dist "work"
@@ -27,7 +31,7 @@ function New-DiagnosticsPackage {
     Remove-Item -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $BinDir, $ThirdPartyDir, $LicenseDir -Force | Out-Null
     Copy-Item -Path "licenses/diagnostics/*" -Destination $LicenseDir -Recurse
-    foreach ($Required in @("NOTICE.md", "GPL-2.0.txt", "LGPL-2.1.txt", "GPL-3.0.txt", "LGPL-3.0.txt", "Apache-2.0.txt", "FFmpeg-LICENSE.md")) {
+    foreach ($Required in $Notices) {
         if ((Get-Item -LiteralPath (Join-Path $LicenseDir $Required)).Length -eq 0) {
             throw "Empty license notice: $Required"
         }
@@ -96,7 +100,7 @@ function Test-DiagnosticsPackage {
         $Bundle = Join-Path $Temporary "relocated bundle"
         Move-Item -LiteralPath (Join-Path $Temporary $Stage) -Destination $Bundle
         $BinDir = Join-Path $Bundle "bin"
-        foreach ($Required in @("NOTICE.md", "GPL-2.0.txt", "LGPL-2.1.txt", "GPL-3.0.txt", "LGPL-3.0.txt", "Apache-2.0.txt", "FFmpeg-LICENSE.md")) {
+        foreach ($Required in $Notices) {
             $Notice = Join-Path $Bundle "licenses/$Required"
             if (-not (Test-Path -LiteralPath $Notice -PathType Leaf) -or (Get-Item -LiteralPath $Notice).Length -eq 0) {
                 throw "The extracted diagnostics bundle is missing license notice $Required"

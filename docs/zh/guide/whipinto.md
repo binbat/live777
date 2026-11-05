@@ -141,14 +141,11 @@ Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722`
 
 ## 排障
 
-使用 `-vv` 输出 WebRTC 和桥接诊断日志。
+使用 `-vv` 输出 WebRTC 和桥接诊断日志。认证、HTTP 状态码和 ICE 失败的通用检查
+见 [排障](/zh/guide/troubleshooting)；下表只列本工具特有的问题。
 
 | 现象 | 检查项 |
 |------|--------|
-| `401 Unauthorized` | 用 `-t <token>` 传入与服务器 `[auth] tokens` 完全一致的 token；不要再手动添加 `Bearer` 前缀。 |
-| `403 Forbidden` | 请求已通过认证，但被代理或集群策略拒绝；检查 Live777/liveman 的授权与路由规则。 |
 | `404 Not Found` | 检查 `/whip/<stream>` URL、流名、端口和反向代理路径，确认目标是 WHIP 而不是 WHEP 端点。 |
-| `409 Conflict` | 已有发布者或配置的 source 占用该流。停止占用者、更换流名或检查 `strategy.override_publisher`；cascade-pull 发布者不能被替换。 |
 | 已连接但没有媒体 | 确认发送端正在向 SDP 端口发包、SDP 编码与实际输入一致，且 RTSP/SDP 输入可访问；同时检查上面的包大小和编码支持。 |
-| ICE 超时或断开 | 仅 host candidate 时，客户端与服务器必须网络直连。远程或 NAT 场景请配置服务器 ICE 地址和 STUN/TURN，并按需传入 `--ice-server`；见 [live777 配置](/zh/guide/live777)。 |
 

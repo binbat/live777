@@ -156,14 +156,13 @@ Codec             | `AV1`  | `VP9`  | `VP8`  | `H264` | `H265` | `OPUS` | `G722`
 
 ## Troubleshooting
 
-Run with `-vv` to include WebRTC and bridge diagnostics.
+Run with `-vv` to include WebRTC and bridge diagnostics. Authentication, HTTP
+status codes and ICE failures are covered once in
+[Troubleshooting](/guide/troubleshooting); the rows below are specific to this
+tool.
 
 | Symptom | What to check |
 |---------|---------------|
-| `401 Unauthorized` | Pass `-t <token>` and make sure it exactly matches the server's `[auth] tokens`; do not add a second `Bearer` prefix. |
-| `403 Forbidden` | Authentication reached the server but a proxy or cluster policy rejected it; check Live777/liveman authorization and routing rules. |
 | `404 Not Found` | Check the `/whip/<stream>` URL, server port and reverse-proxy path. Confirm you are publishing to Live777 rather than a WHEP endpoint. |
-| `409 Conflict` | Another publisher or configured source owns the stream. Stop it, use another stream, or review `strategy.override_publisher`; cascade-pull publishers cannot be displaced. |
 | Connected, but no media | Confirm the sender is emitting to the SDP ports, the SDP codecs match the encoded input, and RTSP/SDP inputs are reachable. Check packet size and codec support above. |
-| ICE timeout or disconnected | Host candidates alone work only where the client and server can directly reach each other. For remote/NAT use, configure server ICE addresses and STUN/TURN, then pass `--ice-server` when the client needs it; see [live777 configuration](/guide/live777). |
 

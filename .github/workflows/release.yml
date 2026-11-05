@@ -16,7 +16,9 @@ on:
       - 'docker/Dockerfile.diagnostics-musl'
       - 'docker/smoke-test.sh'
       - 'scripts/package-diagnostics*'
+      - 'scripts/lib/diagnostics.sh'
       - 'licenses/diagnostics/**'
+      - 'LICENSE'
       - 'Cargo.toml'
       - 'Cargo.lock'
 

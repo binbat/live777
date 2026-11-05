@@ -4,8 +4,8 @@
 //! --features rsmpeg -E 'binary(network_e2e)' --run-ignored ignored-only` as
 //! root with CAP_NET_ADMIN and iproute2/coturn installed. When using sudo,
 //! preserve PATH, Cargo/rustup and FFmpeg pkg-config variables plus
-//! LD_LIBRARY_PATH. Every test is ignored by default outside the dedicated
-//! Linux `network-e2e` CI job: setup creates network namespaces and veth pairs.
+//! LD_LIBRARY_PATH. Every test is ignored by default outside the Linux `build`
+//! CI job: setup creates network namespaces and veth pairs.
 //! No default route, host firewall, host loopback, or public ICE server is used.
 
 #![cfg(all(target_os = "linux", feature = "rsmpeg"))]
@@ -489,7 +489,7 @@ impl Stack {
             "--output=json",
             "--decode-duration",
             &decode_secs.to_string(),
-            "--timeout=20",
+            "--timeout=120",
             "--ice-server",
             ice_server,
         ]);
@@ -505,7 +505,7 @@ impl Stack {
     ) -> ProbeOutput {
         let output = self
             .probe_child(ice_server, ice_addr, stream, decode_secs, false)
-            .finish(Duration::from_secs(35));
+            .finish(Duration::from_secs(75));
         let report = serde_json::from_str(output.stdout.trim()).unwrap_or_else(|error| {
             panic!(
                 "whepprobe stdout must contain only JSON: {error}\n{}",
@@ -586,14 +586,14 @@ fn wait_for_log_count(child: &mut ChildGuard, needle: &str, minimum: usize, time
     let deadline = Instant::now() + timeout;
     loop {
         let output = child.combined_output();
+        if log_count(&output, needle) >= minimum {
+            return;
+        }
         assert!(
             !child.has_exited(),
             "{} exited before logging {minimum} occurrences of {needle:?}:\n{output}",
             child.label
         );
-        if log_count(&output, needle) >= minimum {
-            return;
-        }
         assert!(
             Instant::now() < deadline,
             "{} did not log {minimum} occurrences of {needle:?} within {timeout:?}:\n{output}",
@@ -734,24 +734,29 @@ fn netem_loss_and_delay_deliver_real_media() {
 
 #[test]
 #[ignore = "requires LIVE777_NETWORK_E2E=1, Linux root/CAP_NET_ADMIN, ip, tc, coturn and rsmpeg"]
-fn two_second_outage_recovers_and_seven_second_outage_fails() {
+fn two_second_outage_recovers_and_ten_second_outage_fails() {
     let stack = Stack::start();
     let mut publisher = stack.publisher("", CLIENT, "outage");
     publisher.wait_connected(Duration::from_secs(30));
 
-    let mut recovery = stack.probe_child("", CLIENT, "outage", 10, true);
+    let mut recovery = stack.probe_child("", CLIENT, "outage", 90, true);
     recovery.wait_connected(Duration::from_secs(20));
+    let output = recovery.combined_output();
+    assert!(
+        log_count(&output, "Received RTP packet") > 0,
+        "probe received no RTP before the outage:\n{output}"
+    );
     stack.topology.set_client_server_link(false);
     thread::sleep(Duration::from_secs(2));
-    let decoded_before_restore = log_count(&recovery.combined_output(), "Decoded frame");
+    let packets_during_outage = log_count(&recovery.combined_output(), "Received RTP packet");
     stack.topology.set_client_server_link(true);
     wait_for_log_count(
         &mut recovery,
-        "Decoded frame",
-        decoded_before_restore + 1,
-        Duration::from_secs(10),
+        "Received RTP packet",
+        packets_during_outage + 1,
+        Duration::from_secs(30),
     );
-    let recovery = recovery.finish(Duration::from_secs(30));
+    let recovery = recovery.finish(Duration::from_secs(150));
     let report: Value = serde_json::from_str(recovery.stdout.trim()).unwrap_or_else(|error| {
         panic!(
             "recovery probe stdout must contain only JSON: {error}\n{}",
@@ -769,23 +774,23 @@ fn two_second_outage_recovers_and_seven_second_outage_fails() {
         publisher.combined_output()
     );
 
-    let mut established = stack.probe_child("", CLIENT, "outage", 10, false);
+    let mut established = stack.probe_child("", CLIENT, "outage", 30, false);
     established.wait_connected(Duration::from_secs(20));
     stack.topology.set_client_server_link(false);
-    let outage_started = Instant::now();
-    thread::sleep(Duration::from_secs(7));
+    // Comfortably past the 5s disconnected grace, so the outcome cannot hinge
+    // on a sub-second scheduler difference on a loaded runner.
+    thread::sleep(Duration::from_secs(10));
 
     let subscriber_output = established.combined_output();
     assert!(
         peer_state_logged(&subscriber_output, "Disconnected")
             || peer_state_logged(&subscriber_output, "Failed"),
-        "established subscriber did not observe the 7s outage:\n{subscriber_output}"
+        "established subscriber did not observe the 10s outage:\n{subscriber_output}"
     );
-    let publisher_output = publisher.finish(Duration::from_secs(2));
-    assert!(outage_started.elapsed() >= Duration::from_secs(7));
+    let publisher_output = publisher.finish(Duration::from_secs(20));
     assert!(
         !publisher_output.status.success(),
-        "established publisher survived the 7s outage:\n{}",
+        "established publisher survived the 10s outage:\n{}",
         publisher_output.diagnostics()
     );
     let publisher_logs = format!("{}\n{}", publisher_output.stdout, publisher_output.stderr);

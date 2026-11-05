@@ -298,11 +298,10 @@ pub struct WhepBrowserPlayer {
     playwright_dir: Option<PathBuf>,
 }
 
-impl WhepBrowserPlayer {
-    /// Create a new subscriber for the given WHEP endpoint URL.
-    pub fn new(whep_url: impl Into<String>) -> Self {
+impl Default for WhepBrowserPlayer {
+    fn default() -> Self {
         Self {
-            subscribe_url: Some(whep_url.into()),
+            subscribe_url: None,
             publish_url: None,
             stream_id: None,
             mode: Mode::Subscribe,
@@ -319,25 +318,23 @@ impl WhepBrowserPlayer {
             playwright_dir: None,
         }
     }
+}
+
+impl WhepBrowserPlayer {
+    /// Create a new subscriber for the given WHEP endpoint URL.
+    pub fn new(whep_url: impl Into<String>) -> Self {
+        Self {
+            subscribe_url: Some(whep_url.into()),
+            ..Self::default()
+        }
+    }
 
     /// Create a new publisher for the given WHIP endpoint URL.
     pub fn publish(whip_url: impl Into<String>) -> Self {
         Self {
-            subscribe_url: None,
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Publish,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -349,19 +346,8 @@ impl WhepBrowserPlayer {
         Self {
             subscribe_url: Some(whep_url.into()),
             publish_url: Some(whip_url.into()),
-            stream_id: None,
             mode: Mode::Both,
-            source: PublishSource::default(),
-            codec: None,
-            audio_codec: None,
-            layer: None,
-            token: None,
-            browser: Browser::default(),
-            channel: None,
-            timeout: Duration::from_secs(30),
-            headless: true,
-            node_path: PathBuf::from("node"),
-            playwright_dir: None,
+            ..Self::default()
         }
     }
 
@@ -727,6 +713,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncRead + Unpin,
 {
+    // Once stderr hits EOF, `next_line` resolves immediately on every poll.
+    // Keep polling it inside `select!` and the loop spins until stdout closes.
+    let mut stderr_open = true;
     loop {
         tokio::select! {
             line = stdout_lines.next_line() => {
@@ -741,14 +730,14 @@ where
                     Err(e) => return Err(anyhow!("Failed to read runner stdout: {e}")),
                 }
             }
-            line = stderr_lines.next_line() => {
+            line = stderr_lines.next_line(), if stderr_open => {
                 match line {
                     Ok(Some(line)) => {
                         if !line.trim().is_empty() {
                             warn!(target: "playwright-whep::runner::stderr", "{line}");
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => stderr_open = false,
                     Err(e) => return Err(anyhow!("Failed to read runner stderr: {e}")),
                 }
             }
@@ -873,6 +862,39 @@ impl RunnerProcessSnapshot {
         }
         unreachable!()
     }
+}
+
+/// Stop a process tree to include late descendants, then kill the final snapshot.
+#[cfg(unix)]
+pub async fn kill_process_tree(child_id: u32) -> Result<String> {
+    let mut snapshot = RunnerProcessSnapshot::capture(child_id).await?;
+    let mut stabilized = false;
+    for _ in 0..10 {
+        let stop_failures = snapshot.signal(libc::SIGSTOP, "SIGSTOP");
+        if !stop_failures.is_empty() {
+            return Err(anyhow!(stop_failures.join("; ")));
+        }
+        let paused = RunnerProcessSnapshot::capture(child_id).await?;
+        if paused.pids == snapshot.pids {
+            snapshot = paused;
+            stabilized = true;
+            break;
+        }
+        snapshot = paused;
+    }
+    if !stabilized {
+        return Err(anyhow!("process tree did not stabilize after SIGSTOP"));
+    }
+
+    let failures = snapshot.signal(libc::SIGKILL, "SIGKILL");
+    let survivors = snapshot.surviving_pids_after_kill().await?;
+    if !failures.is_empty() || !survivors.is_empty() {
+        return Err(anyhow!(
+            "process-tree cleanup failed: {}; surviving PIDs: {survivors:?}",
+            failures.join("; ")
+        ));
+    }
+    Ok(format!("killed the process tree rooted at {child_id}"))
 }
 
 #[cfg(unix)]
@@ -1305,6 +1327,62 @@ setInterval(() => {}, 1000);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("detached runner descendant {pid} survived process-tree cleanup");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_handles_detached_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_runner = temp.path().join("fake-runner.cjs");
+        tokio::fs::write(
+            &fake_runner,
+            r#"
+const fs = require("fs");
+const { spawn } = require("child_process");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: true,
+    stdio: "ignore",
+});
+child.unref();
+fs.writeFileSync(process.argv[2], String(child.pid));
+setInterval(() => {}, 1000);
+"#,
+        )
+        .await
+        .unwrap();
+        let pid_file = temp.path().join("child.pid");
+        let mut child = Command::new("node")
+            .arg(&fake_runner)
+            .arg(&pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_id = child.id().unwrap();
+        for _ in 0..50 {
+            if pid_file.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(pid_file.is_file());
+
+        kill_process_tree(child_id).await.unwrap();
+        child.wait().await.unwrap();
+        let descendant: libc::pid_t = tokio::fs::read_to_string(pid_file)
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let root = libc::pid_t::try_from(child_id).unwrap();
+        let table = unix_process_table().await.unwrap();
+        assert!(
+            table.iter().all(|process| {
+                (process.pid != root && process.pid != descendant)
+                    || process.state.starts_with(['Z', 'X'])
+            }),
+            "nested processes survived cleanup: {table:?}"
+        );
     }
 
     #[cfg(windows)]

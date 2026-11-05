@@ -9,10 +9,10 @@
 
 #![cfg(feature = "rsmpeg")]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,53 +21,13 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 mod common;
-use common::shutdown_signal;
-
-static TRACING_INIT: Once = Once::new();
-
-fn init_test_environment() {
-    TRACING_INIT.call_once(|| {
-        // The server and both WebRTC children (which inherit the variable) run
-        // on this host. Pin ICE candidates to loopback so CI runners cannot
-        // choose an unroutable interface.
-        unsafe {
-            std::env::set_var("LIVE777_WEBRTC_ICE_UDP_ADDRS", "127.0.0.1:0");
-        }
-
-        let filter = std::env::var("RUST_LOG")
-            .unwrap_or_else(|_| "live777=info,liveion=info,livetwo=info,libwish=info".to_string());
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_test_writer()
-            .try_init();
-    });
-}
-
-/// Locate one of the workspace's binaries built alongside this test run.
-macro_rules! bin_path {
-    ($name:literal) => {
-        // Cargo sets CARGO_BIN_EXE_<name> for integration tests of the package
-        // that builds the binary; fall back to the conventional target
-        // directory layout.
-        option_env!(concat!("CARGO_BIN_EXE_", $name)).map_or_else(
-            || {
-                let mut path = std::env::current_exe().unwrap();
-                path.pop(); // deps/
-                path.pop(); // <profile>/
-                path.push($name);
-                path
-            },
-            PathBuf::from,
-        )
-    };
-}
 
 fn whipsynth_path() -> PathBuf {
-    bin_path!("whipsynth")
+    crate::bin_path!("whipsynth")
 }
 
 fn whepprobe_path() -> PathBuf {
-    bin_path!("whepprobe")
+    crate::bin_path!("whepprobe")
 }
 
 fn tool(path: PathBuf, args: &[&str]) -> Command {
@@ -172,18 +132,6 @@ impl SpawnedTool {
     }
 }
 
-/// Start liveion on an ephemeral loopback port and return its address.
-async fn start_liveion() -> SocketAddr {
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let mut cfg = liveion::config::Config::default();
-    cfg.http.cors = vec!["*".to_string()].into();
-    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
-    addr
-}
-
 /// Wait until `stream_id` has a Connected publish session.
 ///
 /// The 30s budget outlasts the publisher's own connect timeout, so a
@@ -258,8 +206,7 @@ async fn whipsynth_vp8_video_only_stream_probes_successfully() {
 }
 
 async fn assert_whipsynth_probe(video_codec: &str, audio_codec: Option<&str>) {
-    init_test_environment();
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let base = format!("http://{addr}");
     let stream = format!(
         "probe-{video_codec}-{}-{}",
@@ -367,8 +314,7 @@ async fn assert_whipsynth_probe(video_codec: &str, audio_codec: Option<&str>) {
 /// accepts it and the peer connects but stays silent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whepprobe_reports_failure_without_media() {
-    init_test_environment();
-    let addr = start_liveion().await;
+    let addr = common::start_liveion(None).await;
     let stream = format!("no-media-{}", std::process::id());
 
     let mut probe = tool(

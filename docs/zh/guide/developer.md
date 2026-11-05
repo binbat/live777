@@ -194,3 +194,7 @@ LIVE777_NETWORK_E2E=1 cargo nextest run --features rsmpeg \
 这些测试默认忽略，不会使用公网 ICE 服务器。它们只创建并清理自己的
 network namespace 和 veth，不修改宿主机防火墙、默认路由或 loopback。
 
+测试还会设置 `LIVE777_WEBRTC_DISABLE_MDNS=1`，让 livetwo 的 `SettingEngine`
+跳过 mDNS candidate 解析。该变量只影响 livetwo 创建的客户端 peer
+（`livetwo::utils::webrtc::setting_engine`），未设置时保持默认 mDNS 行为。
+

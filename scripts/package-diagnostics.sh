@@ -7,36 +7,16 @@ VERSION=${3:?version is required}
 STAGE=live777-diagnostics-${VERSION}-${TARGET}
 DIST=dist/diagnostics
 ARCHIVE=${DIST}/${STAGE}.tar.gz
-TOOLS=(whipsynth whepprobe livewrk)
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/diagnostics.sh
+source "${SCRIPT_DIR}/lib/diagnostics.sh"
 
 record_copied_file() {
     local lib_dir=$1
     local copied=$2
     local origin=$3
     printf 'lib/%s\t%s\n' "${copied}" "${origin}" >> "${lib_dir}/../third-party/copied-files.tsv"
-}
-
-copy_common_notices() {
-    local stage_dir=$1
-    local required
-    mkdir -p "${stage_dir}/licenses"
-    cp -R licenses/diagnostics/. "${stage_dir}/licenses/"
-    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
-        [[ -s ${stage_dir}/licenses/${required} ]] || { echo "Missing license notice: ${required}" >&2; return 1; }
-    done
-}
-
-linux_package_for_file() {
-    local origin=$1
-    local owner
-    owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
-    if [[ -z ${owner} ]]; then
-        origin=$(readlink -f "${origin}")
-        owner=$(dpkg-query -S "${origin}" 2>/dev/null) || owner=
-    fi
-    [[ -n ${owner} ]] || return 1
-    owner=${owner%%$'\n'*}
-    printf '%s\n' "${owner%%: *}"
 }
 
 copy_linux_notices() {
@@ -232,7 +212,7 @@ package_unix() {
 
     rm -rf "${stage_dir}"
     mkdir -p "${stage_dir}/bin" "${stage_dir}/lib" "${stage_dir}/third-party" "${DIST}"
-    copy_common_notices "${stage_dir}"
+    copy_diagnostics_notices "${stage_dir}"
     for tool in "${TOOLS[@]}"; do
         cp "${build_dir}/${tool}" "${stage_dir}/bin/${tool}.real"
         cat > "${stage_dir}/bin/${tool}" <<'LAUNCHER'
@@ -276,16 +256,14 @@ LAUNCHER
 }
 
 verify_unix() {
-    local temporary bundle tool dependencies required
+    local temporary bundle tool dependencies
     temporary=$(mktemp -d)
     trap 'rm -rf "${temporary}"' RETURN
     mkdir -p "${temporary}/home"
     tar -xzf "${ARCHIVE}" -C "${temporary}"
     mv "${temporary}/${STAGE}" "${temporary}/relocated bundle"
     bundle="${temporary}/relocated bundle"
-    for required in NOTICE.md GPL-2.0.txt LGPL-2.1.txt GPL-3.0.txt LGPL-3.0.txt Apache-2.0.txt FFmpeg-LICENSE.md; do
-        [[ -s ${bundle}/licenses/${required} ]] || { echo "Missing bundled license: ${required}" >&2; return 1; }
-    done
+    verify_diagnostics_notices "${bundle}"
     [[ -s ${bundle}/third-party/copied-files.tsv ]] || { echo "Missing copied-library provenance" >&2; return 1; }
     case $(uname -s) in
         Linux)

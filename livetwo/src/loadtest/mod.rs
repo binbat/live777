@@ -270,25 +270,6 @@ where
     Ok(stats)
 }
 
-/// Preserve the original library contract for callers that do not perform
-/// their own acceptance checks.
-pub(crate) fn ensure_legacy_success(stats: &LoadtestStats) -> Result<()> {
-    if stats.sessions_connected == 0
-        && stats.sessions_total > 0
-        && stats.sessions_cancelled < stats.sessions_total as u64
-    {
-        anyhow::bail!("all {} loadtest session(s) failed", stats.sessions_total);
-    }
-
-    if stats.sessions_connected == 0
-        && stats.sessions_total > 0
-        && stats.sessions_cancelled == stats.sessions_total as u64
-    {
-        warn!("all sessions were cancelled before connecting; no traffic flowed");
-    }
-    Ok(())
-}
-
 /// Sleep until `deadline` when set; pend forever otherwise (for `select!`).
 async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -441,6 +422,5 @@ mod tests {
         .unwrap();
 
         assert_eq!(stats.sessions_aborted, 1);
-        assert!(ensure_legacy_success(&stats).is_err());
     }
 }

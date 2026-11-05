@@ -125,14 +125,13 @@ whepfrom -w http://localhost:7777/whep/test-rtsp -o rtsp://localhost:8554/test-r
 
 ## Troubleshooting
 
-Run with `-vv` to include WebRTC and bridge diagnostics.
+Run with `-vv` to include WebRTC and bridge diagnostics. Authentication, HTTP
+status codes and ICE failures are covered once in
+[Troubleshooting](/guide/troubleshooting); the rows below are specific to this
+tool.
 
 | Symptom | What to check |
 |---------|---------------|
-| `401 Unauthorized` | Pass `-t <token>` and make sure it exactly matches the server's `[auth] tokens`; do not add a second `Bearer` prefix. |
-| `403 Forbidden` | Authentication reached the server but a proxy or cluster policy rejected it; check Live777/liveman authorization and routing rules. |
 | `404 Not Found` | Check the `/whep/<stream>` URL, stream name, server port and reverse-proxy path. With the default `auto_create_whep=true`, subscribing creates a missing stream, so the publisher does not need to create it first. If automatic creation is disabled globally or for this stream, make sure the publisher or an administrator creates it before subscribing. |
-| `409 Conflict` | A session or resource conflict was rejected; inspect the server log, remove stale sessions and check subscriber limits or stream policy before retrying. |
 | Connected, but no media | Confirm the stream has an active publisher and negotiated tracks. For RTP, use `-o rtp://127.0.0.1:9000 --sdp-file output.sdp` (not a bare SDP output), open that SDP in the receiver, and check UDP firewall/port rules. |
-| ICE timeout or disconnected | Host candidates alone work only where the client and server can directly reach each other. For remote/NAT use, configure server ICE addresses and STUN/TURN, then pass `--ice-server` when the client needs it; see [live777 configuration](/guide/live777). |
 

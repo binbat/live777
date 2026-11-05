@@ -6,9 +6,20 @@ use libwish::Client;
 use webrtc::peer_connection::PeerConnection;
 
 pub async fn graceful_shutdown(name: &str, client: &mut Client, peer: Arc<dyn PeerConnection>) {
+    graceful_shutdown_with_timeout(name, client, peer, Duration::from_secs(5)).await;
+}
+
+/// Same cleanup as [`graceful_shutdown`], with an explicit per-step deadline.
+/// The two steps run concurrently, so the delete cannot hold the peer close
+/// hostage; each is bounded independently.
+pub async fn graceful_shutdown_with_timeout(
+    name: &str,
+    client: &mut Client,
+    peer: Arc<dyn PeerConnection>,
+    shutdown_timeout: Duration,
+) {
     info!("Starting {} graceful shutdown", name);
 
-    let shutdown_timeout = Duration::from_secs(5);
     let remove = async {
         if client.session_url.is_some() {
             match tokio::time::timeout(shutdown_timeout, client.remove_resource()).await {
@@ -70,15 +81,16 @@ mod tests {
         );
 
         let started = std::time::Instant::now();
+        let step_timeout = Duration::from_millis(150);
         tokio::time::timeout(
-            Duration::from_secs(6),
-            graceful_shutdown("test", &mut client, peer.clone()),
+            Duration::from_secs(2),
+            graceful_shutdown_with_timeout("test", &mut client, peer.clone(), step_timeout),
         )
         .await
         .expect("shutdown exceeded its independent cleanup deadlines");
         server.abort();
 
         assert!(peer.create_offer(None).await.is_err());
-        assert!(started.elapsed() >= Duration::from_secs(5));
+        assert!(started.elapsed() >= step_timeout);
     }
 }

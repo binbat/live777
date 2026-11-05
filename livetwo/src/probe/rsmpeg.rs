@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use libwish::Client;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 use webrtc::peer_connection::RTCPeerConnectionState;
 
 use crate::probe::decoder::DecodedAudio;
@@ -173,9 +173,10 @@ impl ProbeBackend for RsmpegProbe {
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         // Keep a small margin for normal EOF, decoder flush, and child reaping.
+        // The caller's decode window is only bounded by the remaining probe
+        // budget; a hard cap here silently truncated `--decode-duration`.
         let decode_duration = self
             .decode_duration
-            .min(Duration::from_secs(10))
             .min(remaining.saturating_sub(Duration::from_secs(2)));
         if decode_duration.is_zero() {
             ct.cancel();
@@ -270,6 +271,7 @@ async fn run_video_decoder(
     let forward = forward_packets(
         video_rx,
         packet_tx,
+        "video",
         bytes_received,
         ct.clone(),
         decode_duration,
@@ -308,6 +310,7 @@ async fn run_audio_decoder(
     let forward = forward_packets(
         audio_rx,
         packet_tx,
+        "audio",
         bytes_received,
         ct.clone(),
         decode_duration,
@@ -325,6 +328,7 @@ async fn run_audio_decoder(
 async fn forward_packets(
     mut source_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     packet_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    media_type: &'static str,
     bytes_received: Arc<AtomicU64>,
     ct: CancellationToken,
     decode_duration: Duration,
@@ -335,7 +339,9 @@ async fn forward_packets(
         tokio::select! {
             packet = source_rx.recv() => {
                 let Some(packet) = packet else { break };
-                bytes_received.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                let total_bytes = bytes_received.fetch_add(packet.len() as u64, Ordering::Relaxed)
+                    + packet.len() as u64;
+                debug!(media_type, total_bytes, "Received RTP packet");
                 tokio::select! {
                     result = packet_tx.send(packet) => {
                         if result.is_err() {

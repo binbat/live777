@@ -115,14 +115,11 @@ whepfrom -w http://localhost:7777/whep/test-rtsp -o rtsp://localhost:8554/test-r
 
 ## 排障
 
-使用 `-vv` 输出 WebRTC 和桥接诊断日志。
+使用 `-vv` 输出 WebRTC 和桥接诊断日志。认证、HTTP 状态码和 ICE 失败的通用检查
+见 [排障](/zh/guide/troubleshooting)；下表只列本工具特有的问题。
 
 | 现象 | 检查项 |
 |------|--------|
-| `401 Unauthorized` | 用 `-t <token>` 传入与服务器 `[auth] tokens` 完全一致的 token；不要再手动添加 `Bearer` 前缀。 |
-| `403 Forbidden` | 请求已通过认证，但被代理或集群策略拒绝；检查 Live777/liveman 的授权与路由规则。 |
 | `404 Not Found` | 检查 `/whep/<stream>` URL、流名、端口和反向代理路径。默认 `auto_create_whep=true` 时，订阅会自动创建尚不存在的流，无需发布者先创建；如果全局或该流的配置禁用了自动创建，则需先由发布者或管理员创建该流再订阅。 |
-| `409 Conflict` | 会话或资源冲突被拒绝；查看服务器日志，清理失效会话并检查订阅上限或流策略后重试。 |
 | 已连接但没有媒体 | 确认流有活动发布者并已协商轨道。RTP 模式必须使用 `-o rtp://127.0.0.1:9000 --sdp-file output.sdp`（不能只用裸 SDP 输出），让接收端打开该 SDP，并检查 UDP 防火墙和端口。 |
-| ICE 超时或断开 | 仅 host candidate 时，客户端与服务器必须网络直连。远程或 NAT 场景请配置服务器 ICE 地址和 STUN/TURN，并按需传入 `--ice-server`；见 [live777 配置](/zh/guide/live777)。 |
 
