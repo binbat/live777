@@ -5,6 +5,12 @@ use super::whep::VerifyStats;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Warning/failure text for a verification run that ended before a single
+/// decode window completed. Shared with tests so the assertion cannot drift
+/// from the message producers emit.
+pub const UNFINISHED_VERIFICATION_WARNING: &str =
+    "verification enabled but no full decode window completed";
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AcceptanceCriteria {
     pub min_connected: u64,
@@ -116,7 +122,7 @@ impl RunReport {
             let verification_failure = match &verification {
                 Some(verify) if verify.unsupported => None,
                 Some(verify) if verify.windows_total == 0 => {
-                    Some("verification enabled but no full decode window completed".to_string())
+                    Some(UNFINISHED_VERIFICATION_WARNING.to_string())
                 }
                 Some(verify) if verify.windows_failed > 0 => Some(format!(
                     "{} verification window(s) failed",
@@ -369,7 +375,7 @@ mod tests {
                 verification: Some(VerifyStats::default()),
                 criteria: verification_required,
                 success: false,
-                failures: &["verification enabled but no full decode window completed"],
+                failures: &[UNFINISHED_VERIFICATION_WARNING],
                 warnings: &[],
             },
             Case {

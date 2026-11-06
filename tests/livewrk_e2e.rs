@@ -431,14 +431,13 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         Some(0),
         "expected an unfinished verification run:\n{stdout}"
     );
+    let unfinished_warning = livetwo::loadtest::acceptance::UNFINISHED_VERIFICATION_WARNING;
     assert!(
         report["warnings"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|warning| {
-                warning.as_str() == Some("verification enabled but no full decode window completed")
-            }),
+            .any(|warning| warning.as_str() == Some(unfinished_warning)),
         "tolerant verification should downgrade the unfinished run to a warning:\n{stdout}"
     );
 

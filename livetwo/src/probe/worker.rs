@@ -24,9 +24,11 @@ const FRAME_HEADER_LEN: usize = 8;
 const MAX_CONTROL_FRAME_SIZE: u32 = 64 * 1024;
 const MAX_RTP_FRAME_SIZE: u32 = 256 * 1024;
 const WORKER_ENV: &str = "LIVE777_WHEPPROBE_BIN";
-/// A killed child that refuses to exit must not pin the reaper thread (or, in
-/// the `terminate` path, the probe future) forever.
-const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound on how long a killed child may keep the reaper thread (or, in
+/// the `terminate` path, the probe future) waiting. Public so callers that
+/// budget for a probe's worst case (e.g. `whepprobe`'s outer wedge guard) can
+/// derive it instead of duplicating the number.
+pub const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +239,7 @@ impl DecodeWorker {
         let frame = match encode_frame(kind, payload) {
             Ok(frame) => frame,
             Err(error) => {
-                self.terminate().await;
+                self.terminate(hard_deadline).await;
                 return Err(error);
             }
         };
@@ -279,7 +281,7 @@ impl DecodeWorker {
                 }
             }
         };
-        self.terminate().await;
+        self.terminate(hard_deadline).await;
         Err(error)
     }
 
@@ -322,7 +324,7 @@ impl DecodeWorker {
         let response = match self.read_response(ct, hard_deadline).await {
             Ok(response) => response,
             Err(error) => {
-                self.terminate().await;
+                self.terminate(hard_deadline).await;
                 return Err(error);
             }
         };
@@ -340,7 +342,7 @@ impl DecodeWorker {
         let status = match status {
             Ok(status) => status,
             Err(error) => {
-                self.terminate().await;
+                self.terminate(hard_deadline).await;
                 return Err(error);
             }
         };
@@ -350,7 +352,14 @@ impl DecodeWorker {
         response.into_result()
     }
 
-    async fn terminate(&mut self) {
+    /// Kill the child, never waiting past the caller's own budget.
+    ///
+    /// Callers reach this after a `hard_deadline` that fired, a cancelled
+    /// token, a protocol error on a long run, or a child that already exited;
+    /// an unbounded `wait()` would hang the whole probe. Whatever remains of
+    /// the caller's budget is the most this may spend; once it is gone the
+    /// child is handed to the reaper, which has its own bound.
+    async fn terminate(&mut self, hard_deadline: Instant) {
         self.stdin.take();
         self.stdout.take();
         let Some(mut child) = self.child.take() else {
@@ -362,13 +371,8 @@ impl DecodeWorker {
                 let _ = child.start_kill();
             }
         }
-        // Every caller reaches this after its `hard_deadline` guard has already
-        // fired, so an unbounded `wait()` here would hang the whole probe. Hand
-        // a child that will not exit to the reaper, which has its own bound.
-        if tokio::time::timeout(REAP_TIMEOUT, child.wait())
-            .await
-            .is_err()
-        {
+        let budget = REAP_TIMEOUT.min(hard_deadline.saturating_duration_since(Instant::now()));
+        if tokio::time::timeout(budget, child.wait()).await.is_err() {
             match reaper() {
                 Some(tx) => {
                     let _ = tx.send(child);
@@ -404,6 +408,14 @@ fn reaper() -> Option<&'static mpsc::Sender<Child>> {
 /// Kill and reap a child with a bounded wait. A child that never exits is
 /// abandoned rather than blocking this thread (and every worker queued behind
 /// it in the reaper) indefinitely.
+///
+/// "Abandoned" means the `Child` handle is dropped while the process may still
+/// exist (e.g. wedged in uninterruptible sleep where SIGKILL is pending but
+/// cannot be delivered). Tokio's orphan queue then reaps it if it ever exits
+/// while the runtime lives; a process that outlives the runtime is left to the
+/// kernel. The single reaper thread handles children one at a time, so each
+/// abandonment also costs up to `REAP_TIMEOUT` of head-of-line delay for the
+/// workers queued behind it.
 fn reap_killed(mut child: Child) {
     let _ = child.start_kill();
     let started = std::time::Instant::now();
