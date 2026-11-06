@@ -14,6 +14,7 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use super::decoder::{DecodedAudio, RtpFrameDecoder};
 
@@ -23,6 +24,10 @@ const FRAME_HEADER_LEN: usize = 8;
 const MAX_CONTROL_FRAME_SIZE: u32 = 64 * 1024;
 const MAX_RTP_FRAME_SIZE: u32 = 256 * 1024;
 const WORKER_ENV: &str = "LIVE777_WHEPPROBE_BIN";
+/// A killed child that refuses to exit must not pin the reaper thread (or, in
+/// the `terminate` path, the probe future) forever.
+const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -348,14 +353,25 @@ impl DecodeWorker {
     async fn terminate(&mut self) {
         self.stdin.take();
         self.stdout.take();
-        if let Some(child) = &mut self.child {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) | Err(_) => {
-                    let _ = child.start_kill();
-                }
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) | Err(_) => {
+                let _ = child.start_kill();
             }
-            let _ = child.wait().await;
+        }
+        // Every caller reaches this after its `hard_deadline` guard has already
+        // fired, so an unbounded `wait()` here would hang the whole probe. Hand
+        // a child that will not exit to the reaper, which has its own bound.
+        if tokio::time::timeout(REAP_TIMEOUT, child.wait()).await.is_err() {
+            match reaper() {
+                Some(tx) => {
+                    let _ = tx.send(child);
+                }
+                None => reap_killed(child),
+            }
         }
     }
 }
@@ -372,11 +388,8 @@ fn reaper() -> Option<&'static mpsc::Sender<Child>> {
             std::thread::Builder::new()
                 .name("decode-worker-reaper".to_string())
                 .spawn(move || {
-                    while let Ok(mut child) = rx.recv() {
-                        let _ = child.start_kill();
-                        while let Ok(None) = child.try_wait() {
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
+                    while let Ok(child) = rx.recv() {
+                        reap_killed(child);
                     }
                 })
                 .ok()
@@ -385,11 +398,19 @@ fn reaper() -> Option<&'static mpsc::Sender<Child>> {
         .as_ref()
 }
 
-/// Fallback for the unlikely case where the reaper thread could not start.
-fn reap_blocking(mut child: Child) {
-    while let Ok(None) = child.try_wait() {
-        std::thread::sleep(Duration::from_millis(1));
+/// Kill and reap a child with a bounded wait. A child that never exits is
+/// abandoned rather than blocking this thread (and every worker queued behind
+/// it in the reaper) indefinitely.
+fn reap_killed(mut child: Child) {
+    let _ = child.start_kill();
+    let started = std::time::Instant::now();
+    while started.elapsed() < REAP_TIMEOUT {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => std::thread::sleep(REAP_POLL_INTERVAL),
+        }
     }
+    warn!("decode worker did not exit within {:?}; abandoning it", REAP_TIMEOUT);
 }
 
 impl Drop for DecodeWorker {
@@ -408,10 +429,10 @@ impl Drop for DecodeWorker {
         match reaper() {
             Some(tx) => {
                 if let Err(error) = tx.send(child) {
-                    reap_blocking(error.0);
+                    reap_killed(error.0);
                 }
             }
-            None => reap_blocking(child),
+            None => reap_killed(child),
         }
     }
 }

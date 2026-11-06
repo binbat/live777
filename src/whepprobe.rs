@@ -119,7 +119,12 @@ async fn run() -> Result<bool> {
         decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    let hard_timeout = config.timeout + Duration::from_secs(5);
+    // `probe()` bounds its own phases by `config.timeout`; this outer guard is
+    // only a last resort against a wedged future. Leave room for the trailing
+    // graceful shutdown (up to 5 s) and worker reaping, otherwise a probe that
+    // legitimately ran to its deadline is reported as a bare timeout and its
+    // shutdown is dropped mid-flight.
+    let hard_timeout = config.timeout + Duration::from_secs(15);
     match tokio::time::timeout(hard_timeout, backend.probe(&config)).await {
         Ok(Ok(result)) => {
             let success = result.success;
@@ -135,8 +140,7 @@ async fn run() -> Result<bool> {
             Ok(false)
         }
         Err(_) => {
-            let failed =
-                ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
+            let failed = ProbeResult::failed("rsmpeg", format!("timed out after {hard_timeout:?}"));
             print_result(&failed, args.output);
             Ok(false)
         }

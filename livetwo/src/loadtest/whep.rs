@@ -680,9 +680,10 @@ async fn decode_window(
         Err(error) => return WindowOutcome::WorkerStartFailed(error),
     };
 
-    // The deadline is absolute and shared with sends: a per-iteration sleep or
-    // an unmonitored pipe write could otherwise extend the window forever under
-    // continuous traffic or backpressure.
+    // The window deadline is absolute so continuous traffic or backpressure
+    // cannot extend the window forever. Sends use the worker's full budget:
+    // binding them to the window edge makes `sleep_until(window_deadline)` race
+    // the send's own deadline and randomly fail the window at its boundary.
     let window_deadline = tokio::time::Instant::now() + window;
     let end = loop {
         tokio::select! {
@@ -695,7 +696,7 @@ async fn decode_window(
                         if session != target {
                             continue;
                         }
-                        if let Err(error) = worker.send_rtp(&packet, ct, window_deadline).await {
+                        if let Err(error) = worker.send_rtp(&packet, ct, worker_deadline).await {
                             break ForwardEnd::DecoderFailed(error);
                         }
                     }

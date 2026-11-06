@@ -201,6 +201,7 @@ impl RtpFrameDecoder {
         };
 
         if let Some(frame_data) = frame_data {
+            let frames_before = self.frame_count;
             if let Err(e) = self.decode_packet(&frame_data, pts) {
                 // Before the first successful frame, errors are usually startup
                 // noise (e.g. VP8 interframes before the first keyframe). Once
@@ -219,7 +220,10 @@ impl RtpFrameDecoder {
                     size = frame_data.len(),
                     "Failed to decode frame: {e}"
                 );
-            } else {
+            } else if self.frame_count > frames_before {
+                // Only a packet that actually produced a frame proves the
+                // decoder is healthy. A successful `send_packet` that yields no
+                // frame yet must not reset the failure budget.
                 self.early_failure_count = 0;
             }
         }
