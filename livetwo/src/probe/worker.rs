@@ -365,7 +365,10 @@ impl DecodeWorker {
         // Every caller reaches this after its `hard_deadline` guard has already
         // fired, so an unbounded `wait()` here would hang the whole probe. Hand
         // a child that will not exit to the reaper, which has its own bound.
-        if tokio::time::timeout(REAP_TIMEOUT, child.wait()).await.is_err() {
+        if tokio::time::timeout(REAP_TIMEOUT, child.wait())
+            .await
+            .is_err()
+        {
             match reaper() {
                 Some(tx) => {
                     let _ = tx.send(child);
@@ -410,7 +413,10 @@ fn reap_killed(mut child: Child) {
             Ok(None) => std::thread::sleep(REAP_POLL_INTERVAL),
         }
     }
-    warn!("decode worker did not exit within {:?}; abandoning it", REAP_TIMEOUT);
+    warn!(
+        "decode worker did not exit within {:?}; abandoning it",
+        REAP_TIMEOUT
+    );
 }
 
 impl Drop for DecodeWorker {
