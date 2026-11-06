@@ -250,9 +250,12 @@ an actual synthetic WHIP publish to WHEP decode smoke. Include `livewrk
   by the RTP/RTSP bridge and the synthetic `whipsynth` publisher. FFmpeg
   decoding for `whepprobe` and livewrk's rotating verifier runs in isolated
   `whepprobe --decode-worker` processes (`livetwo/src/probe/worker.rs`), so a
-  stuck decoder can be killed and reaped without leaking threads. `livewrk`
-  finds the helper beside its executable (or via `LIVE777_WHEPPROBE_BIN`);
-  diagnostics bundles ship both binaries together.
+  stuck decoder can be killed and reaped without leaking threads. Termination
+  and reaping are bounded (`REAP_TIMEOUT`, 5 s): a child that somehow survives
+  `SIGKILL` is abandoned and left to tokio's orphan queue instead of pinning
+  the probe or the single reaper thread. `livewrk` finds the helper beside its
+  executable (or via `LIVE777_WHEPPROBE_BIN`); diagnostics bundles ship both
+  binaries together.
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
 

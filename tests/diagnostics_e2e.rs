@@ -39,6 +39,12 @@ fn tool(path: PathBuf, args: &[&str]) -> Command {
     cmd
 }
 
+/// Outer harness budget for a `whepprobe` run. It must exceed whepprobe's own
+/// wedge guard (`--timeout` plus its 5 s shutdown budget, 5 s decode-worker
+/// kill+reap budget and 5 s margin), so a hang is reported by the probe's own
+/// timeout path instead of by this harness timeout.
+const PROBE_RUN_BUDGET: Duration = Duration::from_secs(30);
+
 /// Shared capture buffer: the drain tasks append everything they read, so a
 /// panicking test can still inspect the child's output up to that point.
 type OutputSink = Arc<Mutex<Vec<u8>>>;
@@ -399,7 +405,7 @@ async fn unresponsive_whep_http_respects_cli_timeout() {
         tokio::time::sleep(Duration::from_secs(60)).await;
     });
     let output = tokio::time::timeout(
-        Duration::from_secs(10),
+        PROBE_RUN_BUDGET,
         tool(
             whepprobe_path(),
             &[
@@ -469,7 +475,7 @@ async fn setup_timeout_deletes_created_whep_session() {
         request
     });
     let output = tokio::time::timeout(
-        Duration::from_secs(10),
+        PROBE_RUN_BUDGET,
         tool(
             whepprobe_path(),
             &[

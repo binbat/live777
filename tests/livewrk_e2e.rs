@@ -359,6 +359,10 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "--ice-server",
         "",
     ]);
+    // Deliberately end the run before a 5s verify window can complete, so the
+    // verifier reports an unfinished run (windows_total == 0). This exercises
+    // the tolerant downgrade of that verification failure to a warning; a
+    // completed-but-failed window is covered by the acceptance unit tests.
     let mut tolerant = livewrk(&[
         "whep",
         "--whep",
@@ -420,14 +424,21 @@ async fn whip_whep_publish_and_subscribe_with_verification() {
         "tolerant verification failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     let report = parse_json_report(&stdout, &stderr);
-    assert_eq!(report["success"], true);
+    assert_eq!(report["success"], true, "report:\n{stdout}");
     assert!(report["failures"].as_array().unwrap().is_empty());
+    assert_eq!(
+        report["verification"]["windows_total"].as_u64(),
+        Some(0),
+        "expected an unfinished verification run:\n{stdout}"
+    );
+    let unfinished_warning = livetwo::loadtest::acceptance::UNFINISHED_VERIFICATION_WARNING;
     assert!(
         report["warnings"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|warning| warning.as_str().unwrap().contains("verification"))
+            .any(|warning| warning.as_str() == Some(unfinished_warning)),
+        "tolerant verification should downgrade the unfinished run to a warning:\n{stdout}"
     );
 
     let stdout = String::from_utf8_lossy(&partial.stdout);

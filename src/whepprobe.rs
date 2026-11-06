@@ -119,7 +119,16 @@ async fn run() -> Result<bool> {
         decode_duration: Duration::from_secs(args.decode_duration),
     };
 
-    let hard_timeout = config.timeout + Duration::from_secs(5);
+    // `probe()` bounds its own phases by `config.timeout`; this outer guard is
+    // only a last resort against a wedged future. It must outlast the trailing
+    // graceful shutdown and the decode workers' bounded kill+reap, otherwise a
+    // probe that legitimately ran to its deadline is reported as a bare
+    // timeout and its shutdown is dropped mid-flight.
+    const WEDGE_GUARD_MARGIN: Duration = Duration::from_secs(5);
+    let hard_timeout = config.timeout
+        + livetwo::utils::shutdown::DEFAULT_SHUTDOWN_TIMEOUT
+        + livetwo::probe::worker::REAP_TIMEOUT
+        + WEDGE_GUARD_MARGIN;
     match tokio::time::timeout(hard_timeout, backend.probe(&config)).await {
         Ok(Ok(result)) => {
             let success = result.success;
@@ -135,8 +144,16 @@ async fn run() -> Result<bool> {
             Ok(false)
         }
         Err(_) => {
-            let failed =
-                ProbeResult::failed("rsmpeg", format!("timed out after {:?}", config.timeout));
+            // Report the budget the user configured, not the outer guard: the
+            // guard exists to catch a wedged future, and printing its total
+            // would look like `--timeout` was ignored.
+            let failed = ProbeResult::failed(
+                "rsmpeg",
+                format!(
+                    "timed out after {:?} (hard limit {hard_timeout:?})",
+                    config.timeout
+                ),
+            );
             print_result(&failed, args.output);
             Ok(false)
         }

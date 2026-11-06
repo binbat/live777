@@ -201,30 +201,49 @@ impl RtpFrameDecoder {
         };
 
         if let Some(frame_data) = frame_data {
-            if let Err(e) = self.decode_packet(&frame_data, pts) {
-                // Before the first successful frame, errors are usually startup
-                // noise (e.g. VP8 interframes before the first keyframe). Once
-                // decoding has produced output, treat further errors as fatal.
-                if self.frame_count > 0 {
-                    return Err(e);
-                }
-                self.early_failure_count += 1;
-                if self.early_failure_count > MAX_EARLY_FAILURES {
-                    return Err(e.context(format!(
-                        "failed to decode first frame after {MAX_EARLY_FAILURES} attempts"
-                    )));
-                }
-                warn!(
-                    attempt = self.early_failure_count,
-                    size = frame_data.len(),
-                    "Failed to decode frame: {e}"
-                );
-            } else {
-                self.early_failure_count = 0;
+            let frames_before = self.frame_count;
+            match self.decode_packet(&frame_data, pts) {
+                Err(error) => self.note_decode_failure(error, frame_data.len())?,
+                Ok(()) => self.note_decode_success(frames_before),
             }
         }
 
         Ok(())
+    }
+
+    /// Count one decode failure against the pre-first-frame budget.
+    ///
+    /// Before the first successful frame, errors are usually startup noise
+    /// (e.g. VP8 interframes before the first keyframe), so they are tolerated
+    /// up to [`MAX_EARLY_FAILURES`]. Once decoding has produced output, any
+    /// error is fatal.
+    fn note_decode_failure(&mut self, error: anyhow::Error, size: usize) -> Result<()> {
+        if self.frame_count > 0 {
+            return Err(error);
+        }
+        self.early_failure_count += 1;
+        if self.early_failure_count > MAX_EARLY_FAILURES {
+            return Err(error.context(format!(
+                "no frame decoded after {MAX_EARLY_FAILURES} decode failures"
+            )));
+        }
+        warn!(
+            attempt = self.early_failure_count,
+            size, "Failed to decode frame: {error}"
+        );
+        Ok(())
+    }
+
+    /// Reset the pre-first-frame failure budget when a packet actually produced
+    /// a frame.
+    ///
+    /// A successful `send_packet` that yields no frame yet does not prove the
+    /// decoder is healthy, so it must leave the budget alone; otherwise a
+    /// stream that never decodes spins until the outer timeout.
+    fn note_decode_success(&mut self, frames_before: u32) {
+        if self.frame_count > frames_before {
+            self.early_failure_count = 0;
+        }
     }
 
     fn decode_packet(&mut self, data: &[u8], pts: i64) -> Result<()> {
@@ -408,8 +427,8 @@ mod tests {
     use base64::Engine;
 
     use super::{
-        RtpFrameDecoder, RtpTimestampExtender, ffi, find_av1_decoder, parse_h264_sprop,
-        parse_h265_sprop, supports_mime,
+        MAX_EARLY_FAILURES, RtpFrameDecoder, RtpTimestampExtender, ffi, find_av1_decoder,
+        parse_h264_sprop, parse_h265_sprop, supports_mime,
     };
 
     #[test]
@@ -560,6 +579,49 @@ mod tests {
         assert_eq!(timestamps.extend(4), u32::MAX as i64 + 5);
         assert_eq!(timestamps.extend(u32::MAX - 5), u32::MAX as i64 - 5);
         assert_eq!(timestamps.extend(6), u32::MAX as i64 + 7);
+    }
+
+    #[test]
+    fn decode_failure_budget_only_resets_when_a_frame_is_produced() {
+        use anyhow::anyhow;
+
+        let mut decoder = RtpFrameDecoder::new("audio/pcmu", None).unwrap();
+        for attempt in 1..=MAX_EARLY_FAILURES {
+            decoder
+                .note_decode_failure(anyhow!("synthetic decode error"), 4)
+                .unwrap_or_else(|error| panic!("budget fired at attempt {attempt}: {error:#}"));
+            assert_eq!(decoder.early_failure_count, attempt);
+        }
+
+        // A `send_packet` that succeeded without producing a frame leaves the
+        // budget where it was; only a packet that actually produced a frame
+        // clears it. So the next failure must exhaust the budget.
+        assert_eq!(decoder.early_failure_count, MAX_EARLY_FAILURES);
+        let frames_before = decoder.frame_count;
+        decoder.note_decode_success(frames_before);
+        assert_eq!(
+            decoder.early_failure_count, MAX_EARLY_FAILURES,
+            "a frame-less success must not reset the budget"
+        );
+        let error = decoder
+            .note_decode_failure(anyhow!("synthetic decode error"), 4)
+            .expect_err("exhausted budget must abort the probe");
+        assert!(
+            error.to_string().contains("no frame decoded after"),
+            "{error:#}"
+        );
+
+        // A packet that did produce a frame resets the budget...
+        decoder.frame_count = frames_before + 1;
+        decoder.note_decode_success(frames_before);
+        assert_eq!(decoder.early_failure_count, 0);
+
+        // ...and after a decoded frame the very next error is fatal, keeping
+        // its own context instead of the startup-budget message.
+        let error = decoder
+            .note_decode_failure(anyhow!("synthetic decode error"), 4)
+            .expect_err("errors after a decoded frame must be fatal");
+        assert_eq!(error.to_string(), "synthetic decode error");
     }
 
     #[test]

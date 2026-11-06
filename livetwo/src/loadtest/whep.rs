@@ -658,8 +658,9 @@ async fn decode_window(
     window: Duration,
     ct: &CancellationToken,
 ) -> WindowOutcome {
-    /// Extra time the worker gets past the window for EOF, decoder flush, and
-    /// process collection.
+    /// Extra time the worker gets past the window: the first half bounds a
+    /// send that is already in flight when the window expires, the second
+    /// covers EOF, decoder flush, and process collection.
     const DECODER_GRACE: Duration = Duration::from_secs(2);
 
     use crate::probe::worker::{DecodeSummary, DecodeWorker, DecodeWorkerConfig};
@@ -680,9 +681,18 @@ async fn decode_window(
         Err(error) => return WindowOutcome::WorkerStartFailed(error),
     };
 
-    // The deadline is absolute and shared with sends: a per-iteration sleep or
-    // an unmonitored pipe write could otherwise extend the window forever under
-    // continuous traffic or backpressure.
+    // `window_deadline` is what ends the window, and it is absolute, so a
+    // steady packet stream cannot stretch the window. A send that is already
+    // in flight when it fires still runs to completion: the send is awaited
+    // inside a `select!` arm, where `sleep_until(window_deadline)` is no longer
+    // polled, so the real upper bound for one window is the worker deadline
+    // (window + 2 * DECODER_GRACE). That overrun is deliberate. Binding sends
+    // to `window_deadline` races the window timer at the edge and randomly
+    // records a healthy window as `DecoderFailed`, and cancelling a frame write
+    // mid-way leaves a half-written frame in the worker pipe, which the worker
+    // reports as a truncated frame instead of a clean EOF. A genuinely stuck
+    // worker still fails the window: it has to stay stuck until the worker
+    // deadline before the send gives up.
     let window_deadline = tokio::time::Instant::now() + window;
     let end = loop {
         tokio::select! {
@@ -695,7 +705,7 @@ async fn decode_window(
                         if session != target {
                             continue;
                         }
-                        if let Err(error) = worker.send_rtp(&packet, ct, window_deadline).await {
+                        if let Err(error) = worker.send_rtp(&packet, ct, worker_deadline).await {
                             break ForwardEnd::DecoderFailed(error);
                         }
                     }

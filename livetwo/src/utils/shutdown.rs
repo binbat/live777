@@ -5,8 +5,13 @@ use tracing::{info, warn};
 use libwish::Client;
 use webrtc::peer_connection::PeerConnection;
 
+/// Default per-step deadline used by [`graceful_shutdown`]. Public so callers
+/// that budget for a probe's worst case can derive from it instead of
+/// duplicating the number.
+pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub async fn graceful_shutdown(name: &str, client: &mut Client, peer: Arc<dyn PeerConnection>) {
-    graceful_shutdown_with_timeout(name, client, peer, Duration::from_secs(5)).await;
+    graceful_shutdown_with_timeout(name, client, peer, DEFAULT_SHUTDOWN_TIMEOUT).await;
 }
 
 /// Same cleanup as [`graceful_shutdown`], with an explicit per-step deadline.
