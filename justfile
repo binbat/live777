@@ -7,6 +7,7 @@ stream := "test-stream"
 target_dir := env_var_or_default("CARGO_TARGET_DIR", "target")
 rkmpp_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest"
 rpi_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-rpi:latest"
+sunxi_cross_image := "ghcr.io/binbat/crossbuilder-aarch64-sunxi:latest"
 
 isdp := "i.sdp"
 osdp := "o.sdp"
@@ -175,6 +176,17 @@ rpi-sync-and-cross-build host="raspberrypi" sysroot="target/rpi-sysroot":
 rpi-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
         just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp,target-rtsp
+
+# Allwinner A733 (Orange Pi Zero 3W): cedar VE encoder + AWIspApi ISP hooks.
+# The SDK sysroot is baked into {{sunxi_cross_image}} at /opt/sunxi-sysroot.
+# For a local build without that image, set SUNXI_SYSROOT to a device-extracted
+# sysroot (include/ + lib/) and cross mounts it via Cross.toml volumes.
+[group('embedded')]
+sunxi-cross-build:
+    CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{sunxi_cross_image}} \
+        cross build --target aarch64-unknown-linux-gnu \
+        --bin live777 --release \
+        --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
 
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
 [group('embedded')]

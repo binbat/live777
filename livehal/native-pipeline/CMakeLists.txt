@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ENABLE_BACKEND_PI "Enable Raspberry Pi backend" OFF)
 option(ENABLE_BACKEND_RDK_X5 "Enable RDK X5 backend" OFF)
+option(ENABLE_BACKEND_SUNXI "Enable Allwinner sunxi VIN backend (AWIspApi ISP hooks)" OFF)
 
 option(ENABLE_CAPTURE_LIBCAMERA "Enable libcamera capture backend" OFF)
 option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
@@ -17,6 +18,7 @@ option(ENABLE_CAPTURE_V4L2 "Enable V4L2 capture backend" OFF)
 option(ENABLE_ENCODER_V4L2_M2M "Enable V4L2 M2M encoder backend" OFF)
 option(ENABLE_ENCODER_RDK_X5 "Enable RDK X5 encoder backend" OFF)
 option(ENABLE_ENCODER_RKMPP "Enable Rockchip MPP encoder backend" OFF)
+option(ENABLE_ENCODER_CEDAR "Enable Allwinner cedar VE encoder backend" OFF)
 option(BUILD_NATIVE_PIPELINE_TESTS "Build native-pipeline unit tests" OFF)
 # --- Collect sources based on enabled options ---
 
@@ -54,6 +56,18 @@ if(ENABLE_ENCODER_RKMPP)
     list(APPEND SOURCES encoder_rkmpp.cpp)
 endif()
 
+if(ENABLE_ENCODER_CEDAR)
+    message(STATUS "native-pipeline: Allwinner cedar VE encoder enabled")
+    list(APPEND SOURCES encoder_cedar.cpp)
+endif()
+
+# Allwinner VIN ISP hooks (AWIspApi lifecycle around STREAMON/STREAMOFF).
+# Compiled into the shared V4L2CaptureImpl for the sunxi backend only.
+if(ENABLE_BACKEND_SUNXI)
+    message(STATUS "native-pipeline: Allwinner sunxi ISP controller enabled")
+    list(APPEND SOURCES sunxi_isp.cpp)
+endif()
+
 if(ENABLE_BACKEND_PI)
     message(STATUS "native-pipeline: Raspberry Pi backend enabled")
 endif()
@@ -61,6 +75,11 @@ endif()
 if(ENABLE_BACKEND_RDK_X5)
     message(STATUS "native-pipeline: RDK X5 backend enabled")
     add_definitions(-DPLATFORM_RDK)
+endif()
+
+if(ENABLE_BACKEND_SUNXI)
+    message(STATUS "native-pipeline: Allwinner sunxi VIN backend enabled")
+    add_definitions(-DPLATFORM_SUNXI)
 endif()
 
 # SourcePipeline (platform-neutral, always built)
@@ -87,6 +106,12 @@ if(ENABLE_ENCODER_RDK_X5)
 endif()
 if(ENABLE_ENCODER_RKMPP)
     target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_RKMPP=1)
+endif()
+if(ENABLE_ENCODER_CEDAR)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_ENCODER_CEDAR=1)
+endif()
+if(ENABLE_BACKEND_SUNXI)
+    target_compile_definitions(native-pipeline PRIVATE ENABLE_BACKEND_SUNXI=1)
 endif()
 
 target_include_directories(native-pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -141,8 +166,40 @@ if(ENABLE_BACKEND_RDK_X5)
     endif()
 endif()
 
+# Allwinner sunxi (A733): cedar VE + AWIspApi SDK headers/libs.
+# The SDK ships as a flat sysroot: {SUNXI_SYSROOT}/include + {SUNXI_SYSROOT}/lib.
+# When the cedar SDK headers are present, encoder_cedar.cpp compiles its real
+# libvencoder implementation (SUNXI_HAS_CEDAR_SDK). Without them it falls back
+# to a self-contained stub, so the skeleton builds on any Linux host.
+if(ENABLE_BACKEND_SUNXI OR ENABLE_ENCODER_CEDAR)
+    if(DEFINED SUNXI_SYSROOT)
+        target_include_directories(native-pipeline PRIVATE ${SUNXI_SYSROOT}/include)
+    endif()
+endif()
+
+if(ENABLE_ENCODER_CEDAR AND DEFINED SUNXI_SYSROOT)
+    # Prefer a plain EXISTS check over find_path(): the latter caches its result
+    # in CMakeCache.txt, and under `cross` the cache can be reused from a host
+    # configure pass where the in-container /opt/sunxi-sysroot was not visible,
+    # leaving a stale -NOTFOUND and silently compiling the cedar stub.
+    set(CEDAR_VENCODER_HEADER "${SUNXI_SYSROOT}/include/vencoder.h")
+    if(EXISTS "${CEDAR_VENCODER_HEADER}")
+        message(STATUS "native-pipeline: cedar VE SDK found at ${SUNXI_SYSROOT}")
+        target_compile_definitions(native-pipeline PRIVATE SUNXI_HAS_CEDAR_SDK=1)
+        set(CEDAR_VENCODER_INCLUDE_DIR "${SUNXI_SYSROOT}/include")
+    else()
+        message(WARNING "SUNXI_SYSROOT set but ${CEDAR_VENCODER_HEADER} not found; "
+                        "cedar encoder will be a stub. Check the sysroot include/ dir.")
+    endif()
+endif()
+
 # --- Link libraries ---
 target_link_libraries(native-pipeline PRIVATE pthread)
+
+# sunxi_isp.cpp resolves CreateAWIspApi/DestroyAWIspApi via dlopen/dlsym.
+if(ENABLE_BACKEND_SUNXI)
+    target_link_libraries(native-pipeline PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 if(ENABLE_CAPTURE_LIBCAMERA)
     target_link_libraries(native-pipeline PRIVATE ${LIBCAMERA_LIBRARIES})
@@ -159,6 +216,22 @@ endif()
 
 if(ENABLE_ENCODER_RKMPP)
     target_link_libraries(native-pipeline PRIVATE ${ROCKCHIP_MPP_LIB})
+endif()
+
+# Allwinner cedar VE encoder: link the SDK libraries when the real
+# implementation is compiled. The final Rust binary link is driven by
+# livehal/build.rs (rustc-link-lib/search); this keeps CMake-side link metadata
+# consistent for tests/tools that link libnative-pipeline.a directly.
+if(ENABLE_ENCODER_CEDAR AND CEDAR_VENCODER_INCLUDE_DIR)
+    # SUNXI_SYSROOT is a flat sysroot ({root}/lib/lib<name>.so). CMake does not
+    # support nested ${} expansion, so reference the absolute .so paths and
+    # avoid find_library cache bookkeeping entirely.
+    foreach(cedar_lib vencoder venc_codec cdc_base venc_base VE MemAdapter)
+        set(_cedar_lib_path "${SUNXI_SYSROOT}/lib/lib${cedar_lib}.so")
+        if(EXISTS ${_cedar_lib_path})
+            target_link_libraries(native-pipeline PRIVATE ${_cedar_lib_path})
+        endif()
+    endforeach()
 endif()
 
 

@@ -204,12 +204,17 @@ capture-v4l2 = ["liveion/capture-v4l2", "native-source"]
 encoder-v4l2-m2m = ["liveion/encoder-v4l2-m2m", "native-source"]
 encoder-rdk = ["liveion/encoder-rdk", "native-source"]
 encoder-rkmpp = ["liveion/encoder-rkmpp", "native-source"]
+encoder-cedar = ["liveion/encoder-cedar", "native-source"]
 
 # Platform presets (recommended for users)
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
+# native-sunxi: Allwinner A733 (Orange Pi Zero 3W) — V4L2 capture + cedar VE
+# encoder. The V4L2 capture path gains Allwinner ISP (AWIspApi) hooks at
+# compile time via ENABLE_BACKEND_SUNXI; no separate capture backend class.
+native-sunxi = ["capture-v4l2", "encoder-cedar"]
 
 # Enables rsmpeg-based tools (whepprobe, whipsynth) and livetwo rsmpeg support
 rsmpeg = ["livetwo/rsmpeg", "dep:rsmpeg", "dep:cli"]

@@ -75,7 +75,7 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
-    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, or `"rkmpp"`.
+    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, or `"cedar"`.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -458,9 +458,13 @@ impl SourceSpec {
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
-        if encoder_backend != "v4l2-m2m" && encoder_backend != "rdk" && encoder_backend != "rkmpp" {
+        if encoder_backend != "v4l2-m2m"
+            && encoder_backend != "rdk"
+            && encoder_backend != "rkmpp"
+            && encoder_backend != "cedar"
+        {
             anyhow::bail!(
-                "encoder.backend must be 'v4l2-m2m', 'rdk', or 'rkmpp', got '{}'",
+                "encoder.backend must be 'v4l2-m2m', 'rdk', 'rkmpp', or 'cedar', got '{}'",
                 self.encoder.backend
             );
         }
@@ -896,6 +900,37 @@ mod tests {
         }
     }
 
+    fn cedar_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "sunxi-cam".into(),
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: Some("/dev/video0".into()),
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: "nv12".into(), // negotiates NV12M (2-plane MPLANE)
+                prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
+            },
+            encoder: EncoderSpec {
+                backend: "cedar".into(),
+                codec: "h264".into(),
+                bitrate: 2_000_000,
+                profile: "42001f".into(),
+                level: None,
+                tier: None,
+                gop: 60,
+                bitrate_mode: None,
+                prefer_dmabuf: false,
+                adaptive: None,
+            },
+            output: OutputSpec::default(),
+            tiers: vec![],
+        }
+    }
+
     fn rkmpp_h265_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "rk-h265".into(),
@@ -937,6 +972,18 @@ mod tests {
     #[test]
     fn test_source_spec_validate_libcamera_ok() {
         assert!(libcamera_spec().validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_cedar_ok() {
+        assert!(cedar_spec().validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_unknown_encoder_backend_rejected() {
+        let mut spec = cedar_spec();
+        spec.encoder.backend = "nonexistent".into();
+        assert!(spec.validate().is_err());
     }
 
     #[test]
@@ -1553,6 +1600,21 @@ mod tests {
         assert_eq!(params.encoder_backend, "v4l2-m2m");
         assert_eq!(params.codec, 100); // h264
         assert_eq!(params.profile, "42001f");
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_cedar() {
+        let params = cedar_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "v4l2");
+        assert_eq!(params.capture_device, "/dev/video0");
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.encoder_backend, "cedar");
+        assert_eq!(params.codec, 100); // h264
+        assert_eq!(params.profile, "42001f");
+        // cedar uses the default (non-rkmpp) profile path — numeric fields unused.
+        assert_eq!(params.profile_idc, 0);
+        assert_eq!(params.level_idc, 0);
     }
 
     #[test]

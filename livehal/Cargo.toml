@@ -32,6 +32,7 @@ capture-v4l2 = []
 encoder-v4l2-m2m = []
 encoder-rdk = []
 encoder-rkmpp = []
+encoder-cedar = []
 
 # future
 # encoded-source-waybeam-venc = []

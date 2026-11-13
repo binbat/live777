@@ -1,0 +1,32 @@
+# Cross-compilation image for the Allwinner A733 / sun60iw2 (Orange Pi Zero 3W)
+# `native-sunxi` build: cedar VE (libvencoder) + AWIspApi ISP SDK.
+#
+# Unlike the Raspberry Pi image, the cedar/ISP SDK is closed-source and ships
+# only on the device — there is no public apt source to install it from. The
+# build context must therefore contain a `sunxi-sysroot/` directory extracted
+# from the device, laid out as:
+#
+#   sunxi-sysroot/include/   AWIspApi.h, vencoder.h, veAdapter.h,
+#                            memoryAdapter.h, sc_interface.h, veInterface.h,
+#                            vencoder_platform_v*.h, ...
+#   sunxi-sysroot/lib/       libvencoder.so, libVE.so, libvenc_codec.so,
+#                            libcdc_base.so, libvenc_base.so,
+#                            libMemAdapter.so, libAWIspApi.so, libisp*.so, ...
+#
+# See docs/zh/guide/livehal.md for how to collect it. Then build the image:
+#
+#   docker build -f docker/Dockerfile.cross-aarch64-sunxi \
+#     -t ghcr.io/binbat/crossbuilder-aarch64-sunxi:latest <context-with-sysroot>
+#
+# The stock cross image (Ubuntu 20.04, glibc 2.31) is sufficient: cedar libs
+# require only GLIBC_2.17. Alternatively, set SUNXI_SYSROOT on the host and let
+# cross mount it via Cross.toml volumes (no custom image needed).
+
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+
+# Override with --build-arg if the sysroot directory has a different name.
+ARG SUNXI_SYSROOT_DIR=sunxi-sysroot
+
+ENV SUNXI_SYSROOT=/opt/sunxi-sysroot
+
+COPY ${SUNXI_SYSROOT_DIR}/ /opt/sunxi-sysroot/

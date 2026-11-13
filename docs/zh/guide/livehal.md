@@ -266,7 +266,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 | 层级 | 取值 |
 |-------|-------|
 | `capture.backend` | `"libcamera"`, `"v4l2"` |
-| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, `"cedar"` |
 
 ### pixel_format 取值
 
@@ -306,6 +306,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 | `encoder-v4l2-m2m` | V4L2 Memory-to-Memory 硬件编码器 |
 | `encoder-rdk` | 地平线 RDK X5 硬件编码器 |
 | `encoder-rkmpp` | 瑞芯微 MPP 硬件编码器（仅 aarch64） |
+| `encoder-cedar` | 全志 cedar VE 硬件编码器（仅 aarch64，A733 / sun60iw2） |
 
 ### 平台预设
 
@@ -315,6 +316,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
 | `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
+| `native-sunxi` | `capture-v4l2, encoder-cedar`（全志 A733，另为 V4L2 采集编译进 `AWIspApi` ISP 钩子） |
 
 无需额外加 `--features source`——预设已经包含自动启动。
 
@@ -400,6 +402,20 @@ cargo build --bin live777 --release \
 
 Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RKMPP_SYSROOT` 可改用从设备拉取的 sysroot。
 
+### 全志 A733（Orange Pi Zero 3W，sun60iw2）
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-sunxi,webui
+```
+
+采集走标准 V4L2（IMX219 CSI，协商为 `NV12M` 2-plane），编码走全志 cedar VE（`libvencoder`）。全志 VIN 管线需要用户态 ISP（`AWIspApi`）在开流前启动，`native-sunxi` 已把这段生命周期通过 `ENABLE_BACKEND_SUNXI` 编译进 V4L2 采集路径（`sunxi_isp.cpp`，运行时 `dlopen` 加载 `libAWIspApi.so`）——**不要手动执行 `media-ctl` 配置链路/格式**，链路是设备树预配置的，强行设置会导致 `isp0 width error`、无法出帧。
+
+全志 cedar/ISP SDK 是设备专属闭源二进制、没有公开 apt 源。交叉编译时把从设备抽取的 sysroot（`include/` 头文件 + `lib/` 的 `libvencoder.so`、`libVE.so`、`libAWIspApi.so` 等）bake 进 cross 镜像 `/opt/sunxi-sysroot`（`docker/Dockerfile.cross-aarch64-sunxi`），或设置 `SUNXI_SYSROOT` 指向该目录由 cross 挂载。运行 `just sunxi-cross-build` 即可。目标机上还需 `sudo modprobe vin_v4l2`（Trixie 不自动加载 VIN 驱动）。
+
+> **注意：** 当前为「先能用」阶段：仅 H.264、CPU 拷贝 NV12 输入（不支持 DMA-BUF 零拷贝）、不做 4K/自适应码率调优。cedar 的 IDR 帧本身不含 SPS/PPS，编码器已在每个关键帧前注入参数集，保证 WHEP 订阅者随时可解码。
+
 ### macOS（仅开发 / 检查）
 
 ```bash
@@ -416,6 +432,7 @@ cargo check --features native-rpi,webui
 | `RPI_SYSROOT` | 可选的树莓派 sysroot，需包含 `libcamera-dev`；会覆盖 RPi cross 镜像内置的 sysroot。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
 | `RKMPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
+| `SUNXI_SYSROOT` | 全志 cedar/ISP SDK sysroot（`include/` + `lib/`，从设备抽取）。在 aarch64 上构建 `encoder-cedar` / `native-sunxi` 时提供头文件和库；也可 bake 进 cross 镜像。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |
 
@@ -428,11 +445,12 @@ CMake 后端根据启用的采集/编码特性推断：
 | `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 | aarch64 上的 `encoder-rdk` | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
 | aarch64 上的 `encoder-rkmpp` | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
+| aarch64 上的 `encoder-cedar` | `sunxi` | `ENABLE_BACKEND_SUNXI`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_CEDAR` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
 当没有启用任何 `capture-*` 特性时，CMake 会被完全跳过。仅启用编码特性**不会**触发 CMake 构建——SourcePipeline 需要一个采集后端。
 
-`capture-libcamera` 与 `encoder-rdk`、`encoder-rkmpp` 互斥。如果同时启用，构建脚本会发出警告并忽略对应的编码特性，选择 `rpi`（libcamera）后端。
+`capture-libcamera` 与 `encoder-rdk`、`encoder-rkmpp`、`encoder-cedar` 互斥。如果同时启用，构建脚本会发出警告并忽略对应的编码特性，选择 `rpi`（libcamera）后端。
 
 ## 配置示例
 
@@ -546,6 +564,34 @@ prefer_dmabuf = true      # DMA-BUF 零拷贝（编码侧）
 payload_type = 96
 clock_rate = 90000
 ```
+
+### 全志 A733（Orange Pi Zero 3W / IMX219 CSI + cedar VE）
+
+```toml
+[stream.sunxi-cam]
+[[stream.sunxi-cam.sources]]
+
+[stream.sunxi-cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "nv12"     # 协商为 NV12M（2-plane MPLANE）
+
+[stream.sunxi-cam.sources.encoder]
+backend = "cedar"
+codec = "h264"
+bitrate = 2_000_000
+profile = "42001f"
+gop = 60
+
+[stream.sunxi-cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+运行前先 `sudo modprobe vin_v4l2`。全志 ISP 由采集路径自动初始化，勿手动配置 media-ctl 链路。当前 cedar 后端为 CPU 拷贝 NV12 输入，不支持 `prefer_dmabuf`（保持默认 false）。
 
 零拷贝路径需要**两侧都**设 `prefer_dmabuf`——语义和各平台支持见 [零拷贝（DMA-BUF）](#zero-copy-dma-buf)。输入必须是 NV12。
 

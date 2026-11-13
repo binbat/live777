@@ -2,6 +2,10 @@
 #include "include/latency_stats.h"
 #include "include/v4l2_capture_integrity.h"
 
+#if defined(ENABLE_BACKEND_SUNXI)
+#include "include/sunxi_isp.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -11,6 +15,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <sys/ioctl.h>
@@ -51,7 +56,14 @@ std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
     case RawPixelFormat::Yuyv422:
         return {V4L2_PIX_FMT_YUYV};
     case RawPixelFormat::Nv12:
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN accepts only the multi-planar NV12M (2 planes). The
+        // contiguous single-plane NV12 makes vin_pipeline_try_format() reject
+        // S_FMT with EINVAL. The gst en-awisp reference path uses NV12M too.
+        return {V4L2_PIX_FMT_NV12M};
+#else
         return {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M};
+#endif
     case RawPixelFormat::Yuv420p:
         return {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV420M};
     case RawPixelFormat::Rgb888:
@@ -105,6 +117,13 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::vector<Buffer> buffers;
     std::vector<uint8_t> nv12_buf;
     std::thread capture_thread;
+
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Allwinner VIN needs its userspace ISP running around STREAMON/STREAMOFF.
+    // Created in init(), ispStart() in start() before STREAMON, torn down in
+    // release_resources() after STREAMOFF.
+    std::unique_ptr<SunxiIspController> isp_;
+#endif
 
     // [latency] "capture" stage: driver timestamp (SOF) → DQBUF in userspace.
     LatencyStats dqbuf_stats_{"capture"};
@@ -614,6 +633,20 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
+#if defined(ENABLE_BACKEND_SUNXI)
+    // The Allwinner VIN pipeline needs its input selected before format
+    // negotiation; the gst en-awisp path issues S_INPUT(0) first.
+    {
+        v4l2_input input{};
+        input.index = 0;
+        if (ioctl(fd, VIDIOC_S_INPUT, &input) < 0 && errno != ENOTTY) {
+            if (err) *err = std::string("S_INPUT failed: ") + strerror(errno);
+            release_resources();
+            return false;
+        }
+    }
+#endif
+
     v4l2_capability cap{};
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
         if (err) *err = std::string("QUERYCAP failed: ") + strerror(errno);
@@ -644,6 +677,16 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         fmt.fmt.pix_mp.height = height;
         fmt.fmt.pix_mp.pixelformat = pixel_format;
         fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN requires the plane layout to be spelled out on S_FMT;
+        // a zeroed num_planes/plane_fmt makes vin_pipeline_try_format() fail.
+        // Mirrors the gst en-awisp S_FMT (num_planes=2, bytesperline=width).
+        if (pixel_format == V4L2_PIX_FMT_NV12M) {
+            fmt.fmt.pix_mp.num_planes = 2;
+            fmt.fmt.pix_mp.plane_fmt[0].bytesperline = width;
+            fmt.fmt.pix_mp.plane_fmt[1].bytesperline = width;
+        }
+#endif
     } else {
         fmt.fmt.pix.width = width;
         fmt.fmt.pix.height = height;
@@ -806,6 +849,17 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         }
         buffers.push_back(std::move(mapped));
     }
+
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Initialise the Allwinner ISP library after the V4L2 device is fully set
+    // up (CreateAWIspApi/ispApiInit/ispGetIspId). ispStart() is deferred to
+    // start(), right before STREAMON. No media-ctl links are touched.
+    isp_ = std::make_unique<SunxiIspController>();
+    if (!isp_->init(cfg.device, err)) {
+        release_resources();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -825,6 +879,15 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // ispStart() MUST run before VIDIOC_STREAMON: it starts the ISP server
+    // thread that drives the private subdev ioctls / 3A event loop. Buffers
+    // are already queued at this point; on failure the pipeline's stop() path
+    // (release_resources) tears the ISP down again.
+    if (isp_ && !isp_->start(err)) {
+        return false;
+    }
+#endif
     if (ioctl(fd, VIDIOC_STREAMON, &buffer_type) < 0) {
         if (err) *err = std::string("STREAMON failed: ") + strerror(errno);
         return false;
@@ -849,6 +912,14 @@ void V4L2CaptureImpl::release_resources() {
             streaming = false;
         }
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Tear down the ISP AFTER STREAMOFF (ispStop/ispWaitToExit/ispApiUnInit).
+    // Guarded by a null check because init() failure paths also call
+    // release_resources() before isp_ is created. stop() is idempotent.
+    if (isp_) {
+        isp_->stop();
+    }
+#endif
     for (Buffer& buffer : buffers) {
         for (MappedPlane& plane : buffer.planes) {
             if (plane.start && plane.start != MAP_FAILED) {

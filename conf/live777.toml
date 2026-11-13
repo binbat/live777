@@ -249,6 +249,34 @@ ice_udp_addrs = ["auto"]
 # [stream.rdk-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
+#
+# Allwinner A733 (Orange Pi Zero 3W) CSI camera (IMX219) + cedar VE H.264.
+# Requires the device-side AWIspApi/cedar SDK at runtime (libAWIspApi.so via
+# dlopen, libvencoder.so et al. linked) and `sudo modprobe vin_v4l2` first
+# (Trixie does not auto-load the VIN driver). The Allwinner ISP (AWIspApi) is
+# initialised automatically by the capture path — do NOT run media-ctl link/
+# format commands, the device tree preconfigures the pipeline.
+#   cross build --bin live777 --release --target aarch64-unknown-linux-gnu \
+#     --no-default-features --features native-sunxi,webui
+#
+# [stream.sunxi-cam]
+# [[stream.sunxi-cam.sources]]
+# [stream.sunxi-cam.sources.capture]
+# backend = "v4l2"
+# device = "/dev/video0"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "nv12"     # negotiates NV12M (2-plane MPLANE)
+# [stream.sunxi-cam.sources.encoder]
+# backend = "cedar"
+# codec = "h264"
+# bitrate = 2000000
+# profile = "42001f"
+# gop = 60
+# [stream.sunxi-cam.sources.output]
+# payload_type = 96
+# clock_rate = 90000
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
