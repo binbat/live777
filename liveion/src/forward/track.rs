@@ -646,7 +646,8 @@ impl PublishTrackRemote {
     /// SSRC of the published media as seen by passthrough consumers (the
     /// RTSP server forwards packets with their original SSRC). 0 for real
     /// remote tracks, whose SR is not synthesized.
-    #[cfg(feature = "source")]
+    // Only the RTSP server calls this; `rtsp` implies `source`.
+    #[cfg(feature = "rtsp")]
     pub(crate) fn publish_ssrc(&self) -> u32 {
         match self {
             Self::Virtual(v) => v.ssrc(),
