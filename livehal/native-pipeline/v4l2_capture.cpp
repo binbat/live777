@@ -340,11 +340,19 @@ bool V4L2CaptureImpl::make_frame(
         }
         for (uint32_t plane = 0; plane < 2; ++plane) {
             const size_t used = std::min(bytes_used(plane), available_bytes(plane));
+            uint32_t stride = plane_strides[plane] ? plane_strides[plane] : width;
+#if defined(ENABLE_BACKEND_SUNXI)
+            // Allwinner VIN reports the NV12M chroma plane bytesperline as
+            // width/2 (e.g. 320 for 640x480), but the buffer actually holds
+            // standard interleaved UV at width bytes per line. Trusting the
+            // driver value makes consumers read overlapping rows and corrupts
+            // chroma (a fully green image after H.264 encode/decode).
+            if (plane == 1) stride = width;
+#endif
             frame->planes[plane] = {
                 static_cast<const uint8_t*>(mapped.planes[plane].start)
                     + data_offset(plane),
-                plane_strides[plane] ? plane_strides[plane] : width,
-                static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
+                stride, static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
         }
         return true;
     }
