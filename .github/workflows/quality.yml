@@ -51,6 +51,16 @@ jobs:
         run: cmake --build target/native-pipeline-tests
       - name: Run native pipeline tests
         run: ctest --test-dir target/native-pipeline-tests --output-on-failure
+      - name: Build the sunxi/cedar stub variant
+        # No Allwinner SDK exists in CI, so this compiles the self-contained
+        # stub of encoder_cedar.cpp plus the sunxi-ifdef'd v4l2_capture.cpp —
+        # proving that code stays host-compilable (the real cedar build is
+        # covered by aarch64 cross builds against a device sysroot).
+        run: >-
+          cmake -S livehal/native-pipeline -B target/native-pipeline-cedar-stub
+          -DENABLE_BACKEND_SUNXI=ON -DENABLE_ENCODER_CEDAR=ON -DENABLE_CAPTURE_V4L2=ON
+          -DCMAKE_BUILD_TYPE=Release &&
+          cmake --build target/native-pipeline-cedar-stub
 
   clippy:
     runs-on: ubuntu-26.04
