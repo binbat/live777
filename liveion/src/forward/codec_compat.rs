@@ -143,11 +143,7 @@ pub fn av1_codecs_are_compatible(existing_codec: &RTCRtpCodec, new_codec: &RTCRt
 
     let existing_tier = av1_tier(&existing_codec.sdp_fmtp_line);
     let new_tier = av1_tier(&new_codec.sdp_fmtp_line);
-    if new_tier > existing_tier {
-        return false;
-    }
-
-    true
+    new_tier <= existing_tier
 }
 
 /// Parse AV1 profile from an fmtp line, accepting both `profile` and
