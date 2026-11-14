@@ -54,10 +54,10 @@ jobs:
         # The coverage run above uses the portable feature set, so tests gated
         # on native-source (e.g. stream::source::source_config) are compiled
         # by the build job's --all-features pass but never executed anywhere.
-        # Run them explicitly; the generic V4L2 backend gives livehal a
-        # linkable native pipeline on x86_64 Linux.
+        # Run them explicitly with the generic V4L2 preset, which gives livehal
+        # a linkable native pipeline on x86_64 Linux.
         if: runner.os == 'Linux'
-        run: cargo nextest run --profile ci -p liveion --lib --features native-source,capture-v4l2,encoder-v4l2-m2m
+        run: cargo nextest run --profile ci -p liveion --lib --features native-generic-v4l2
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:
