@@ -402,7 +402,7 @@ cargo build --bin live777 --release \
 
 Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RKMPP_SYSROOT` 可改用从设备拉取的 sysroot。
 
-### 全志 A733（Orange Pi 4 Pro，sun60iw2）
+### 全志 A733（Orange Pi Zero 3W，sun60iw2）
 
 ```bash
 cargo build --bin live777 --release \
@@ -417,6 +417,8 @@ cargo build --bin live777 --release \
 cedar 编码器支持 `codec = "h264"`（默认，所有浏览器可解，推荐用于 WHEP 观看）和 `codec = "h265"`（`profile = "main"`，可选 `level = "3.0"`–`"5.1"`，默认 `"4.0"`）。H.265 在同画质下约省一半码率，但浏览器解码 WebRTC HEVC 需要硬件支持（无软件回退），因此建议用于录像、RTSP/RTP target、级联链路而非浏览器播放。H.264 的 `profile` 必须是 6 位 profile-level-id 十六进制串（与 rkmpp 一致），且**只接受 High profile**（如 `"640028"` = High Level 4.0）：A733 的 cedar VE 在 Baseline/Main 下出的流与自身 SPS 不一致，解码会是绿/灰画面。十六进制串里的 level 会被如实采用。
 
 > **注意：** 尚未做 4K 调优（本板 IMX219/ISP 管线被设备树锁定在 1920x1080@30）。cedar 的 IDR 帧本身不含参数集，编码器已在每个关键帧前注入 SPS/PPS（H.265 另有 VPS），保证 WHEP 订阅者随时可解码。DMA-BUF 零拷贝已支持：采集和编码两侧同时设 `prefer_dmabuf = true` 即可。
+>
+> **板卡识别陷阱：** 厂商 Trixie 镜像在 sun60iw2 各板型间共用——设备树在 Zero 3W 上也报 `xunlong,orangepi-4-pro`，不要以 DT 型号字符串判断板名（看内存/存储更可靠：入门版 Zero 3W 是 1GB 内存、纯 SD 卡）。
 
 ### macOS（仅开发 / 检查）
 
@@ -567,7 +569,7 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-### 全志 A733（Orange Pi 4 Pro / IMX219 CSI + cedar VE）
+### 全志 A733（Orange Pi Zero 3W / IMX219 CSI + cedar VE）
 
 ```toml
 [stream.sunxi-cam]

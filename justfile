@@ -176,7 +176,7 @@ rpi-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
         just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp,target-rtsp
 
-# Allwinner A733 / sun60iw2 (Orange Pi 4 Pro): cedar VE encoder + AWIspApi ISP
+# Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): cedar VE encoder + AWIspApi ISP
 # hooks. The closed-source SDK cannot be published in an image, so this recipe
 # requires SUNXI_SYSROOT pointing to a device-extracted sysroot (include/ +
 # lib/), which cross mounts via Cross.toml volumes. To use a baked image

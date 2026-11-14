@@ -444,7 +444,7 @@ Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RKMPP_SY
 
 The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, an aarch64 cross image with the MPP sysroot baked in at `/opt/rkmpp-sysroot` (built from `docker/Dockerfile.cross-aarch64-rkmpp`). Point cross at it via `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`, or use `just rkmpp-pack-size`; `RKMPP_SYSROOT` overrides the baked sysroot with one pulled from a device.
 
-### Allwinner A733 (Orange Pi 4 Pro, sun60iw2)
+### Allwinner A733 (Orange Pi Zero 3W, sun60iw2)
 
 ```bash
 cargo build --bin live777 --release \
@@ -459,6 +459,8 @@ The cedar/ISP SDK is device-specific, closed-source, and has no public apt sourc
 The cedar encoder accepts `codec = "h264"` (default; decodable in every browser, recommended for WHEP viewing) and `codec = "h265"` (`profile = "main"`, optional `level = "3.0"`–`"5.1"` default `"4.0"`). H.265 roughly halves the bitrate at the same quality, but browsers only decode WebRTC HEVC with hardware support (no software fallback), so prefer it for recording, RTSP/RTP targets and cascade links rather than browser playback. For H.264, `profile` must be a 6-character profile-level-id hex string (same as rkmpp) and **only High profile is accepted** (e.g. `"640028"` = High Level 4.0): the A733 cedar VE's Baseline/Main output does not match its own SPS and decodes as a green/gray picture. The level inside the hex is honored.
 
 > **Note:** no 4K tuning yet (the IMX219/ISP pipeline on this board is device-tree locked at 1920x1080@30 anyway). cedar IDR frames do not carry parameter sets, so the encoder prepends SPS/PPS (plus VPS for H.265) to every keyframe to keep WHEP subscribers decodable at any join point. DMA-BUF zero-copy is supported: set `prefer_dmabuf = true` on both capture and encoder.
+>
+> **Board identification pitfall:** the vendor Trixie image is shared across sun60iw2 boards — its device tree identifies as `xunlong,orangepi-4-pro` even on the Zero 3W, so do not trust the DT model string for the board name (check RAM/storage instead: the entry Zero 3W has 1 GB and SD-only storage).
 
 ### macOS (development / check only)
 
@@ -609,7 +611,7 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-### Allwinner A733 (Orange Pi 4 Pro / IMX219 CSI + cedar VE)
+### Allwinner A733 (Orange Pi Zero 3W / IMX219 CSI + cedar VE)
 
 ```toml
 [stream.sunxi-cam]

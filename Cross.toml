@@ -14,7 +14,7 @@
 # into the container at the same path and livehal/build.rs reads it to configure
 # pkg-config and linker paths.
 #
-# Allwinner A733 / sun60iw2 (Orange Pi 4 Pro) native-cedar builds override
+# Allwinner A733 / sun60iw2 (Orange Pi Zero 3W) native-cedar builds override
 # the image with CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE pointing to a
 # sunxi builder that has the cedar VE (libvencoder) + AWIspApi SDK baked at
 # /opt/sunxi-sysroot. For local builds, SUNXI_SYSROOT can point to a sysroot

@@ -211,7 +211,7 @@ native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]
 native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
-# native-cedar: Allwinner A733 / sun60iw2 (Orange Pi 4 Pro) — V4L2 capture +
+# native-cedar: Allwinner A733 / sun60iw2 (Orange Pi Zero 3W) — V4L2 capture +
 # cedar VE encoder. Named after the encoder stack, mirroring native-rkmpp; the
 # "sunxi" name stays on the platform internals (SUNXI_SYSROOT,
 # ENABLE_BACKEND_SUNXI) because the sysroot/ISP cover more than the encoder.

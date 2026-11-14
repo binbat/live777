@@ -193,7 +193,7 @@ device-pulled sysroot when developing locally:
   `RPI_SYSROOT`.
 - RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
   `AGENTS.md` "Security Considerations").
-- Allwinner A733 / sun60iw2 (Orange Pi 4 Pro): no published image (the cedar
+- Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): no published image (the cedar
   SDK is device-only); set `SUNXI_SYSROOT` to a device-extracted sysroot, build
   the `docker/Dockerfile.cross-aarch64-sunxi` image from it, or build natively
   on the device (the system-installed SDK is auto-detected via
