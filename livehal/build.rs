@@ -414,14 +414,16 @@ fn main() {
         // Allwinner cedar VE + AWIspApi sysroot is a flat directory:
         //   {SUNXI_SYSROOT}/include  (AWIspApi.h, vencoder.h, ...)
         //   {SUNXI_SYSROOT}/lib      (libvencoder.so, libVE.so, libAWIspApi.so, ...)
-        // It is optional in Phase 1 (the cedar stub has no external symbols);
-        // Phase 3 requires it once real libvencoder/AWIspApi calls are added.
         if let Ok(sysroot) = env::var("SUNXI_SYSROOT") {
             let sysroot = PathBuf::from(sysroot);
             println!(
                 "cargo:rustc-link-search=native={}",
                 sysroot.join("lib").display()
             );
+        } else if Path::new("/usr/include/vencoder.h").exists() {
+            // Native on-device build: the cedar SDK is installed system-wide
+            // (headers in /usr/include, libraries in the multiarch lib dir).
+            println!("cargo:rustc-link-search=native=/usr/lib/{target_triplet}");
         }
     }
 
@@ -601,11 +603,14 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=rockchip_mpp");
     } else if native_backend == "sunxi" {
         // cedar VE userspace libraries for the real encoder_cedar.cpp (only
-        // compiled when SUNXI_SYSROOT provides the SDK headers, see CMake).
+        // compiled when the SDK headers are available, see CMake).
         // AWIspApi is intentionally NOT linked: sunxi_isp.cpp dlopen()s it at
-        // runtime. Link only when a sysroot is present (cross builds, Phase 4)
-        // so a no-SDK stub build links cleanly.
-        if env::var("SUNXI_SYSROOT").is_ok() {
+        // runtime. Link when a sysroot is present (cross builds) or when the
+        // SDK is installed system-wide (native on-device builds), so a no-SDK
+        // stub build still links cleanly.
+        let system_sdk =
+            env::var("SUNXI_SYSROOT").is_err() && Path::new("/usr/include/vencoder.h").exists();
+        if env::var("SUNXI_SYSROOT").is_ok() || system_sdk {
             for lib in [
                 "vencoder",
                 "VE",

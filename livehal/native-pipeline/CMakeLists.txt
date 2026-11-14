@@ -193,6 +193,22 @@ if(ENABLE_ENCODER_CEDAR AND DEFINED SUNXI_SYSROOT)
     endif()
 endif()
 
+# Native on-device build without SUNXI_SYSROOT: the cedar SDK is installed
+# system-wide (headers in /usr/include, libraries in /usr/lib/<triplet>), so
+# the compiler finds them without extra flags. The stub warning below stays
+# STATUS (not WARNING) deliberately: a plain host `cargo check` on a non-sunxi
+# machine legitimately exercises this path.
+if(ENABLE_ENCODER_CEDAR AND NOT DEFINED SUNXI_SYSROOT)
+    if(EXISTS "/usr/include/vencoder.h")
+        message(STATUS "native-pipeline: cedar VE SDK found in system paths (native build)")
+        target_compile_definitions(native-pipeline PRIVATE SUNXI_HAS_CEDAR_SDK=1)
+        set(CEDAR_SYSTEM_SDK ON)
+    else()
+        message(STATUS "native-pipeline: cedar SDK headers not found "
+                       "(no SUNXI_SYSROOT, no /usr/include/vencoder.h); building stub")
+    endif()
+endif()
+
 # --- Link libraries ---
 target_link_libraries(native-pipeline PRIVATE pthread)
 
@@ -232,6 +248,13 @@ if(ENABLE_ENCODER_CEDAR AND CEDAR_VENCODER_INCLUDE_DIR)
             target_link_libraries(native-pipeline PRIVATE ${_cedar_lib_path})
         endif()
     endforeach()
+endif()
+
+# System-installed SDK (native on-device build): link by name, the loader
+# path already covers the multiarch lib dir.
+if(ENABLE_ENCODER_CEDAR AND CEDAR_SYSTEM_SDK)
+    target_link_libraries(native-pipeline PRIVATE
+        vencoder venc_codec cdc_base venc_base VE MemAdapter)
 endif()
 
 
