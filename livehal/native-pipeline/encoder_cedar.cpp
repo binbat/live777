@@ -114,6 +114,34 @@ public:
             return false;
         }
 
+        // cedar snapshots the H.264 parameters into SPS/PPS at VideoEncInit()
+        // time. These MUST be set before init: with the zero/default values the
+        // encoder emits a placeholder parameter set that does not match the
+        // actual slices, so decoders fail at the first macroblock and conceal
+        // the picture as green/gray. All-skip (flat) frames happen to decode,
+        // which masks the problem in synthetic tests. Verified on A733: the
+        // resulting out-of-band SPS/PPS (High/L5.1) makes the stream decode
+        // with zero errors.
+        VencH264Param h264{};
+        h264.nFramerate = static_cast<int>(cfg.fps);
+        h264.nSrcFramerate = static_cast<int>(cfg.fps);
+        h264.nBitrate = static_cast<int>(cfg.bitrate);
+        h264.nMaxKeyInterval = cfg.gop > 0 ? static_cast<int>(cfg.gop)
+                                           : static_cast<int>(cfg.fps);
+        h264.bEntropyCodingCABAC = 1;
+        h264.sProfileLevel.nProfile = VENC_H264ProfileHigh;
+        h264.sProfileLevel.nLevel = VENC_H264Level51;
+        h264.sQPRange.nMaxqp = 51;
+        h264.sQPRange.nMinqp = 10;
+        h264.sQPRange.nMaxPqp = 51;
+        h264.sQPRange.nMinPqp = 10;
+        h264.sQPRange.nQpInit = 26;
+        if (VideoEncSetParameter(enc_, VENC_IndexParamH264Param, &h264) != 0) {
+            if (err) *err = "cedar: failed to set H264 params before init";
+            destroy();
+            return false;
+        }
+
         VencBaseConfig base{};
         base.bEncH264Nalu = 0;  // Annex-B bytestream (start codes), default
         base.nInputWidth = width_;
