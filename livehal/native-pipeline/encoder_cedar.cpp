@@ -1,7 +1,19 @@
 //! Allwinner cedar VE hardware video encoder backend (A733 / sun60iw2).
 //!
-//! Uses the closed-source libvencoder.so C API. CPU-copy NV12 input path only
-//! (no DMA-BUF zero-copy yet; "make it work first"). Supports H.264 and H.265.
+//! Uses the closed-source libvencoder.so C API. Supports H.264 and H.265.
+//! Two input paths:
+//!   - CPU copy: GetOneAllocInputBuffer -> copy Y/UV -> FlushCache -> Add.
+//!   - Zero-copy (prefer_dmabuf): the capture's NV12M dma-buf planes are
+//!     mapped once per V4L2 buffer into the VE's IOVA space
+//!     (VideoEncoderGetVeIommuAddr) and submitted as a caller-allocated
+//!     VencInputBuffer (bAllocMemSelf=1, nShareBufFd=0). nShareBufFd must
+//!     stay 0: with it set the SDK derives pAddrPhyC = pAddrPhyY +
+//!     align16(w)*h assuming one contiguous dma-buf, while VIN exports the
+//!     two NV12M planes as SEPARATE dma-bufs (verified on-device: distinct
+//!     inodes, non-adjacent IOVAs) — the derived C address lands outside the
+//!     Y mapping and wedges the VE (interrupt timeout, register dump).
+//! The VE consumes the input synchronously inside VideoEncodeOneFrame, so
+//! the armed capture buffer is released when submit() returns on both paths.
 //!
 //! The real SDK implementation is compiled only when SUNXI_HAS_CEDAR_SDK is
 //! defined by CMake (i.e. SUNXI_SYSROOT supplies vencoder.h, or the SDK is
@@ -9,15 +21,12 @@
 //! headers this translation unit falls back to a self-contained stub, so the
 //! skeleton still builds on any host (CI / no-sysroot checks).
 //!
-//! Per-frame flow (synchronous, mirrors encoder_rdk.cpp):
-//!   GetOneAllocInputBuffer -> copy Y/UV -> FlushCacheAllocInputBuffer ->
-//!   AddOneInputBuffer -> VideoEncodeOneFrame -> drain bitstream ->
-//!   AlreadyUsedInputBuffer/ReturnOneAllocInputBuffer.
 //! The capture side (V4L2 + Allwinner ISP) supplies NV12M frames; see
 //! sunxi_isp.cpp for the ISP lifecycle that must run before STREAMON.
 
 #include "include/encoder_backend.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -145,6 +154,7 @@ public:
             if (err) *err = "cedar: VideoEncCreate failed";
             return false;
         }
+        prefer_dmabuf_ = cfg.prefer_dmabuf;
 
         // cedar snapshots the codec parameters into the SPS/PPS (and VPS for
         // H.265) at VideoEncInit() time. These MUST be set before init: with
@@ -304,8 +314,10 @@ public:
     }
 
     bool submit(const RawFrame& frame, std::string* err) override {
-        // CPU-copy path never retains the capture buffer; the guard honours the
-        // zero-copy release contract on every exit path.
+        // On every exit path the guard honours the zero-copy release
+        // contract. The buffer is safe to requeue when submit() returns: the
+        // VE consumes its input synchronously inside VideoEncodeOneFrame
+        // (the pool path already recycles the buffer right after the encode).
         FrameReleaseGuard release_guard(frame);
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -313,13 +325,9 @@ public:
             if (err) *err = "cedar: encoder not running";
             return false;
         }
-        if (frame.kind == BufferKind::DmaBuf) {
-            if (err) *err = "cedar: DMA-BUF zero-copy not implemented; use CPU path";
-            return false;
-        }
         if (frame.format != RawPixelFormat::Nv12 || frame.plane_count < 2
             || !frame.planes[0].data || !frame.planes[1].data) {
-            if (err) *err = "cedar: expected a 2-plane NV12 CPU frame";
+            if (err) *err = "cedar: expected a 2-plane NV12 frame";
             return false;
         }
         if (frame.width != width_ || frame.height != height_) {
@@ -334,61 +342,33 @@ public:
         }
 
         VencInputBuffer in{};
-        if (GetOneAllocInputBuffer(enc_, &in) != 0 || !in.pAddrVirY || !in.pAddrVirC) {
-            // The fixed-size SDK pool starves if frames ever pile up without a
-            // matching AlreadyUsedInputBuffer drain (e.g. an encode that did
-            // not complete synchronously). Reclaim any pending used buffers
-            // and retry once before failing the frame.
-            VencInputBuffer stray{};
-            uint32_t reclaimed = 0;
-            while (reclaimed < kInputBufferCount
-                   && AlreadyUsedInputBuffer(enc_, &stray) == 0) {
-                ReturnOneAllocInputBuffer(enc_, &stray);
-                ++reclaimed;
-                std::memset(&stray, 0, sizeof(stray));
-            }
-            if (reclaimed > 0) {
-                std::fprintf(stderr,
-                             "[CedarEncoder] input pool starved; reclaimed %u stray buffer(s)\n",
-                             reclaimed);
-            }
-            std::memset(&in, 0, sizeof(in));
-            if (GetOneAllocInputBuffer(enc_, &in) != 0 || !in.pAddrVirY || !in.pAddrVirC) {
-                if (err) *err = "cedar: GetOneAllocInputBuffer failed / null addresses";
+        bool zero_copy = false;
+        if (frame.kind == BufferKind::DmaBuf && prefer_dmabuf_ && zc_usable(frame)) {
+            zero_copy = zc_prepare(frame, &in);
+        }
+        if (!zero_copy) {
+            if (!pool_fill(frame, &in, err)) {
                 return false;
             }
         }
 
-        const uint32_t y_stride = frame.planes[0].stride ? frame.planes[0].stride : width_;
-        const uint32_t c_stride = frame.planes[1].stride ? frame.planes[1].stride : width_;
-        copy_plane(in.pAddrVirY, stride_, frame.planes[0].data, y_stride, width_, height_);
-        copy_plane(in.pAddrVirC, stride_, frame.planes[1].data, c_stride, width_, height_ / 2);
-        // Neutral-fill the padding rows the VE reads past the picture height
-        // (Y = flat black, C = neutral chroma), so stale bytes in the
-        // recycled buffer cannot bleed color artifacts into the bottom rows.
-        if (alloc_height_ > height_) {
-            std::memset(in.pAddrVirY + static_cast<size_t>(stride_) * height_, 0x10,
-                        static_cast<size_t>(stride_) * (alloc_height_ - height_));
-            std::memset(in.pAddrVirC + static_cast<size_t>(stride_) * (height_ / 2), 0x80,
-                        static_cast<size_t>(stride_) * (alloc_height_ - height_) / 2);
-        }
-        in.nPts = static_cast<long long>(frame.pts_us);
-        FlushCacheAllocInputBuffer(enc_, &in);
-
         if (AddOneInputBuffer(enc_, &in) != 0) {
             if (err) *err = "cedar: AddOneInputBuffer failed";
-            ReturnOneAllocInputBuffer(enc_, &in);
+            if (!zero_copy) ReturnOneAllocInputBuffer(enc_, &in);
             return false;
         }
         const int encode_rc = VideoEncodeOneFrame(enc_);
 
-        // Recycle the consumed input buffer back into the SDK pool.
+        // Dequeue the consumed input buffer from the SDK's frame-buffer
+        // manager. Pool buffers go back into the pool; external dma-buf
+        // buffers are just popped (their IOVA mapping outlives the frame).
         VencInputBuffer used{};
         if (AlreadyUsedInputBuffer(enc_, &used) == 0) {
-            ReturnOneAllocInputBuffer(enc_, &used);
+            if (!zero_copy) {
+                ReturnOneAllocInputBuffer(enc_, &used);
+            }
         } else {
-            // The pool starves after kInputBufferCount consecutive misses;
-            // submit() reclaims strays when that happens, but log the leak so
+            // The FBM leaks one slot per miss and starves after a few; log so
             // a systematically asynchronous SDK is visible in the field.
             ++reclaim_misses_;
             if (reclaim_misses_ == 1 || reclaim_misses_ % 25 == 0) {
@@ -430,6 +410,140 @@ public:
 private:
     static constexpr uint32_t kInputBufferCount = 4;
     static constexpr int kMaxDrainPerFrame = 16;
+    // Zero-copy IOVA cache, indexed by the capture's V4L2 buffer index (the
+    // capture allocates 16). One mapping per plane per buffer, held for the
+    // whole streaming session — no per-frame ioctls.
+    struct ZcPlanes {
+        int fd_y = -1;
+        int fd_c = -1;
+        unsigned int iova_y = 0;
+        unsigned int iova_c = 0;
+    };
+    static constexpr size_t kZcCacheSize = 16;
+
+    // CPU-copy pool path: borrow a pool buffer and memcpy the frame into it.
+    bool pool_fill(const RawFrame& frame, VencInputBuffer* in, std::string* err) {
+        if (GetOneAllocInputBuffer(enc_, in) != 0 || !in->pAddrVirY || !in->pAddrVirC) {
+            // The fixed-size SDK pool starves if frames ever pile up without a
+            // matching AlreadyUsedInputBuffer drain (e.g. an encode that did
+            // not complete synchronously). Reclaim any pending used buffers
+            // and retry once before failing the frame.
+            VencInputBuffer stray{};
+            uint32_t reclaimed = 0;
+            while (reclaimed < kInputBufferCount
+                   && AlreadyUsedInputBuffer(enc_, &stray) == 0) {
+                ReturnOneAllocInputBuffer(enc_, &stray);
+                ++reclaimed;
+                std::memset(&stray, 0, sizeof(stray));
+            }
+            if (reclaimed > 0) {
+                std::fprintf(stderr,
+                             "[CedarEncoder] input pool starved; reclaimed %u stray buffer(s)\n",
+                             reclaimed);
+            }
+            std::memset(in, 0, sizeof(*in));
+            if (GetOneAllocInputBuffer(enc_, in) != 0 || !in->pAddrVirY || !in->pAddrVirC) {
+                if (err) *err = "cedar: GetOneAllocInputBuffer failed / null addresses";
+                return false;
+            }
+        }
+
+        const uint32_t y_stride = frame.planes[0].stride ? frame.planes[0].stride : width_;
+        const uint32_t c_stride = frame.planes[1].stride ? frame.planes[1].stride : width_;
+        copy_plane(in->pAddrVirY, stride_, frame.planes[0].data, y_stride, width_, height_);
+        copy_plane(in->pAddrVirC, stride_, frame.planes[1].data, c_stride, width_, height_ / 2);
+        // Neutral-fill the padding rows the VE reads past the picture height
+        // (Y = flat black, C = neutral chroma), so stale bytes in the
+        // recycled buffer cannot bleed color artifacts into the bottom rows.
+        if (alloc_height_ > height_) {
+            std::memset(in->pAddrVirY + static_cast<size_t>(stride_) * height_, 0x10,
+                        static_cast<size_t>(stride_) * (alloc_height_ - height_));
+            std::memset(in->pAddrVirC + static_cast<size_t>(stride_) * (height_ / 2), 0x80,
+                        static_cast<size_t>(stride_) * (alloc_height_ - height_) / 2);
+        }
+        in->nPts = static_cast<long long>(frame.pts_us);
+        FlushCacheAllocInputBuffer(enc_, in);
+        return true;
+    }
+
+    // A dma-buf frame can be fed to the VE untouched only when its planes
+    // are laid out exactly like the encoder's input format: 16-aligned
+    // stride matching the plane stride the VE was configured with, and
+    // enough rows to cover the 16-row-aligned height the VE reads. VIN
+    // satisfies this for 16-aligned widths (its NV12M planes are
+    // width-strided and the driver delivers 16-row-aligned buffers);
+    // anything else degrades to the CPU copy path.
+    bool zc_usable(const RawFrame& frame) const {
+        if (frame.buffer_index >= kZcCacheSize) return false;
+        if (frame.planes[0].dma_fd < 0 || frame.planes[1].dma_fd < 0) return false;
+        if (frame.planes[0].stride != stride_ || frame.planes[1].stride != stride_) {
+            return false;
+        }
+        return frame.planes[0].bytes >= stride_ * alloc_height_
+               && frame.planes[1].bytes >= stride_ * alloc_height_ / 2;
+    }
+
+    // Fill `in` with a caller-allocated buffer referencing the frame's
+    // dma-buf planes, mapping them into the VE's IOVA space on first use.
+    // Returns false when the mapping fails — the caller falls back to the
+    // CPU copy path for this frame.
+    bool zc_prepare(const RawFrame& frame, VencInputBuffer* in) {
+        ZcPlanes& zc = zc_cache_[frame.buffer_index];
+        const int fd_y = frame.planes[0].dma_fd;
+        const int fd_c = frame.planes[1].dma_fd;
+        if (zc.fd_y != fd_y || zc.fd_c != fd_c) {
+            zc_unmap(zc);
+            user_iommu_param map{};
+            map.fd = fd_y;
+            VideoEncoderGetVeIommuAddr(enc_, &map);
+            zc.iova_y = map.iommu_addr;
+            map.fd = fd_c;
+            map.iommu_addr = 0;
+            VideoEncoderGetVeIommuAddr(enc_, &map);
+            zc.iova_c = map.iommu_addr;
+            if (zc.iova_y == 0 || zc.iova_c == 0) {
+                std::fprintf(stderr,
+                             "[CedarEncoder] WARNING: dma-buf IOVA map failed "
+                             "(buf %u); falling back to CPU copy\n",
+                             frame.buffer_index);
+                zc_unmap(zc);
+                return false;
+            }
+            zc.fd_y = fd_y;
+            zc.fd_c = fd_c;
+            std::fprintf(stderr,
+                         "[CedarEncoder] zero-copy: mapped buf %u planes "
+                         "(fd %d->%#x, fd %d->%#x)\n",
+                         frame.buffer_index, fd_y, zc.iova_y, fd_c, zc.iova_c);
+        }
+
+        in->bAllocMemSelf = 1;
+        // Keep nShareBufFd at 0: with it set, the SDK derives the chroma
+        // address as phyY + align16(w)*h assuming one contiguous dma-buf —
+        // but VIN exports the NV12M planes as two separate dma-bufs, and the
+        // derived C address lands outside the Y mapping (VE hangs on the
+        // IOMMU fault).  Explicit per-plane IOVAs also keep
+        // AlreadyUsedInputBuffer from auto-unmapping.
+        in->nShareBufFd = 0;
+        in->pAddrPhyY = reinterpret_cast<unsigned char*>(zc.iova_y + frame.planes[0].offset);
+        in->pAddrPhyC = reinterpret_cast<unsigned char*>(zc.iova_c + frame.planes[1].offset);
+        in->pAddrVirY = const_cast<unsigned char*>(frame.planes[0].data);
+        in->pAddrVirC = const_cast<unsigned char*>(frame.planes[1].data);
+        in->nPts = static_cast<long long>(frame.pts_us);
+        return true;
+    }
+
+    void zc_unmap(ZcPlanes& zc) {
+        if (enc_ && zc.fd_y >= 0 && zc.iova_y != 0) {
+            user_iommu_param map{zc.fd_y, zc.iova_y};
+            VideoEncoderFreeVeIommuAddr(enc_, &map);
+        }
+        if (enc_ && zc.fd_c >= 0 && zc.iova_c != 0) {
+            user_iommu_param map{zc.fd_c, zc.iova_c};
+            VideoEncoderFreeVeIommuAddr(enc_, &map);
+        }
+        zc = ZcPlanes{};
+    }
 
     // Pull every currently-available access unit and dispatch via the callback.
     // NOTE: cedar's VideoEncodeOneFrame is expected to complete synchronously;
@@ -482,6 +596,9 @@ private:
     // Caller holds mutex_. Idempotent teardown of the SDK encoder.
     void destroy() {
         if (!enc_) return;
+        for (ZcPlanes& zc : zc_cache_) {
+            zc_unmap(zc);
+        }
         if (initialized_) {
             ReleaseAllocInputBuffer(enc_);
             VideoEncUnInit(enc_);
@@ -499,6 +616,8 @@ private:
     uint32_t alloc_height_ = 0;  // height_ rounded up to 16 (VE reads whole rows)
     VideoCodec codec_ = VideoCodec::H264;
     bool initialized_ = false;
+    bool prefer_dmabuf_ = false;
+    std::array<ZcPlanes, kZcCacheSize> zc_cache_{};
     std::atomic<bool> running_{false};
     std::atomic<bool> force_keyframe_{false};
     std::mutex mutex_;

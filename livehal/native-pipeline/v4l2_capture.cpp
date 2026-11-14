@@ -142,12 +142,22 @@ struct V4L2CaptureImpl : public CaptureBackend {
         return {width, height};
     }
     // Single-plane contiguous formats arm the deferred-requeue contract on
-    // every frame; multi-plane (NV12M/YUV420M) and converted formats stay
-    // on the CPU path, so they must not switch the encoder to dmabuf mode.
+    // every frame; converted formats stay on the CPU path, so they must not
+    // switch the encoder to dmabuf mode.
     bool emitsDmabufFrames() const override {
-        return prefer_dmabuf
-            && (pixel_format == V4L2_PIX_FMT_NV12
-                || pixel_format == V4L2_PIX_FMT_YUV420);
+        if (pixel_format == V4L2_PIX_FMT_NV12
+            || pixel_format == V4L2_PIX_FMT_YUV420) {
+            return prefer_dmabuf;
+        }
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN negotiates only NV12M. The cedar encoder imports the
+        // two planes via per-plane dma-buf → VE-IOVA translation, so the
+        // multi-plane layout arms the contract here too.
+        if (pixel_format == V4L2_PIX_FMT_NV12M) {
+            return prefer_dmabuf;
+        }
+#endif
+        return false;
     }
 
     void capture_loop();

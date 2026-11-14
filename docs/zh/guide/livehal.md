@@ -49,7 +49,7 @@ libcamera / V4L2 / RDK X5 原生采集与编码管线的架构和构建指南。
 - 所有 FFI 细节在 `livehal` 内部都是 crate-private 的；`liveion` 只能通过通道看到 `EncodedPacket`。
 - **原生源的 RTP 路径**：`EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`。这避免了其他源所使用的 `Packet` → bytes → `Packet::unmarshal` 往返。
 - `MediaPacket::Rtp { data }` 字节路径仍由 `rtp_listener` / `rtsp_source` / `sdp_source` 使用。
-- **DMA-BUF 零拷贝**：已在通用 V4L2 → RKMPP 与树莓派（libcamera / 通用 V4L2 → V4L2 M2M）上实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每帧的 DMA-BUF 直接交给编码器入队——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从出队到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回去（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败（或帧布局无法被编码器导入）时回退 CPU 拷贝路径。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
+- **DMA-BUF 零拷贝**：已在通用 V4L2 → RKMPP、树莓派（libcamera / 通用 V4L2 → V4L2 M2M）与全志 A733（V4L2 NV12M → cedar VE）上实现。采集和编码同时设 `prefer_dmabuf = true` 时，采集侧把每帧的 DMA-BUF 直接交给编码器入队——整帧不再经过 CPU 拷贝。缓冲区所有权是显式的：从出队到该帧编码完成期间缓冲区归编码器所有，待硬件读取完毕后才 requeue 回去（延迟 requeue 释放契约，摄像头不可能在编码中途覆盖缓冲区）。导出或导入失败（或帧布局无法被编码器导入）时回退 CPU 拷贝路径。cedar 后端把 NV12M 两个平面分别映射进 VE 的 IOVA 空间（`VideoEncoderGetVeIommuAddr`，每个采集缓冲区映射一次并缓存）；刻意不用 SDK 的 `nShareBufFd` 快捷路径——它从亮度地址加固定偏移推导色度地址、假定单个连续 dma-buf，而 VIN 导出的两个平面是两个独立 dma-buf。RDK 后端尚未实现 DMA-BUF 导入（`encoder_rdk.cpp` 会拒绝 `BufferKind::DmaBuf`），该路径仍以 CPU 拷贝为默认。
 
 ## 配置
 
@@ -416,7 +416,7 @@ cargo build --bin live777 --release \
 
 cedar 编码器支持 `codec = "h264"`（默认，所有浏览器可解，推荐用于 WHEP 观看）和 `codec = "h265"`（`profile = "main"`，可选 `level = "3.0"`–`"5.1"`，默认 `"4.0"`）。H.265 在同画质下约省一半码率，但浏览器解码 WebRTC HEVC 需要硬件支持（无软件回退），因此建议用于录像、RTSP/RTP target、级联链路而非浏览器播放。H.264 的 `profile` 必须是 6 位 profile-level-id 十六进制串（与 rkmpp 一致），且**只接受 High profile**（如 `"640028"` = High Level 4.0）：A733 的 cedar VE 在 Baseline/Main 下出的流与自身 SPS 不一致，解码会是绿/灰画面。十六进制串里的 level 会被如实采用。
 
-> **注意：** 当前为「先能用」阶段：CPU 拷贝 NV12 输入（不支持 DMA-BUF 零拷贝）、不做 4K 调优。cedar 的 IDR 帧本身不含参数集，编码器已在每个关键帧前注入 SPS/PPS（H.265 另有 VPS），保证 WHEP 订阅者随时可解码。
+> **注意：** 尚未做 4K 调优（本板 IMX219/ISP 管线被设备树锁定在 1920x1080@30）。cedar 的 IDR 帧本身不含参数集，编码器已在每个关键帧前注入 SPS/PPS（H.265 另有 VPS），保证 WHEP 订阅者随时可解码。DMA-BUF 零拷贝已支持：采集和编码两侧同时设 `prefer_dmabuf = true` 即可。
 
 ### macOS（仅开发 / 检查）
 
@@ -580,12 +580,14 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "nv12"     # 协商为 NV12M（2-plane MPLANE）
+prefer_dmabuf = true      # 零拷贝：VIN 缓冲区导出为 dma-buf
 
 [stream.sunxi-cam.sources.encoder]
 backend = "cedar"
 codec = "h264"
 bitrate = 2_000_000
-profile = "42001f"
+profile = "640028"        # cedar H.264 只接受 High profile（见上文）
+prefer_dmabuf = true      # 零拷贝：dma-buf 映射进 VE IOVA 直喂编码器
 gop = 60
 
 [stream.sunxi-cam.sources.output]
@@ -593,7 +595,7 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-运行前先 `sudo modprobe vin_v4l2`。全志 ISP 由采集路径自动初始化，勿手动配置 media-ctl 链路。当前 cedar 后端为 CPU 拷贝 NV12 输入，不支持 `prefer_dmabuf`（保持默认 false）。
+运行前先 `sudo modprobe vin_v4l2`。全志 ISP 由采集路径自动初始化，勿手动配置 media-ctl 链路。两侧都设 `prefer_dmabuf = true` 后 cedar 走零拷贝（逐平面 dma-buf → VE IOVA 映射，按采集缓冲区缓存）；导出或映射失败时自动回退 CPU 拷贝路径。
 
 零拷贝路径需要**两侧都**设 `prefer_dmabuf`——语义和各平台支持见 [零拷贝（DMA-BUF）](#zero-copy-dma-buf)。输入必须是 NV12。
 

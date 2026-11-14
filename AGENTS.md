@@ -167,7 +167,11 @@ Key feature groups defined in the root `Cargo.toml`:
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
 - `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar` — encoder
-  backends (cedar = Allwinner VE, e.g. A733/sun60iw2; H.264 + H.265).
+  backends (cedar = Allwinner VE, e.g. A733/sun60iw2; H.264 + H.265; supports
+  DMA-BUF zero-copy from the V4L2 NV12M capture via per-plane dma-buf → VE
+  IOVA mapping cached per capture buffer — the SDK's `nShareBufFd` shortcut
+  is not used because it assumes one contiguous dma-buf while VIN exports
+  the two NV12M planes as separate dma-bufs).
 - Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
   `native-rkmpp`, `native-sunxi`.
 - `whepwright`     — Playwright-based browser WHEP test harness.

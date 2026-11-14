@@ -49,7 +49,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - All FFI details are crate-private in `livehal`; `liveion` only sees `EncodedPacket` through the channel.
 - **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
 - `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
-- **DMA-BUF zero-copy**: implemented for generic V4L2 → RKMPP and for Raspberry Pi (libcamera / generic V4L2 → V4L2 M2M).  With `prefer_dmabuf = true` on both capture and encoder, the capture hands each frame's DMA-BUF to the encoder and the encoder queues it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between dequeue and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails (or the frame layout does not match what the encoder can import) the pipeline falls back to the CPU-copy path.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
+- **DMA-BUF zero-copy**: implemented for generic V4L2 → RKMPP, for Raspberry Pi (libcamera / generic V4L2 → V4L2 M2M), and for Allwinner A733 (V4L2 NV12M → cedar VE).  With `prefer_dmabuf = true` on both capture and encoder, the capture hands each frame's DMA-BUF to the encoder and the encoder queues it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between dequeue and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails (or the frame layout does not match what the encoder can import) the pipeline falls back to the CPU-copy path.  The cedar backend maps each of the two NV12M planes into the VE's IOVA space once per capture buffer (`VideoEncoderGetVeIommuAddr`); the SDK's `nShareBufFd` shortcut is deliberately not used because it derives the chroma address from the luma address assuming one contiguous dma-buf, while VIN exports the planes as two separate dma-bufs.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
 
 ## Config
 
@@ -458,7 +458,7 @@ The cedar/ISP SDK is device-specific, closed-source, and has no public apt sourc
 
 The cedar encoder accepts `codec = "h264"` (default; decodable in every browser, recommended for WHEP viewing) and `codec = "h265"` (`profile = "main"`, optional `level = "3.0"`–`"5.1"` default `"4.0"`). H.265 roughly halves the bitrate at the same quality, but browsers only decode WebRTC HEVC with hardware support (no software fallback), so prefer it for recording, RTSP/RTP targets and cascade links rather than browser playback. For H.264, `profile` must be a 6-character profile-level-id hex string (same as rkmpp) and **only High profile is accepted** (e.g. `"640028"` = High Level 4.0): the A733 cedar VE's Baseline/Main output does not match its own SPS and decodes as a green/gray picture. The level inside the hex is honored.
 
-> **Note:** "make it work first" stage: CPU-copied NV12 input (no DMA-BUF zero-copy), no 4K tuning. cedar IDR frames do not carry parameter sets, so the encoder prepends SPS/PPS (plus VPS for H.265) to every keyframe to keep WHEP subscribers decodable at any join point.
+> **Note:** no 4K tuning yet (the IMX219/ISP pipeline on this board is device-tree locked at 1920x1080@30 anyway). cedar IDR frames do not carry parameter sets, so the encoder prepends SPS/PPS (plus VPS for H.265) to every keyframe to keep WHEP subscribers decodable at any join point. DMA-BUF zero-copy is supported: set `prefer_dmabuf = true` on both capture and encoder.
 
 ### macOS (development / check only)
 
@@ -622,12 +622,14 @@ width = 640
 height = 480
 fps = 30
 pixel_format = "nv12"     # negotiates NV12M (2-plane MPLANE)
+prefer_dmabuf = true      # zero-copy: export VIN buffers as dma-bufs
 
 [stream.sunxi-cam.sources.encoder]
 backend = "cedar"
 codec = "h264"
 bitrate = 2_000_000
-profile = "42001f"
+profile = "640028"        # cedar H.264 requires High profile (see above)
+prefer_dmabuf = true      # zero-copy: feed the VE via dma-buf IOVA mapping
 gop = 60
 
 [stream.sunxi-cam.sources.output]
@@ -635,7 +637,7 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-Run `sudo modprobe vin_v4l2` first. The Allwinner ISP is initialised automatically by the capture path; do not configure media-ctl links manually. The cedar backend currently uses CPU-copied NV12 input and does not support `prefer_dmabuf` (leave it false).
+Run `sudo modprobe vin_v4l2` first. The Allwinner ISP is initialised automatically by the capture path; do not configure media-ctl links manually. With `prefer_dmabuf = true` on both sides the cedar backend runs zero-copy (per-plane dma-buf → VE IOVA mapping, cached per capture buffer); if the export or mapping fails it falls back to the CPU-copy path.
 
 `prefer_dmabuf` must be set on **both** sides for the zero-copy path — see
 [Zero-copy (DMA-BUF)](#zero-copy-dma-buf) for the semantics and platform
