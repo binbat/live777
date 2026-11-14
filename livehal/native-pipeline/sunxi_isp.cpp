@@ -19,6 +19,7 @@
 
 #include <dlfcn.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -137,7 +138,7 @@ bool SunxiIspController::init(const std::string& device, std::string* err) {
     return true;
 }
 
-bool SunxiIspController::start(std::string* err) {
+bool SunxiIspController::start(uint32_t fps, std::string* err) {
     if (!impl_->api || impl_->isp_id < 0) {
         if (err) *err = "sunxi ISP: start() called before successful init()";
         return false;
@@ -149,6 +150,13 @@ bool SunxiIspController::start(std::string* err) {
     impl_->started = true;
     std::fprintf(stderr, "[SunxiISP] ispStart(isp%d) ok (before STREAMON)\n",
                  impl_->isp_id);
+    // Tell the ISP 3A loop the configured operating rate. Best-effort: the
+    // sensor mode table still governs the delivered rate, but without this
+    // the AE/AWB convergence assumes the driver default.
+    if (fps != 0 && impl_->api->ispSetFpsRanage
+        && impl_->api->ispSetFpsRanage(impl_->isp_id, static_cast<int>(fps)) < 0) {
+        std::fprintf(stderr, "[SunxiISP] WARNING: ispSetFpsRanage(%u) failed\n", fps);
+    }
     return true;
 }
 

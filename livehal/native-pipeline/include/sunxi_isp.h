@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -28,7 +29,9 @@ public:
     bool init(const std::string& device, std::string* err);
 
     /// ispStart(isp_id). MUST be called immediately BEFORE VIDIOC_STREAMON.
-    bool start(std::string* err);
+    /// `fps` is forwarded to ispSetFpsRanage so the ISP 3A loop knows the
+    /// operating rate (the sensor mode still governs the delivered rate).
+    bool start(uint32_t fps, std::string* err);
 
     /// ispStop/ispWaitToExit/ispApiUnInit/DestroyAWIspApi. Idempotent; MUST
     /// run AFTER VIDIOC_STREAMOFF. Safe when init() failed or start() skipped.

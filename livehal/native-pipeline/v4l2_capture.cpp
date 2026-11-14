@@ -764,11 +764,28 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     }
     parm = {};
     parm.type = buffer_type;
+    uint32_t driver_fps = 0;
     if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0
         && parm.parm.capture.timeperframe.numerator != 0) {
-        fps = parm.parm.capture.timeperframe.denominator
+        driver_fps = parm.parm.capture.timeperframe.denominator
               / parm.parm.capture.timeperframe.numerator;
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Allwinner VIN's G_PARM does not reflect the real sensor rate (it reads
+    // back 1 fps while the sensor streams at its mode default, e.g. 25 fps).
+    // Keep the configured fps and surface the driver value separately instead
+    // of letting the bogus readback clobber it.
+    if (driver_fps != 0 && driver_fps != fps) {
+        fprintf(stderr,
+                "[V4L2Capture] note: driver reports %u fps, requested %u fps; "
+                "the sunxi sensor mode governs the delivered rate\n",
+                driver_fps, fps);
+    }
+#else
+    if (driver_fps != 0) {
+        fps = driver_fps;
+    }
+#endif
 
     char actual[5];
     fprintf(stderr,
@@ -891,8 +908,9 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     // ispStart() MUST run before VIDIOC_STREAMON: it starts the ISP server
     // thread that drives the private subdev ioctls / 3A event loop. Buffers
     // are already queued at this point; on failure the pipeline's stop() path
-    // (release_resources) tears the ISP down again.
-    if (isp_ && !isp_->start(err)) {
+    // (release_resources) tears the ISP down again. The configured fps is
+    // forwarded to the ISP so its 3A loop tracks the requested rate.
+    if (isp_ && !isp_->start(fps, err)) {
         return false;
     }
 #endif
