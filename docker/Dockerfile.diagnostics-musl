@@ -171,8 +171,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     test "$(rustc -vV | awk '/^host:/ {print $2}')" = "${TARGET}" && \
     cargo check --locked --release --bin=whipsynth --features=rsmpeg && \
-    export FFMPEG_BINDING_PATH="$(find /app/target/release/build \
-        -path '*/rusty_ffmpeg-*/out/binding.rs' -print -quit)" && \
+    FFMPEG_BINDING_PATH="$(find /app/target/release/build \
+        -path '*/rusty_ffmpeg-*/out/binding.rs' -print -quit)"; \
+    if [ ! -s "${FFMPEG_BINDING_PATH}" ]; then \
+        echo "binding.rs missing after cargo check (stale cache mount?); \
+forcing the rusty_ffmpeg build script to re-run" >&2; \
+        find /app/target -path '*rusty_ffmpeg*' -name 'binding.rs' -print || true; \
+        cargo clean --locked -p rusty_ffmpeg && \
+        cargo check --locked --release --bin=whipsynth --features=rsmpeg && \
+        FFMPEG_BINDING_PATH="$(find /app/target/release/build \
+            -path '*/rusty_ffmpeg-*/out/binding.rs' -print -quit)"; \
+    fi && \
+    export FFMPEG_BINDING_PATH && \
     test -s "${FFMPEG_BINDING_PATH}" && \
     mkdir -p /build/link-maps && \
     ffmpeg_link_args=( \
