@@ -136,6 +136,11 @@ struct V4L2CaptureImpl : public CaptureBackend {
     void stop() override;
     bool isRunning() const override;
     RawPixelFormat outputFormat() const override;
+    // After S_FMT the members hold the driver-negotiated size (VIN clamps
+    // out-of-range requests to its ISP output limit).
+    std::pair<uint32_t, uint32_t> negotiatedSize() const override {
+        return {width, height};
+    }
     // Single-plane contiguous formats arm the deferred-requeue contract on
     // every frame; multi-plane (NV12M/YUV420M) and converted formats stay
     // on the CPU path, so they must not switch the encoder to dmabuf mode.
@@ -560,19 +565,46 @@ void V4L2CaptureImpl::capture_loop() {
         uint32_t bad_plane = 0, bad_got = 0, bad_want = 0;
         if (is_mplane_type(buffer_type)) {
             for (uint32_t i = 0; i < memory_plane_count; ++i) {
-                if (plane_malformed(planes[i].bytesused,
-                                    plane_sizeimages[i])) {
+                uint32_t want = plane_sizeimages[i];
+                const uint32_t got = planes[i].bytesused;
+                if (want != 0 && got > want) {
+                    // The driver under-reported sizeimage at S_FMT (e.g.
+                    // Allwinner VIN negotiates 1920x1080 but delivers
+                    // 16-row-aligned 1088-tall planes).  The extra rows are
+                    // padding our consumers never read, so learn the real
+                    // size instead of flagging every frame as malformed.
+                    fprintf(stderr,
+                            "[V4L2Capture] driver under-reported plane%u "
+                            "sizeimage (%u < %u delivered); adopting the "
+                            "delivered size\n",
+                            i, want, got);
+                    plane_sizeimages[i] = got;
+                    want = got;
+                }
+                if (plane_malformed(got, want)) {
                     bad = true;
                     bad_plane = i;
-                    bad_got = planes[i].bytesused;
-                    bad_want = plane_sizeimages[i];
+                    bad_got = got;
+                    bad_want = want;
                     break;
                 }
             }
-        } else if (plane_malformed(buf.bytesused, plane_sizeimages[0])) {
-            bad = true;
-            bad_got = buf.bytesused;
-            bad_want = plane_sizeimages[0];
+        } else {
+            uint32_t want = plane_sizeimages[0];
+            const uint32_t got = buf.bytesused;
+            if (want != 0 && got > want) {
+                fprintf(stderr,
+                        "[V4L2Capture] driver under-reported sizeimage "
+                        "(%u < %u delivered); adopting the delivered size\n",
+                        want, got);
+                plane_sizeimages[0] = got;
+                want = got;
+            }
+            if (plane_malformed(got, want)) {
+                bad = true;
+                bad_got = got;
+                bad_want = want;
+            }
         }
         if (bad) {
             const bool fatal = bad_window_.on_bad_frame(dqbuf_now_us);

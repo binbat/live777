@@ -13,6 +13,7 @@
 #pragma once
 #include "media_types.h"
 #include <functional>
+#include <utility>
 #include <memory>
 #include <string>
 
@@ -69,6 +70,17 @@ public:
     /// `CaptureConfig::pixel_format` — e.g. the generic V4L2 backend
     /// converts YUYV to NV12, and libcamera always delivers YUV420P.
     virtual RawPixelFormat outputFormat() const = 0;
+
+    /// The frame size actually negotiated with the driver, valid after a
+    /// successful init().  May differ from CaptureConfig::width/height when
+    /// the driver clamps to its supported range (e.g. Allwinner VIN clamps
+    /// 3280x2464 to its 1920x1080 ISP output limit).  The SourcePipeline
+    /// sizes the encoder from this, so the encoder always matches the
+    /// delivered frames.  Backends that never clamp may keep the default
+    /// (0x0 = "as configured").
+    virtual std::pair<uint32_t, uint32_t> negotiatedSize() const {
+        return {0, 0};
+    }
 
     /// Whether frames from this backend carry the deferred-requeue dmabuf
     /// contract (BufferKind::DmaBuf with an armed release), valid after a
