@@ -286,6 +286,24 @@ ice_udp_addrs = ["auto"]
 # [stream.sunxi-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
+#
+# Quality tiers (applied at runtime with
+# `POST /api/sources/sunxi-cam/tier {"tier":"<name>"}`).  The IMX219/ISP
+# pipeline on this board is device-tree locked at 1920x1080@30: the VIN ISP
+# output caps at 1920x1080 (larger requests are clamped and the encoder
+# follows the negotiated size), and the vendor sensor driver tops out at
+# 30 fps.  cedar H.265 encodes 1080p30 fine; keep encoder heights a multiple
+# of 16 in mind (1080 handled internally).
+#
+# [[stream.sunxi-cam.sources.tiers]]
+# name = "maxres"
+# capture = { width = 1920, height = 1080, fps = 30 }
+# encoder = { bitrate = 20_000_000 }
+#
+# [[stream.sunxi-cam.sources.tiers]]
+# name = "maxfps"
+# capture = { width = 1280, height = 720, fps = 30 }
+# encoder = { bitrate = 20_000_000 }
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards
