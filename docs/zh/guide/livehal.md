@@ -316,7 +316,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
 | `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
-| `native-sunxi` | `capture-v4l2, encoder-cedar`（全志 A733，另为 V4L2 采集编译进 `AWIspApi` ISP 钩子） |
+| `native-cedar` | `capture-v4l2, encoder-cedar`（全志 A733，另为 V4L2 采集编译进 `AWIspApi` ISP 钩子） |
 
 无需额外加 `--features source`——预设已经包含自动启动。
 
@@ -407,12 +407,12 @@ Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:lates
 ```bash
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
-  --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
+  --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
 ```
 
-采集走标准 V4L2（IMX219 CSI，协商为 `NV12M` 2-plane），编码走全志 cedar VE（`libvencoder`）。全志 VIN 管线需要用户态 ISP（`AWIspApi`）在开流前启动，`native-sunxi` 已把这段生命周期通过 `ENABLE_BACKEND_SUNXI` 编译进 V4L2 采集路径（`sunxi_isp.cpp`，运行时 `dlopen` 加载 `libAWIspApi.so`）——**不要手动执行 `media-ctl` 配置链路/格式**，链路是设备树预配置的，强行设置会导致 `isp0 width error`、无法出帧。注意 ISP 挂载是编译期决定且无条件的：`native-sunxi` 构建里每个 `v4l2` 采集源都会驱动 `AWIspApi`，因此该二进制无法采集非 ISP 的 V4L2 设备（如 USB 摄像头），这类设备请用 `native-generic-v4l2` 构建。
+采集走标准 V4L2（IMX219 CSI，协商为 `NV12M` 2-plane），编码走全志 cedar VE（`libvencoder`）。全志 VIN 管线需要用户态 ISP（`AWIspApi`）在开流前启动，`native-cedar` 已把这段生命周期通过 `ENABLE_BACKEND_SUNXI` 编译进 V4L2 采集路径（`sunxi_isp.cpp`，运行时 `dlopen` 加载 `libAWIspApi.so`）——**不要手动执行 `media-ctl` 配置链路/格式**，链路是设备树预配置的，强行设置会导致 `isp0 width error`、无法出帧。注意 ISP 挂载是编译期决定且无条件的：`native-cedar` 构建里每个 `v4l2` 采集源都会驱动 `AWIspApi`，因此该二进制无法采集非 ISP 的 V4L2 设备（如 USB 摄像头），这类设备请用 `native-generic-v4l2` 构建。
 
-全志 cedar/ISP SDK 是设备专属闭源二进制、没有公开 apt 源。交叉编译时把从设备抽取的 sysroot（`include/` 头文件 + `lib/` 的 `libvencoder.so`、`libVE.so`、`libAWIspApi.so` 等）bake 进 cross 镜像 `/opt/sunxi-sysroot`（`docker/Dockerfile.cross-aarch64-sunxi`），或设置 `SUNXI_SYSROOT` 指向该目录由 cross 挂载。运行 `just sunxi-cross-build` 即可。目标机上还需 `sudo modprobe vin_v4l2`（Trixie 不自动加载 VIN 驱动）。也可以直接在设备上原生构建：SDK 头文件在 `/usr/include/vencoder.h`、库在多架构 lib 目录时，`cargo build --features native-sunxi` 无需 `SUNXI_SYSROOT` 即可编译出真实编码器。
+全志 cedar/ISP SDK 是设备专属闭源二进制、没有公开 apt 源。交叉编译时把从设备抽取的 sysroot（`include/` 头文件 + `lib/` 的 `libvencoder.so`、`libVE.so`、`libAWIspApi.so` 等）bake 进 cross 镜像 `/opt/sunxi-sysroot`（`docker/Dockerfile.cross-aarch64-sunxi`），或设置 `SUNXI_SYSROOT` 指向该目录由 cross 挂载。运行 `just cedar-cross-build` 即可。目标机上还需 `sudo modprobe vin_v4l2`（Trixie 不自动加载 VIN 驱动）。也可以直接在设备上原生构建：SDK 头文件在 `/usr/include/vencoder.h`、库在多架构 lib 目录时，`cargo build --features native-cedar` 无需 `SUNXI_SYSROOT` 即可编译出真实编码器。
 
 cedar 编码器支持 `codec = "h264"`（默认，所有浏览器可解，推荐用于 WHEP 观看）和 `codec = "h265"`（`profile = "main"`，可选 `level = "3.0"`–`"5.1"`，默认 `"4.0"`）。H.265 在同画质下约省一半码率，但浏览器解码 WebRTC HEVC 需要硬件支持（无软件回退），因此建议用于录像、RTSP/RTP target、级联链路而非浏览器播放。H.264 的 `profile` 必须是 6 位 profile-level-id 十六进制串（与 rkmpp 一致），且**只接受 High profile**（如 `"640028"` = High Level 4.0）：A733 的 cedar VE 在 Baseline/Main 下出的流与自身 SPS 不一致，解码会是绿/灰画面。十六进制串里的 level 会被如实采用。
 
@@ -434,7 +434,7 @@ cargo check --features native-rpi,webui
 | `RPI_SYSROOT` | 可选的树莓派 sysroot，需包含 `libcamera-dev`；会覆盖 RPi cross 镜像内置的 sysroot。 |
 | `RDK_SYSROOT` | 地平线 RDK X5 SDK sysroot 路径。在 aarch64 上构建 `encoder-rdk` / `native-rdk` 时**必须**设置。 |
 | `RKMPP_SYSROOT` | 包含 Rockchip MPP 库和头文件的 sysroot 路径。在 aarch64 上构建 `encoder-rkmpp` / `native-rkmpp` 时使用。 |
-| `SUNXI_SYSROOT` | 全志 cedar/ISP SDK sysroot（`include/` + `lib/`，从设备抽取）。在 aarch64 上构建 `encoder-cedar` / `native-sunxi` 时提供头文件和库；也可 bake 进 cross 镜像。 |
+| `SUNXI_SYSROOT` | 全志 cedar/ISP SDK sysroot（`include/` + `lib/`，从设备抽取）。在 aarch64 上构建 `encoder-cedar` / `native-cedar` 时提供头文件和库；也可 bake 进 cross 镜像。 |
 | `LIVEHAL_CXX_STDLIB` | 覆盖要链接的 C++ 标准库（如 `stdc++`、`c++` 等），用于交叉编译工具链。 |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | 设为 `1` 可在 sysroot 不完整时允许 RDK 共享库存在未解析符号。 |
 

@@ -31,7 +31,7 @@ const NAME: &str = "liveman";
     "native-generic-v4l2",
     "native-rdk",
     "native-rkmpp",
-    "native-sunxi",
+    "native-cedar",
 ))]
 struct Args {
     /// Set config file path

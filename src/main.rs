@@ -28,7 +28,7 @@ mod utils;
     "native-generic-v4l2",
     "native-rdk",
     "native-rkmpp",
-    "native-sunxi",
+    "native-cedar",
 ))]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]

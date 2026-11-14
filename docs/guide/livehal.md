@@ -356,7 +356,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
 | `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
-| `native-sunxi` | `capture-v4l2, encoder-cedar` (Allwinner A733; also compiles AWIspApi ISP hooks into the V4L2 capture path) |
+| `native-cedar` | `capture-v4l2, encoder-cedar` (Allwinner A733; also compiles AWIspApi ISP hooks into the V4L2 capture path) |
 
 No additional `--features source` is needed — presets include autostart.
 
@@ -449,12 +449,12 @@ The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:l
 ```bash
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
-  --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
+  --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
 ```
 
-Capture uses standard V4L2 (IMX219 CSI, negotiated as `NV12M` 2-plane); encoding uses the Allwinner cedar VE (`libvencoder`). The Allwinner VIN pipeline requires its userspace ISP (`AWIspApi`) to be started before streaming — `native-sunxi` compiles that lifecycle into the V4L2 capture path via `ENABLE_BACKEND_SUNXI` (`sunxi_isp.cpp`, `dlopen`s `libAWIspApi.so` at runtime). **Do NOT run `media-ctl` link/format commands**: the pipeline is preconfigured by the device tree, and forcing it causes `isp0 width error` / no frames. Note the ISP attach is compile-time and unconditional: in a `native-sunxi` build every `v4l2` capture source drives `AWIspApi`, so non-ISP V4L2 devices (e.g. USB cameras) cannot be captured by that binary — build with `native-generic-v4l2` for those.
+Capture uses standard V4L2 (IMX219 CSI, negotiated as `NV12M` 2-plane); encoding uses the Allwinner cedar VE (`libvencoder`). The Allwinner VIN pipeline requires its userspace ISP (`AWIspApi`) to be started before streaming — `native-cedar` compiles that lifecycle into the V4L2 capture path via `ENABLE_BACKEND_SUNXI` (`sunxi_isp.cpp`, `dlopen`s `libAWIspApi.so` at runtime). **Do NOT run `media-ctl` link/format commands**: the pipeline is preconfigured by the device tree, and forcing it causes `isp0 width error` / no frames. Note the ISP attach is compile-time and unconditional: in a `native-cedar` build every `v4l2` capture source drives `AWIspApi`, so non-ISP V4L2 devices (e.g. USB cameras) cannot be captured by that binary — build with `native-generic-v4l2` for those.
 
-The cedar/ISP SDK is device-specific, closed-source, and has no public apt source. For cross builds, bake a sysroot extracted from the device (`include/` headers + `lib/` with `libvencoder.so`, `libVE.so`, `libAWIspApi.so`, ...) into the cross image at `/opt/sunxi-sysroot` (`docker/Dockerfile.cross-aarch64-sunxi`), or set `SUNXI_SYSROOT` to that directory and let cross mount it. Use `just sunxi-cross-build`. On the device, run `sudo modprobe vin_v4l2` first (Trixie does not auto-load the VIN driver). A native build directly on the device also works: with the SDK headers at `/usr/include/vencoder.h` and the libraries in the multiarch lib dir, `cargo build --features native-sunxi` compiles the real encoder without `SUNXI_SYSROOT`.
+The cedar/ISP SDK is device-specific, closed-source, and has no public apt source. For cross builds, bake a sysroot extracted from the device (`include/` headers + `lib/` with `libvencoder.so`, `libVE.so`, `libAWIspApi.so`, ...) into the cross image at `/opt/sunxi-sysroot` (`docker/Dockerfile.cross-aarch64-sunxi`), or set `SUNXI_SYSROOT` to that directory and let cross mount it. Use `just cedar-cross-build`. On the device, run `sudo modprobe vin_v4l2` first (Trixie does not auto-load the VIN driver). A native build directly on the device also works: with the SDK headers at `/usr/include/vencoder.h` and the libraries in the multiarch lib dir, `cargo build --features native-cedar` compiles the real encoder without `SUNXI_SYSROOT`.
 
 The cedar encoder accepts `codec = "h264"` (default; decodable in every browser, recommended for WHEP viewing) and `codec = "h265"` (`profile = "main"`, optional `level = "3.0"`–`"5.1"` default `"4.0"`). H.265 roughly halves the bitrate at the same quality, but browsers only decode WebRTC HEVC with hardware support (no software fallback), so prefer it for recording, RTSP/RTP targets and cascade links rather than browser playback. For H.264, `profile` must be a 6-character profile-level-id hex string (same as rkmpp) and **only High profile is accepted** (e.g. `"640028"` = High Level 4.0): the A733 cedar VE's Baseline/Main output does not match its own SPS and decodes as a green/gray picture. The level inside the hex is honored.
 
@@ -476,7 +476,7 @@ cargo check --features native-rpi,webui
 | `RPI_SYSROOT` | Optional Raspberry Pi sysroot with `libcamera-dev`; overrides the sysroot baked into the RPi cross image. |
 | `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
 | `RKMPP_SYSROOT` | Path to a sysroot containing the Rockchip MPP library and headers. Used when building `encoder-rkmpp` / `native-rkmpp` for aarch64. |
-| `SUNXI_SYSROOT` | Allwinner cedar/ISP SDK sysroot (`include/` + `lib/`, extracted from the device). Provides headers and libraries when building `encoder-cedar` / `native-sunxi` for aarch64; can also be baked into the cross image. |
+| `SUNXI_SYSROOT` | Allwinner cedar/ISP SDK sysroot (`include/` + `lib/`, extracted from the device). Provides headers and libraries when building `encoder-cedar` / `native-cedar` for aarch64; can also be baked into the cross image. |
 | `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
 

@@ -183,11 +183,11 @@ rpi-pack-size:
 # instead, build docker/Dockerfile.cross-aarch64-sunxi and set
 # CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE to it.
 [group('embedded')]
-sunxi-cross-build:
+cedar-cross-build:
     test -n "${SUNXI_SYSROOT:?set SUNXI_SYSROOT to a device-extracted cedar/ISP sysroot (see AGENTS.md)}" && \
         cross build --target aarch64-unknown-linux-gnu \
         --bin live777 --release \
-        --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
+        --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
 
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
 [group('embedded')]

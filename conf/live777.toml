@@ -257,9 +257,9 @@ ice_udp_addrs = ["auto"]
 # initialised automatically by the capture path — do NOT run media-ctl link/
 # format commands, the device tree preconfigures the pipeline.
 #   cross build --bin live777 --release --target aarch64-unknown-linux-gnu \
-#     --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
-# (or `just sunxi-cross-build`; on the device itself a plain
-# `cargo build --features native-sunxi` picks up the system-installed SDK)
+#     --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
+# (or `just cedar-cross-build`; on the device itself a plain
+# `cargo build --features native-cedar` picks up the system-installed SDK)
 #
 # codec = "h264" is the WebRTC-compatible default (all browsers). The cedar VE
 # also does H.265: codec = "h265", profile = "main" (optional level = "4.0");

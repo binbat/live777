@@ -173,7 +173,7 @@ Key feature groups defined in the root `Cargo.toml`:
   is not used because it assumes one contiguous dma-buf while VIN exports
   the two NV12M planes as separate dma-bufs).
 - Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
-  `native-rkmpp`, `native-sunxi`.
+  `native-rkmpp`, `native-cedar`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
@@ -197,7 +197,7 @@ device-pulled sysroot when developing locally:
   SDK is device-only); set `SUNXI_SYSROOT` to a device-extracted sysroot, build
   the `docker/Dockerfile.cross-aarch64-sunxi` image from it, or build natively
   on the device (the system-installed SDK is auto-detected via
-  `/usr/include/vencoder.h`). Recipe: `just sunxi-cross-build`.
+  `/usr/include/vencoder.h`). Recipe: `just cedar-cross-build`.
 
 Example:
 
