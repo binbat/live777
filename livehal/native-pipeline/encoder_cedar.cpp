@@ -118,6 +118,13 @@ public:
         fps_ = cfg.fps;
         codec_ = cfg.codec;
         stride_ = (width_ + 15u) & ~15u;
+        // The VE reads input buffers in 16-row units: a height that is not
+        // 16-aligned (e.g. 1080) with an exactly-sized buffer makes
+        // VideoEncodeOneFrame hang (interrupt timeout, register dump).
+        // Verified on A733: 1920x1080 fails at buffer height 1080 and works
+        // at 1088.  Allocate with the aligned height; the padding rows are
+        // neutral-filled at submit time.
+        alloc_height_ = (height_ + 15u) & ~15u;
 
         if (codec_ != VideoCodec::H264 && codec_ != VideoCodec::H265) {
             if (err) *err = "cedar backend supports H.264 and H.265 only";
@@ -189,8 +196,8 @@ public:
 
         VencAllocateBufferParam ab{};
         ab.nBufferNum = kInputBufferCount;
-        ab.nSizeY = stride_ * height_;
-        ab.nSizeC = stride_ * height_ / 2;
+        ab.nSizeY = stride_ * alloc_height_;
+        ab.nSizeC = stride_ * alloc_height_ / 2;
         if (AllocInputBuffer(enc_, &ab) != 0) {
             if (err) *err = "cedar: AllocInputBuffer failed";
             destroy();
@@ -356,6 +363,15 @@ public:
         const uint32_t c_stride = frame.planes[1].stride ? frame.planes[1].stride : width_;
         copy_plane(in.pAddrVirY, stride_, frame.planes[0].data, y_stride, width_, height_);
         copy_plane(in.pAddrVirC, stride_, frame.planes[1].data, c_stride, width_, height_ / 2);
+        // Neutral-fill the padding rows the VE reads past the picture height
+        // (Y = flat black, C = neutral chroma), so stale bytes in the
+        // recycled buffer cannot bleed color artifacts into the bottom rows.
+        if (alloc_height_ > height_) {
+            std::memset(in.pAddrVirY + static_cast<size_t>(stride_) * height_, 0x10,
+                        static_cast<size_t>(stride_) * (alloc_height_ - height_));
+            std::memset(in.pAddrVirC + static_cast<size_t>(stride_) * (height_ / 2), 0x80,
+                        static_cast<size_t>(stride_) * (alloc_height_ - height_) / 2);
+        }
         in.nPts = static_cast<long long>(frame.pts_us);
         FlushCacheAllocInputBuffer(enc_, &in);
 
@@ -480,6 +496,7 @@ private:
     uint32_t height_ = 0;
     uint32_t fps_ = 0;
     uint32_t stride_ = 0;
+    uint32_t alloc_height_ = 0;  // height_ rounded up to 16 (VE reads whole rows)
     VideoCodec codec_ = VideoCodec::H264;
     bool initialized_ = false;
     std::atomic<bool> running_{false};
