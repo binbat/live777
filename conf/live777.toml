@@ -279,7 +279,9 @@ ice_udp_addrs = ["auto"]
 # backend = "cedar"
 # codec = "h264"
 # bitrate = 2000000
-# profile = "42001f"        # cedar encodes exactly this profile/level
+# profile = "640028"        # High@4.0 — the cedar VE only produces a valid
+#                           # H.264 stream in High profile (Baseline/Main
+#                           # decode as green/gray); the level is honored.
 # gop = 60
 # [stream.sunxi-cam.sources.output]
 # payload_type = 96

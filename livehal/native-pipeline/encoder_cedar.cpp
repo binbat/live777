@@ -226,14 +226,16 @@ public:
     }
 
     // Configure the H.264 encoder parameters. Must run BEFORE VideoEncInit:
-    // cedar snapshots them into SPS/PPS at init time. Honours the configured
-    // profile/level (parsed from the profile-level-id hex on the Rust side)
-    // so the bitstream matches the advertised SDP; defaults to High/L5.1.
+    // cedar snapshots them into SPS/PPS at init time.
+    //
+    // Profile: the cedar VE on A733 only produces a valid stream in High
+    // profile. With Main/Baseline the emitted SPS and the actual slices
+    // diverge (decoder conceals: green/gray picture) — verified on-device
+    // across Baseline/Main/High x L3.1/L4.0/L5.1 (only High works). The
+    // Rust config layer rejects non-High profiles for cedar, and we force
+    // High here as well so the wire always matches the advertised SDP.
+    // Level is honored (any of 3.1/4.0/5.1 verified).
     bool setup_h264(const EncoderConfig& cfg, std::string* err) {
-        VENC_H264PROFILETYPE profile = VENC_H264ProfileHigh;
-        if (cfg.profile_idc == 66 || cfg.profile_idc == 77 || cfg.profile_idc == 100) {
-            profile = static_cast<VENC_H264PROFILETYPE>(cfg.profile_idc);
-        }
         int level = VENC_H264Level51;
         if (cfg.level_idc >= 10 && cfg.level_idc <= 62) {
             level = static_cast<int>(cfg.level_idc);
@@ -245,9 +247,8 @@ public:
         h264.nBitrate = static_cast<int>(cfg.bitrate);
         h264.nMaxKeyInterval = cfg.gop > 0 ? static_cast<int>(cfg.gop)
                                            : static_cast<int>(cfg.fps);
-        // Baseline profile has no CABAC; Main/High do.
-        h264.bEntropyCodingCABAC = profile == VENC_H264ProfileBaseline ? 0 : 1;
-        h264.sProfileLevel.nProfile = profile;
+        h264.bEntropyCodingCABAC = 1;
+        h264.sProfileLevel.nProfile = VENC_H264ProfileHigh;
         h264.sProfileLevel.nLevel = static_cast<VENC_H264LEVELTYPE>(level);
         h264.sQPRange.nMaxqp = 51;
         h264.sQPRange.nMinqp = 10;

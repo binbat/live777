@@ -298,6 +298,18 @@ impl SourceSpec {
         let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
             "h264" if is_rkmpp || is_cedar => {
                 let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
+                if is_cedar && pidc != 100 {
+                    // The A733 cedar VE emits a stream whose slices do not match
+                    // the SPS for Baseline/Main (decoders conceal to green/gray);
+                    // only High profile produces a valid stream. Verified
+                    // on-device across Baseline/Main/High × L3.1/L4.0/L5.1.
+                    anyhow::bail!(
+                        "encoder backend 'cedar' supports only H.264 High profile \
+                         (e.g. profile = \"640028\"); got '{}' (profile_idc {})",
+                        self.encoder.profile,
+                        pidc
+                    );
+                }
                 (u32::from(pidc), u32::from(lidc), 0u32)
             }
             "h265" | "hevc" => {
@@ -926,7 +938,9 @@ mod tests {
                 backend: "cedar".into(),
                 codec: "h264".into(),
                 bitrate: 2_000_000,
-                profile: "42001f".into(),
+                // The A733 cedar VE only produces a valid H.264 stream in
+                // High profile (see resolve_profile guard); 640028 = High@4.0.
+                profile: "640028".into(),
                 level: None,
                 tier: None,
                 gop: 60,
@@ -1624,11 +1638,23 @@ mod tests {
         assert_eq!(params.capture_pixel_format, 1); // nv12
         assert_eq!(params.encoder_backend, "cedar");
         assert_eq!(params.codec, 100); // h264
-        assert_eq!(params.profile, "42001f");
+        assert_eq!(params.profile, "640028");
         // cedar parses the H.264 profile-level-id into numerics (like rkmpp):
         // the encoder must emit the profile the SDP advertises.
-        assert_eq!(params.profile_idc, 66); // Baseline
-        assert_eq!(params.level_idc, 31); // Level 3.1
+        assert_eq!(params.profile_idc, 100); // High
+        assert_eq!(params.level_idc, 40); // Level 4.0
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_cedar_h264_rejects_non_high_profile() {
+        // The cedar VE only produces a valid H.264 stream in High profile.
+        let mut spec = cedar_spec();
+        spec.encoder.profile = "42001f".into(); // Baseline
+        assert!(spec.validate().is_err());
+        let mut spec = cedar_spec();
+        spec.encoder.profile = "4d0028".into(); // Main
+        assert!(spec.validate().is_err());
     }
 
     #[test]

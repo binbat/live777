@@ -414,7 +414,7 @@ cargo build --bin live777 --release \
 
 全志 cedar/ISP SDK 是设备专属闭源二进制、没有公开 apt 源。交叉编译时把从设备抽取的 sysroot（`include/` 头文件 + `lib/` 的 `libvencoder.so`、`libVE.so`、`libAWIspApi.so` 等）bake 进 cross 镜像 `/opt/sunxi-sysroot`（`docker/Dockerfile.cross-aarch64-sunxi`），或设置 `SUNXI_SYSROOT` 指向该目录由 cross 挂载。运行 `just sunxi-cross-build` 即可。目标机上还需 `sudo modprobe vin_v4l2`（Trixie 不自动加载 VIN 驱动）。也可以直接在设备上原生构建：SDK 头文件在 `/usr/include/vencoder.h`、库在多架构 lib 目录时，`cargo build --features native-sunxi` 无需 `SUNXI_SYSROOT` 即可编译出真实编码器。
 
-cedar 编码器支持 `codec = "h264"`（默认，所有浏览器可解，推荐用于 WHEP 观看）和 `codec = "h265"`（`profile = "main"`，可选 `level = "3.0"`–`"5.1"`，默认 `"4.0"`）。H.265 在同画质下约省一半码率，但浏览器解码 WebRTC HEVC 需要硬件支持（无软件回退），因此建议用于录像、RTSP/RTP target、级联链路而非浏览器播放。H.264 的 `profile` 必须是 6 位 profile-level-id 十六进制串（与 rkmpp 一致），cedar VE 会严格按该 profile/level 出流，保证 SDP 与码流始终一致。
+cedar 编码器支持 `codec = "h264"`（默认，所有浏览器可解，推荐用于 WHEP 观看）和 `codec = "h265"`（`profile = "main"`，可选 `level = "3.0"`–`"5.1"`，默认 `"4.0"`）。H.265 在同画质下约省一半码率，但浏览器解码 WebRTC HEVC 需要硬件支持（无软件回退），因此建议用于录像、RTSP/RTP target、级联链路而非浏览器播放。H.264 的 `profile` 必须是 6 位 profile-level-id 十六进制串（与 rkmpp 一致），且**只接受 High profile**（如 `"640028"` = High Level 4.0）：A733 的 cedar VE 在 Baseline/Main 下出的流与自身 SPS 不一致，解码会是绿/灰画面。十六进制串里的 level 会被如实采用。
 
 > **注意：** 当前为「先能用」阶段：CPU 拷贝 NV12 输入（不支持 DMA-BUF 零拷贝）、不做 4K 调优。cedar 的 IDR 帧本身不含参数集，编码器已在每个关键帧前注入 SPS/PPS（H.265 另有 VPS），保证 WHEP 订阅者随时可解码。
 
