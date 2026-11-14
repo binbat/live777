@@ -172,6 +172,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RPI_SYSROOT");
     println!("cargo:rerun-if-env-changed=RDK_SYSROOT");
     println!("cargo:rerun-if-env-changed=RKMPP_SYSROOT");
+    println!("cargo:rerun-if-env-changed=SUNXI_SYSROOT");
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
@@ -180,6 +181,7 @@ fn main() {
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
     let has_encoder_rdk = env::var("CARGO_FEATURE_ENCODER_RDK").is_ok();
     let has_encoder_rkmpp = env::var("CARGO_FEATURE_ENCODER_RKMPP").is_ok();
+    let has_encoder_cedar = env::var("CARGO_FEATURE_ENCODER_CEDAR").is_ok();
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -193,6 +195,7 @@ fn main() {
             || has_encoder_v4l2_m2m
             || has_encoder_rdk
             || has_encoder_rkmpp
+            || has_encoder_cedar
         {
             println!(
                 "cargo:warning=native backend requires Linux (current: {target_os}); \
@@ -222,6 +225,15 @@ fn main() {
         );
     }
 
+    // Allwinner cedar VE (A733 / sun60iw2) userspace SDK is aarch64-only too.
+    let cedar_available = has_encoder_cedar && target_arch == "aarch64";
+    if has_encoder_cedar && !cedar_available {
+        println!(
+            "cargo:warning=encoder-cedar requires aarch64 (current: {target_arch}); \
+             falling back to generic-v4l2."
+        );
+    }
+
     // Target triplet for sysroot pkg-config paths.
     let target_triplet = match target_arch.as_str() {
         "aarch64" => "aarch64-linux-gnu",
@@ -241,7 +253,7 @@ fn main() {
     // have no standalone pipeline.  Use a native-* preset or enable a
     // capture-* feature alongside the encoder.
     if !has_capture_libcamera && !has_capture_v4l2 {
-        if has_encoder_v4l2_m2m || has_encoder_rdk || has_encoder_rkmpp {
+        if has_encoder_v4l2_m2m || has_encoder_rdk || has_encoder_rkmpp || has_encoder_cedar {
             println!(
                 "cargo:warning=encoder feature(s) enabled without any capture-* feature; \
                  CMake build skipped."
@@ -273,11 +285,19 @@ fn main() {
                  encoder-rkmpp will be ignored for this build"
             );
         }
+        if has_encoder_cedar {
+            println!(
+                "cargo:warning=capture-libcamera and encoder-cedar are incompatible; \
+                 encoder-cedar will be ignored for this build"
+            );
+        }
         "rpi".to_string()
     } else if has_encoder_rdk && rdk_available {
         "rdk-x5".to_string()
     } else if has_encoder_rkmpp && rkmpp_available {
         "rkmpp".to_string()
+    } else if has_encoder_cedar && cedar_available {
+        "sunxi".to_string()
     } else if has_capture_v4l2 || has_encoder_v4l2_m2m {
         "generic-v4l2".to_string()
     } else {
@@ -301,6 +321,11 @@ fn main() {
     }
     if has_encoder_rkmpp {
         println!("cargo:rerun-if-changed=native-pipeline/encoder_rkmpp.cpp");
+    }
+    if has_encoder_cedar {
+        println!("cargo:rerun-if-changed=native-pipeline/encoder_cedar.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/sunxi_isp.cpp");
+        println!("cargo:rerun-if-changed=native-pipeline/include/sunxi_isp.h");
     }
     if has_capture_v4l2 && rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture_rdk.cpp");
@@ -385,6 +410,21 @@ fn main() {
                 libcamera_linked = true;
             }
         }
+    } else if native_backend == "sunxi" {
+        // Allwinner cedar VE + AWIspApi sysroot is a flat directory:
+        //   {SUNXI_SYSROOT}/include  (AWIspApi.h, vencoder.h, ...)
+        //   {SUNXI_SYSROOT}/lib      (libvencoder.so, libVE.so, libAWIspApi.so, ...)
+        if let Ok(sysroot) = env::var("SUNXI_SYSROOT") {
+            let sysroot = PathBuf::from(sysroot);
+            println!(
+                "cargo:rustc-link-search=native={}",
+                sysroot.join("lib").display()
+            );
+        } else if Path::new("/usr/include/vencoder.h").exists() {
+            // Native on-device build: the cedar SDK is installed system-wide
+            // (headers in /usr/include, libraries in the multiarch lib dir).
+            println!("cargo:rustc-link-search=native=/usr/lib/{target_triplet}");
+        }
     }
 
     // Build the C++ bridge library using CMake
@@ -413,6 +453,11 @@ fn main() {
     {
         cmake_config.define("RKMPP_SYSROOT", sysroot);
     }
+    if native_backend == "sunxi"
+        && let Ok(sysroot) = env::var("SUNXI_SYSROOT")
+    {
+        cmake_config.define("SUNXI_SYSROOT", sysroot);
+    }
 
     match native_backend.as_str() {
         "rpi" => {
@@ -432,6 +477,8 @@ fn main() {
             );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
             cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
+            cmake_config.define("ENABLE_ENCODER_CEDAR", "OFF");
+            cmake_config.define("ENABLE_BACKEND_SUNXI", "OFF");
         }
         "rdk-x5" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -453,6 +500,8 @@ fn main() {
                 if rdk_available { "ON" } else { "OFF" },
             );
             cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
+            cmake_config.define("ENABLE_ENCODER_CEDAR", "OFF");
+            cmake_config.define("ENABLE_BACKEND_SUNXI", "OFF");
         }
         "generic-v4l2" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -468,6 +517,8 @@ fn main() {
             );
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
             cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
+            cmake_config.define("ENABLE_ENCODER_CEDAR", "OFF");
+            cmake_config.define("ENABLE_BACKEND_SUNXI", "OFF");
         }
         "rkmpp" => {
             cmake_config.define("ENABLE_BACKEND_PI", "OFF");
@@ -480,10 +531,26 @@ fn main() {
             cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
             cmake_config.define("ENABLE_ENCODER_RKMPP", "ON");
+            cmake_config.define("ENABLE_ENCODER_CEDAR", "OFF");
+            cmake_config.define("ENABLE_BACKEND_SUNXI", "OFF");
+        }
+        "sunxi" => {
+            cmake_config.define("ENABLE_BACKEND_PI", "OFF");
+            cmake_config.define("ENABLE_BACKEND_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_BACKEND_SUNXI", "ON");
+            cmake_config.define("ENABLE_CAPTURE_LIBCAMERA", "OFF");
+            cmake_config.define(
+                "ENABLE_CAPTURE_V4L2",
+                if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
+            cmake_config.define("ENABLE_ENCODER_RKMPP", "OFF");
+            cmake_config.define("ENABLE_ENCODER_CEDAR", "ON");
         }
         other => panic!(
             "unsupported native backend '{other}'. \
-             Expected 'rpi', 'rdk-x5', 'rkmpp', or 'generic-v4l2'"
+             Expected 'rpi', 'rdk-x5', 'rkmpp', 'sunxi', or 'generic-v4l2'"
         ),
     }
 
@@ -534,6 +601,27 @@ fn main() {
         // Rockchip MPP: prefer RKMPP_SYSROOT for cross-compilation,
         // otherwise assumes system-installed rockchip_mpp (e.g. Orange Pi).
         println!("cargo:rustc-link-lib=dylib=rockchip_mpp");
+    } else if native_backend == "sunxi" {
+        // cedar VE userspace libraries for the real encoder_cedar.cpp (only
+        // compiled when the SDK headers are available, see CMake).
+        // AWIspApi is intentionally NOT linked: sunxi_isp.cpp dlopen()s it at
+        // runtime. Link when a sysroot is present (cross builds) or when the
+        // SDK is installed system-wide (native on-device builds), so a no-SDK
+        // stub build still links cleanly.
+        let system_sdk =
+            env::var("SUNXI_SYSROOT").is_err() && Path::new("/usr/include/vencoder.h").exists();
+        if env::var("SUNXI_SYSROOT").is_ok() || system_sdk {
+            for lib in [
+                "vencoder",
+                "VE",
+                "venc_codec",
+                "cdc_base",
+                "venc_base",
+                "MemAdapter",
+            ] {
+                println!("cargo:rustc-link-lib=dylib={lib}");
+            }
+        }
     } else if has_capture_libcamera && !libcamera_linked {
         println!("cargo:rustc-link-lib=dylib=camera");
         println!("cargo:rustc-link-lib=dylib=camera-base");

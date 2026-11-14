@@ -16,7 +16,9 @@
 // shorter than sizeimage (truncated write — the MIPI CRC pattern observed
 // on RV1126B).  Small shortfalls are tolerated because some drivers report
 // bytesused excluding padding rows; want == 0 means the driver did not
-// populate sizeimage, so nothing can be validated.
+// populate sizeimage, so nothing can be validated.  Callers should first
+// reconcile `want` with the delivered size when the driver under-reports
+// sizeimage (see the over-delivery adoption in v4l2_capture.cpp).
 inline bool plane_malformed(uint32_t got, uint32_t want) {
     if (want == 0) return false;
     if (got == 0 || got > want) return true;

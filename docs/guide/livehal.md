@@ -49,7 +49,7 @@ Architecture and build guide for the libcamera / V4L2 / RDK X5 native capture-an
 - All FFI details are crate-private in `livehal`; `liveion` only sees `EncodedPacket` through the channel.
 - **RTP path for native sources**: `EncodedPacket` → webrtc-rs `H264Payloader` / `Packetizer` → `MediaPacket::RtpPacket(Arc<Packet>)` → `track.inject_rtp`.  This avoids the `Packet` → bytes → `Packet::unmarshal` roundtrip that other sources use.
 - `MediaPacket::Rtp { data }` bytes path is still used by `rtp_listener` / `rtsp_source` / `sdp_source`.
-- **DMA-BUF zero-copy**: implemented for generic V4L2 → RKMPP and for Raspberry Pi (libcamera / generic V4L2 → V4L2 M2M).  With `prefer_dmabuf = true` on both capture and encoder, the capture hands each frame's DMA-BUF to the encoder and the encoder queues it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between dequeue and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails (or the frame layout does not match what the encoder can import) the pipeline falls back to the CPU-copy path.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
+- **DMA-BUF zero-copy**: implemented for generic V4L2 → RKMPP, for Raspberry Pi (libcamera / generic V4L2 → V4L2 M2M), and for Allwinner A733 (V4L2 NV12M → cedar VE).  With `prefer_dmabuf = true` on both capture and encoder, the capture hands each frame's DMA-BUF to the encoder and the encoder queues it directly — no CPU copy of the frame.  Buffer ownership is explicit: the capture buffer is owned by the encoder between dequeue and the frame's encode completion, and is requeued only after the hardware has finished reading it (a deferred-requeue release contract, so the camera can never overwrite a buffer mid-encode).  If export or import fails (or the frame layout does not match what the encoder can import) the pipeline falls back to the CPU-copy path.  The cedar backend maps each of the two NV12M planes into the VE's IOVA space once per capture buffer (`VideoEncoderGetVeIommuAddr`); the SDK's `nShareBufFd` shortcut is deliberately not used because it derives the chroma address from the luma address assuming one contiguous dma-buf, while VIN exports the planes as two separate dma-bufs.  The RDK backend does not implement DMA-BUF import yet (`encoder_rdk.cpp` rejects `BufferKind::DmaBuf`); there everything is still copied through the CPU path.
 
 ## Config
 
@@ -304,7 +304,7 @@ internals.
 | Layer | Value |
 |-------|-------|
 | `capture.backend` | `"libcamera"`, `"v4l2"` |
-| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"` |
+| `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, `"cedar"` |
 
 ### pixel_format values
 
@@ -346,6 +346,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `encoder-v4l2-m2m` | V4L2 Memory-to-Memory hardware encoder |
 | `encoder-rdk` | Horizon RDK X5 hardware encoder |
 | `encoder-rkmpp` | Rockchip MPP hardware encoder (aarch64 only) |
+| `encoder-cedar` | Allwinner cedar VE hardware encoder (aarch64 only, A733 / sun60iw2) |
 
 ### Platform presets
 
@@ -355,6 +356,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `native-generic-v4l2` | `capture-v4l2, encoder-v4l2-m2m` |
 | `native-rdk` | `capture-v4l2, encoder-rdk` |
 | `native-rkmpp` | `capture-v4l2, encoder-rkmpp` |
+| `native-cedar` | `capture-v4l2, encoder-cedar` (Allwinner A733; also compiles AWIspApi ISP hooks into the V4L2 capture path) |
 
 No additional `--features source` is needed — presets include autostart.
 
@@ -442,6 +444,24 @@ Requires the Rockchip MPP library (`librockchip_mpp`) and headers. Set `RKMPP_SY
 
 The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`, an aarch64 cross image with the MPP sysroot baked in at `/opt/rkmpp-sysroot` (built from `docker/Dockerfile.cross-aarch64-rkmpp`). Point cross at it via `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE`, or use `just rkmpp-pack-size`; `RKMPP_SYSROOT` overrides the baked sysroot with one pulled from a device.
 
+### Allwinner A733 (Orange Pi Zero 3W, sun60iw2)
+
+```bash
+cargo build --bin live777 --release \
+  --target aarch64-unknown-linux-gnu \
+  --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
+```
+
+Capture uses standard V4L2 (IMX219 CSI, negotiated as `NV12M` 2-plane); encoding uses the Allwinner cedar VE (`libvencoder`). The Allwinner VIN pipeline requires its userspace ISP (`AWIspApi`) to be started before streaming — `native-cedar` compiles that lifecycle into the V4L2 capture path via `ENABLE_BACKEND_SUNXI` (`sunxi_isp.cpp`, `dlopen`s `libAWIspApi.so` at runtime). **Do NOT run `media-ctl` link/format commands**: the pipeline is preconfigured by the device tree, and forcing it causes `isp0 width error` / no frames. Note the ISP attach is compile-time and unconditional: in a `native-cedar` build every `v4l2` capture source drives `AWIspApi`, so non-ISP V4L2 devices (e.g. USB cameras) cannot be captured by that binary — build with `native-generic-v4l2` for those.
+
+The cedar/ISP SDK is device-specific, closed-source, and has no public apt source. For cross builds, bake a sysroot extracted from the device (`include/` headers + `lib/` with `libvencoder.so`, `libVE.so`, `libAWIspApi.so`, ...) into the cross image at `/opt/sunxi-sysroot` (`docker/Dockerfile.cross-aarch64-sunxi`), or set `SUNXI_SYSROOT` to that directory and let cross mount it. Use `just cedar-cross-build`. On the device, run `sudo modprobe vin_v4l2` first (Trixie does not auto-load the VIN driver). A native build directly on the device also works: with the SDK headers at `/usr/include/vencoder.h` and the libraries in the multiarch lib dir, `cargo build --features native-cedar` compiles the real encoder without `SUNXI_SYSROOT`.
+
+The cedar encoder accepts `codec = "h264"` (default; decodable in every browser, recommended for WHEP viewing) and `codec = "h265"` (`profile = "main"`, optional `level = "3.0"`–`"5.1"` default `"4.0"`). H.265 roughly halves the bitrate at the same quality, but browsers only decode WebRTC HEVC with hardware support (no software fallback), so prefer it for recording, RTSP/RTP targets and cascade links rather than browser playback. For H.264, `profile` must be a 6-character profile-level-id hex string (same as rkmpp) and **only High profile is accepted** (e.g. `"640028"` = High Level 4.0): the A733 cedar VE's Baseline/Main output does not match its own SPS and decodes as a green/gray picture. The level inside the hex is honored.
+
+> **Note:** no 4K tuning yet (the IMX219/ISP pipeline on this board is device-tree locked at 1920x1080@30 anyway). cedar IDR frames do not carry parameter sets, so the encoder prepends SPS/PPS (plus VPS for H.265) to every keyframe to keep WHEP subscribers decodable at any join point. DMA-BUF zero-copy is supported: set `prefer_dmabuf = true` on both capture and encoder.
+>
+> **Board identification pitfall:** the vendor Trixie image is shared across sun60iw2 boards — its device tree identifies as `xunlong,orangepi-4-pro` even on the Zero 3W, so do not trust the DT model string for the board name (check RAM/storage instead: the entry Zero 3W has 1 GB and SD-only storage).
+
 ### macOS (development / check only)
 
 ```bash
@@ -458,6 +478,7 @@ cargo check --features native-rpi,webui
 | `RPI_SYSROOT` | Optional Raspberry Pi sysroot with `libcamera-dev`; overrides the sysroot baked into the RPi cross image. |
 | `RDK_SYSROOT` | Path to the Horizon RDK X5 SDK sysroot. **Required** when building `encoder-rdk` / `native-rdk` for aarch64. |
 | `RKMPP_SYSROOT` | Path to a sysroot containing the Rockchip MPP library and headers. Used when building `encoder-rkmpp` / `native-rkmpp` for aarch64. |
+| `SUNXI_SYSROOT` | Allwinner cedar/ISP SDK sysroot (`include/` + `lib/`, extracted from the device). Provides headers and libraries when building `encoder-cedar` / `native-cedar` for aarch64; can also be baked into the cross image. |
 | `LIVEHAL_CXX_STDLIB` | Override the C++ standard library to link (`stdc++`, `c++`, etc.). Useful for cross-compilation toolchains. |
 | `LIVEHAL_RDK_ALLOW_UNDEFINED` | Set to `1` to allow unresolved symbols in RDK shared libraries during cross-compilation with an incomplete sysroot. |
 
@@ -470,11 +491,12 @@ The CMake backend is inferred from the enabled capture/encoder features:
 | `capture-libcamera` | `rpi` | `ENABLE_BACKEND_PI`, `ENABLE_CAPTURE_LIBCAMERA`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 | `encoder-rdk` on aarch64 | `rdk-x5` | `ENABLE_BACKEND_RDK_X5`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RDK_X5` |
 | `encoder-rkmpp` on aarch64 | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
+| `encoder-cedar` on aarch64 | `sunxi` | `ENABLE_BACKEND_SUNXI`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_CEDAR` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
 
 When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
 
-`capture-libcamera` is mutually exclusive with `encoder-rdk` and `encoder-rkmpp`. If enabled together, the encoder feature is ignored with a build warning and the `rpi` (libcamera) backend is selected.
+`capture-libcamera` is mutually exclusive with `encoder-rdk`, `encoder-rkmpp`, and `encoder-cedar`. If enabled together, the encoder feature is ignored with a build warning and the `rpi` (libcamera) backend is selected.
 
 ## Config examples
 
@@ -588,6 +610,36 @@ prefer_dmabuf = true      # DMA-BUF zero-copy (encoder side)
 payload_type = 96
 clock_rate = 90000
 ```
+
+### Allwinner A733 (Orange Pi Zero 3W / IMX219 CSI + cedar VE)
+
+```toml
+[stream.sunxi-cam]
+[[stream.sunxi-cam.sources]]
+
+[stream.sunxi-cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 640
+height = 480
+fps = 30
+pixel_format = "nv12"     # negotiates NV12M (2-plane MPLANE)
+prefer_dmabuf = true      # zero-copy: export VIN buffers as dma-bufs
+
+[stream.sunxi-cam.sources.encoder]
+backend = "cedar"
+codec = "h264"
+bitrate = 2_000_000
+profile = "640028"        # cedar H.264 requires High profile (see above)
+prefer_dmabuf = true      # zero-copy: feed the VE via dma-buf IOVA mapping
+gop = 60
+
+[stream.sunxi-cam.sources.output]
+payload_type = 96
+clock_rate = 90000
+```
+
+Run `sudo modprobe vin_v4l2` first. The Allwinner ISP is initialised automatically by the capture path; do not configure media-ctl links manually. With `prefer_dmabuf = true` on both sides the cedar backend runs zero-copy (per-plane dma-buf → VE IOVA mapping, cached per capture buffer); if the export or mapping fails it falls back to the CPU-copy path.
 
 `prefer_dmabuf` must be set on **both** sides for the zero-copy path — see
 [Zero-copy (DMA-BUF)](#zero-copy-dma-buf) for the semantics and platform

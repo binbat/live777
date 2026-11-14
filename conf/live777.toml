@@ -249,6 +249,70 @@ ice_udp_addrs = ["auto"]
 # [stream.rdk-cam.sources.output]
 # payload_type = 96
 # clock_rate = 90000
+#
+# Allwinner A733 (Orange Pi Zero 3W) CSI camera (IMX219) + cedar VE encoder.
+# Requires the device-side AWIspApi/cedar SDK at runtime (libAWIspApi.so via
+# dlopen, libvencoder.so et al. linked) and `sudo modprobe vin_v4l2` first
+# (Trixie does not auto-load the VIN driver). The Allwinner ISP (AWIspApi) is
+# initialised automatically by the capture path — do NOT run media-ctl link/
+# format commands, the device tree preconfigures the pipeline.
+#   cross build --bin live777 --release --target aarch64-unknown-linux-gnu \
+#     --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
+# (or `just cedar-cross-build`; on the device itself a plain
+# `cargo build --features native-cedar` picks up the system-installed SDK)
+#
+# codec = "h264" is the WebRTC-compatible default (all browsers). The cedar VE
+# also does H.265: codec = "h265", profile = "main" (optional level = "4.0");
+# note H.265 over WHEP only plays in browsers with hardware HEVC decode, so
+# prefer it for recording / RTSP / cascade targets rather than browser viewing.
+#
+# prefer_dmabuf = true on both capture and encoder enables the zero-copy
+# path: VIN NV12M buffers are exported as dma-bufs and mapped once per buffer
+# into the VE's IOVA space, so frames flow capture->encoder without a CPU
+# memcpy (the two planes are separate dma-bufs; the cedar backend maps each
+# explicitly — the SDK's nShareBufFd shortcut assumes a single contiguous
+# buffer and must not be used).
+#
+# [stream.sunxi-cam]
+# [[stream.sunxi-cam.sources]]
+# [stream.sunxi-cam.sources.capture]
+# backend = "v4l2"
+# device = "/dev/video0"
+# width = 640
+# height = 480
+# fps = 30
+# pixel_format = "nv12"     # negotiates NV12M (2-plane MPLANE)
+# prefer_dmabuf = true      # zero-copy: export VIN buffers as dma-bufs
+# [stream.sunxi-cam.sources.encoder]
+# backend = "cedar"
+# codec = "h264"
+# bitrate = 2000000
+# prefer_dmabuf = true      # zero-copy: feed the VE via dma-buf IOVA mapping
+# profile = "640028"        # High@4.0 — the cedar VE only produces a valid
+#                           # H.264 stream in High profile (Baseline/Main
+#                           # decode as green/gray); the level is honored.
+# gop = 60
+# [stream.sunxi-cam.sources.output]
+# payload_type = 96
+# clock_rate = 90000
+#
+# Quality tiers (applied at runtime with
+# `POST /api/sources/sunxi-cam/tier {"tier":"<name>"}`).  The IMX219/ISP
+# pipeline on this board is device-tree locked at 1920x1080@30: the VIN ISP
+# output caps at 1920x1080 (larger requests are clamped and the encoder
+# follows the negotiated size), and the vendor sensor driver tops out at
+# 30 fps.  cedar H.265 encodes 1080p30 fine; keep encoder heights a multiple
+# of 16 in mind (1080 handled internally).
+#
+# [[stream.sunxi-cam.sources.tiers]]
+# name = "maxres"
+# capture = { width = 1920, height = 1080, fps = 30 }
+# encoder = { bitrate = 20_000_000 }
+#
+# [[stream.sunxi-cam.sources.tiers]]
+# name = "maxfps"
+# capture = { width = 1280, height = 720, fps = 30 }
+# encoder = { bitrate = 20_000_000 }
 
 [recorder]
 # Stream name patterns for auto-recording, supports wildcards

@@ -13,6 +13,13 @@
 # point to a Raspberry Pi sysroot copied from a target device; cross mounts it
 # into the container at the same path and livehal/build.rs reads it to configure
 # pkg-config and linker paths.
+#
+# Allwinner A733 / sun60iw2 (Orange Pi Zero 3W) native-cedar builds override
+# the image with CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE pointing to a
+# sunxi builder that has the cedar VE (libvencoder) + AWIspApi SDK baked at
+# /opt/sunxi-sysroot. For local builds, SUNXI_SYSROOT can point to a sysroot
+# pulled from the device (headers + .so); cross mounts it and livehal/build.rs
+# reads it for the cedar/ISP library search path and headers.
 
 [target.aarch64-unknown-linux-gnu]
 # The default aarch64 image stays generic. Rockchip RKMPP (RK3588, RV1126B)
@@ -27,7 +34,7 @@
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
 
 [target.aarch64-unknown-linux-gnu.env]
-volumes = ["RPI_SYSROOT", "RKMPP_SYSROOT"]
+volumes = ["RPI_SYSROOT", "RKMPP_SYSROOT", "SUNXI_SYSROOT"]
 
 [target.armv7-unknown-linux-gnueabihf]
 image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:main"

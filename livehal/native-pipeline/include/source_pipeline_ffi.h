@@ -37,7 +37,7 @@ typedef struct {
 } CaptureConfigFFI;
 
 typedef struct {
-    const char* backend;     // "v4l2-m2m", "rdk", or "rkmpp"
+    const char* backend;     // "v4l2-m2m", "rdk", "rkmpp", or "cedar"
     uint32_t codec;          // VideoCodec enum value
     uint32_t width;
     uint32_t height;

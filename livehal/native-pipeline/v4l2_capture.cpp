@@ -2,6 +2,10 @@
 #include "include/latency_stats.h"
 #include "include/v4l2_capture_integrity.h"
 
+#if defined(ENABLE_BACKEND_SUNXI)
+#include "include/sunxi_isp.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -11,6 +15,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <sys/ioctl.h>
@@ -51,7 +56,14 @@ std::vector<uint32_t> requested_fourccs(RawPixelFormat format) {
     case RawPixelFormat::Yuyv422:
         return {V4L2_PIX_FMT_YUYV};
     case RawPixelFormat::Nv12:
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN accepts only the multi-planar NV12M (2 planes). The
+        // contiguous single-plane NV12 makes vin_pipeline_try_format() reject
+        // S_FMT with EINVAL. The gst en-awisp reference path uses NV12M too.
+        return {V4L2_PIX_FMT_NV12M};
+#else
         return {V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_NV12M};
+#endif
     case RawPixelFormat::Yuv420p:
         return {V4L2_PIX_FMT_YUV420, V4L2_PIX_FMT_YUV420M};
     case RawPixelFormat::Rgb888:
@@ -106,6 +118,13 @@ struct V4L2CaptureImpl : public CaptureBackend {
     std::vector<uint8_t> nv12_buf;
     std::thread capture_thread;
 
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Allwinner VIN needs its userspace ISP running around STREAMON/STREAMOFF.
+    // Created in init(), ispStart() in start() before STREAMON, torn down in
+    // release_resources() after STREAMOFF.
+    std::unique_ptr<SunxiIspController> isp_;
+#endif
+
     // [latency] "capture" stage: driver timestamp (SOF) → DQBUF in userspace.
     LatencyStats dqbuf_stats_{"capture"};
     bool ts_domain_logged_ = false;
@@ -117,13 +136,28 @@ struct V4L2CaptureImpl : public CaptureBackend {
     void stop() override;
     bool isRunning() const override;
     RawPixelFormat outputFormat() const override;
+    // After S_FMT the members hold the driver-negotiated size (VIN clamps
+    // out-of-range requests to its ISP output limit).
+    std::pair<uint32_t, uint32_t> negotiatedSize() const override {
+        return {width, height};
+    }
     // Single-plane contiguous formats arm the deferred-requeue contract on
-    // every frame; multi-plane (NV12M/YUV420M) and converted formats stay
-    // on the CPU path, so they must not switch the encoder to dmabuf mode.
+    // every frame; converted formats stay on the CPU path, so they must not
+    // switch the encoder to dmabuf mode.
     bool emitsDmabufFrames() const override {
-        return prefer_dmabuf
-            && (pixel_format == V4L2_PIX_FMT_NV12
-                || pixel_format == V4L2_PIX_FMT_YUV420);
+        if (pixel_format == V4L2_PIX_FMT_NV12
+            || pixel_format == V4L2_PIX_FMT_YUV420) {
+            return prefer_dmabuf;
+        }
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN negotiates only NV12M. The cedar encoder imports the
+        // two planes via per-plane dma-buf → VE-IOVA translation, so the
+        // multi-plane layout arms the contract here too.
+        if (pixel_format == V4L2_PIX_FMT_NV12M) {
+            return prefer_dmabuf;
+        }
+#endif
+        return false;
     }
 
     void capture_loop();
@@ -321,11 +355,25 @@ bool V4L2CaptureImpl::make_frame(
         }
         for (uint32_t plane = 0; plane < 2; ++plane) {
             const size_t used = std::min(bytes_used(plane), available_bytes(plane));
+            uint32_t stride = plane_strides[plane] ? plane_strides[plane] : width;
+#if defined(ENABLE_BACKEND_SUNXI)
+            // Allwinner VIN reports the NV12M chroma plane bytesperline as
+            // width/2 (e.g. 320 for 640x480), but the buffer actually holds
+            // standard interleaved UV at width bytes per line. Trusting the
+            // driver value makes consumers read overlapping rows and corrupts
+            // chroma (a fully green image after H.264 encode/decode). Only
+            // clamp an under-reported stride UP to the NV12 minimum; a
+            // legitimately padded stride (> width) must be kept.
+            if (plane == 1 && stride < width) stride = width;
+#endif
             frame->planes[plane] = {
                 static_cast<const uint8_t*>(mapped.planes[plane].start)
                     + data_offset(plane),
-                plane_strides[plane] ? plane_strides[plane] : width,
-                static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
+                stride, static_cast<uint32_t>(used), mapped.planes[plane].dma_fd,
+                // Keep the plane's byte offset within its own dma-buf so a
+                // zero-copy consumer can reconstruct the hardware address
+                // (the data pointer above already includes it).
+                static_cast<uint32_t>(data_offset(plane))};
         }
         return true;
     }
@@ -533,19 +581,46 @@ void V4L2CaptureImpl::capture_loop() {
         uint32_t bad_plane = 0, bad_got = 0, bad_want = 0;
         if (is_mplane_type(buffer_type)) {
             for (uint32_t i = 0; i < memory_plane_count; ++i) {
-                if (plane_malformed(planes[i].bytesused,
-                                    plane_sizeimages[i])) {
+                uint32_t want = plane_sizeimages[i];
+                const uint32_t got = planes[i].bytesused;
+                if (want != 0 && got > want) {
+                    // The driver under-reported sizeimage at S_FMT (e.g.
+                    // Allwinner VIN negotiates 1920x1080 but delivers
+                    // 16-row-aligned 1088-tall planes).  The extra rows are
+                    // padding our consumers never read, so learn the real
+                    // size instead of flagging every frame as malformed.
+                    fprintf(stderr,
+                            "[V4L2Capture] driver under-reported plane%u "
+                            "sizeimage (%u < %u delivered); adopting the "
+                            "delivered size\n",
+                            i, want, got);
+                    plane_sizeimages[i] = got;
+                    want = got;
+                }
+                if (plane_malformed(got, want)) {
                     bad = true;
                     bad_plane = i;
-                    bad_got = planes[i].bytesused;
-                    bad_want = plane_sizeimages[i];
+                    bad_got = got;
+                    bad_want = want;
                     break;
                 }
             }
-        } else if (plane_malformed(buf.bytesused, plane_sizeimages[0])) {
-            bad = true;
-            bad_got = buf.bytesused;
-            bad_want = plane_sizeimages[0];
+        } else {
+            uint32_t want = plane_sizeimages[0];
+            const uint32_t got = buf.bytesused;
+            if (want != 0 && got > want) {
+                fprintf(stderr,
+                        "[V4L2Capture] driver under-reported sizeimage "
+                        "(%u < %u delivered); adopting the delivered size\n",
+                        want, got);
+                plane_sizeimages[0] = got;
+                want = got;
+            }
+            if (plane_malformed(got, want)) {
+                bad = true;
+                bad_got = got;
+                bad_want = want;
+            }
         }
         if (bad) {
             const bool fatal = bad_window_.on_bad_frame(dqbuf_now_us);
@@ -614,6 +689,20 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
+#if defined(ENABLE_BACKEND_SUNXI)
+    // The Allwinner VIN pipeline needs its input selected before format
+    // negotiation; the gst en-awisp path issues S_INPUT(0) first.
+    {
+        v4l2_input input{};
+        input.index = 0;
+        if (ioctl(fd, VIDIOC_S_INPUT, &input) < 0 && errno != ENOTTY) {
+            if (err) *err = std::string("S_INPUT failed: ") + strerror(errno);
+            release_resources();
+            return false;
+        }
+    }
+#endif
+
     v4l2_capability cap{};
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
         if (err) *err = std::string("QUERYCAP failed: ") + strerror(errno);
@@ -644,6 +733,16 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         fmt.fmt.pix_mp.height = height;
         fmt.fmt.pix_mp.pixelformat = pixel_format;
         fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+#if defined(ENABLE_BACKEND_SUNXI)
+        // Allwinner VIN requires the plane layout to be spelled out on S_FMT;
+        // a zeroed num_planes/plane_fmt makes vin_pipeline_try_format() fail.
+        // Mirrors the gst en-awisp S_FMT (num_planes=2, bytesperline=width).
+        if (pixel_format == V4L2_PIX_FMT_NV12M) {
+            fmt.fmt.pix_mp.num_planes = 2;
+            fmt.fmt.pix_mp.plane_fmt[0].bytesperline = width;
+            fmt.fmt.pix_mp.plane_fmt[1].bytesperline = width;
+        }
+#endif
     } else {
         fmt.fmt.pix.width = width;
         fmt.fmt.pix.height = height;
@@ -713,11 +812,28 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
     }
     parm = {};
     parm.type = buffer_type;
+    uint32_t driver_fps = 0;
     if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0
         && parm.parm.capture.timeperframe.numerator != 0) {
-        fps = parm.parm.capture.timeperframe.denominator
+        driver_fps = parm.parm.capture.timeperframe.denominator
               / parm.parm.capture.timeperframe.numerator;
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Allwinner VIN's G_PARM does not reflect the real sensor rate (it reads
+    // back 1 fps while the sensor streams at its mode default, e.g. 25 fps).
+    // Keep the configured fps and surface the driver value separately instead
+    // of letting the bogus readback clobber it.
+    if (driver_fps != 0 && driver_fps != fps) {
+        fprintf(stderr,
+                "[V4L2Capture] note: driver reports %u fps, requested %u fps; "
+                "the sunxi sensor mode governs the delivered rate\n",
+                driver_fps, fps);
+    }
+#else
+    if (driver_fps != 0) {
+        fps = driver_fps;
+    }
+#endif
 
     char actual[5];
     fprintf(stderr,
@@ -806,6 +922,17 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         }
         buffers.push_back(std::move(mapped));
     }
+
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Initialise the Allwinner ISP library after the V4L2 device is fully set
+    // up (CreateAWIspApi/ispApiInit/ispGetIspId). ispStart() is deferred to
+    // start(), right before STREAMON. No media-ctl links are touched.
+    isp_ = std::make_unique<SunxiIspController>();
+    if (!isp_->init(cfg.device, err)) {
+        release_resources();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -825,6 +952,16 @@ bool V4L2CaptureImpl::start(CaptureFrameCallback cb, std::string* err) {
     for (uint32_t index = 0; index < buffers.size(); ++index) {
         if (!queue_buffer(index, err)) return false;
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // ispStart() MUST run before VIDIOC_STREAMON: it starts the ISP server
+    // thread that drives the private subdev ioctls / 3A event loop. Buffers
+    // are already queued at this point; on failure the pipeline's stop() path
+    // (release_resources) tears the ISP down again. The configured fps is
+    // forwarded to the ISP so its 3A loop tracks the requested rate.
+    if (isp_ && !isp_->start(fps, err)) {
+        return false;
+    }
+#endif
     if (ioctl(fd, VIDIOC_STREAMON, &buffer_type) < 0) {
         if (err) *err = std::string("STREAMON failed: ") + strerror(errno);
         return false;
@@ -849,6 +986,14 @@ void V4L2CaptureImpl::release_resources() {
             streaming = false;
         }
     }
+#if defined(ENABLE_BACKEND_SUNXI)
+    // Tear down the ISP AFTER STREAMOFF (ispStop/ispWaitToExit/ispApiUnInit).
+    // Guarded by a null check because init() failure paths also call
+    // release_resources() before isp_ is created. stop() is idempotent.
+    if (isp_) {
+        isp_->stop();
+    }
+#endif
     for (Buffer& buffer : buffers) {
         for (MappedPlane& plane : buffer.planes) {
             if (plane.start && plane.start != MAP_FAILED) {

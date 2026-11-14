@@ -23,10 +23,12 @@ mod utils;
     "encoder-v4l2-m2m",
     "encoder-rdk",
     "encoder-rkmpp",
+    "encoder-cedar",
     "native-rpi",
     "native-generic-v4l2",
     "native-rdk",
     "native-rkmpp",
+    "native-cedar",
 ))]
 struct Args {
     /// Verbose mode [default: "warn", -v "info", -vv "debug", -vvv "trace"]

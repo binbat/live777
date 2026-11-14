@@ -176,6 +176,19 @@ rpi-pack-size:
     CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE={{rpi_cross_image}} \
         just cross-pack-size aarch64-unknown-linux-gnu native-rpi,webui,target-rtp,target-rtsp
 
+# Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): cedar VE encoder + AWIspApi ISP
+# hooks. The closed-source SDK cannot be published in an image, so this recipe
+# requires SUNXI_SYSROOT pointing to a device-extracted sysroot (include/ +
+# lib/), which cross mounts via Cross.toml volumes. To use a baked image
+# instead, build docker/Dockerfile.cross-aarch64-sunxi and set
+# CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE to it.
+[group('embedded')]
+cedar-cross-build:
+    test -n "${SUNXI_SYSROOT:?set SUNXI_SYSROOT to a device-extracted cedar/ISP sysroot (see AGENTS.md)}" && \
+        cross build --target aarch64-unknown-linux-gnu \
+        --bin live777 --release \
+        --no-default-features --features native-cedar,webui,target-rtp,target-rtsp
+
 # RDK X5 (native-rdk: V4L2 capture, RDK BPU encoder)
 [group('embedded')]
 rdk-pack-size:

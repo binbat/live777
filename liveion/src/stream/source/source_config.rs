@@ -75,7 +75,7 @@ pub struct CaptureSpec {
 /// Encoder specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncoderSpec {
-    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, or `"rkmpp"`.
+    /// Encoder backend: `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, or `"cedar"`.
     pub backend: String,
     /// Video codec: `"h264"` or `"h265"`.
     pub codec: String,
@@ -275,6 +275,7 @@ impl SourceSpec {
     fn resolve_profile(&self) -> anyhow::Result<(u32, u32, u32, String)> {
         let codec_str = self.encoder.codec.to_ascii_lowercase();
         let is_rkmpp = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
+        let is_cedar = self.encoder.backend.eq_ignore_ascii_case("cedar");
 
         if is_rkmpp && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
             anyhow::bail!(
@@ -282,14 +283,33 @@ impl SourceSpec {
                 self.encoder.codec
             );
         }
+        if is_cedar && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
+            anyhow::bail!(
+                "encoder backend 'cedar' supports only h264 and h265, got '{}'",
+                self.encoder.codec
+            );
+        }
 
         // Resolve profile_idc / level_idc / tier_flag per codec.
         // Rust is the sole parsing layer; C++ receives numeric values directly.
-        // rkmpp passes them to the encoder; every backend needs the H.265
-        // numerics for the SDP fmtp line.
+        // rkmpp passes them to the encoder; cedar does too (the cedar VE
+        // profile/level enums share the profile_idc/level_idc numbering), and
+        // every backend needs the H.265 numerics for the SDP fmtp line.
         let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
-            "h264" if is_rkmpp => {
+            "h264" if is_rkmpp || is_cedar => {
                 let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
+                if is_cedar && pidc != 100 {
+                    // The A733 cedar VE emits a stream whose slices do not match
+                    // the SPS for Baseline/Main (decoders conceal to green/gray);
+                    // only High profile produces a valid stream. Verified
+                    // on-device across Baseline/Main/High × L3.1/L4.0/L5.1.
+                    anyhow::bail!(
+                        "encoder backend 'cedar' supports only H.264 High profile \
+                         (e.g. profile = \"640028\"); got '{}' (profile_idc {})",
+                        self.encoder.profile,
+                        pidc
+                    );
+                }
                 (u32::from(pidc), u32::from(lidc), 0u32)
             }
             "h265" | "hevc" => {
@@ -458,9 +478,13 @@ impl SourceSpec {
         }
 
         let encoder_backend = self.encoder.backend.to_lowercase();
-        if encoder_backend != "v4l2-m2m" && encoder_backend != "rdk" && encoder_backend != "rkmpp" {
+        if encoder_backend != "v4l2-m2m"
+            && encoder_backend != "rdk"
+            && encoder_backend != "rkmpp"
+            && encoder_backend != "cedar"
+        {
             anyhow::bail!(
-                "encoder.backend must be 'v4l2-m2m', 'rdk', or 'rkmpp', got '{}'",
+                "encoder.backend must be 'v4l2-m2m', 'rdk', 'rkmpp', or 'cedar', got '{}'",
                 self.encoder.backend
             );
         }
@@ -896,6 +920,39 @@ mod tests {
         }
     }
 
+    fn cedar_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "sunxi-cam".into(),
+            capture: CaptureSpec {
+                backend: "v4l2".into(),
+                device: Some("/dev/video0".into()),
+                width: 640,
+                height: 480,
+                fps: 30,
+                pixel_format: "nv12".into(), // negotiates NV12M (2-plane MPLANE)
+                prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
+            },
+            encoder: EncoderSpec {
+                backend: "cedar".into(),
+                codec: "h264".into(),
+                bitrate: 2_000_000,
+                // The A733 cedar VE only produces a valid H.264 stream in
+                // High profile (see resolve_profile guard); 640028 = High@4.0.
+                profile: "640028".into(),
+                level: None,
+                tier: None,
+                gop: 60,
+                bitrate_mode: None,
+                prefer_dmabuf: false,
+                adaptive: None,
+            },
+            output: OutputSpec::default(),
+            tiers: vec![],
+        }
+    }
+
     fn rkmpp_h265_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "rk-h265".into(),
@@ -937,6 +994,18 @@ mod tests {
     #[test]
     fn test_source_spec_validate_libcamera_ok() {
         assert!(libcamera_spec().validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_cedar_ok() {
+        assert!(cedar_spec().validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_unknown_encoder_backend_rejected() {
+        let mut spec = cedar_spec();
+        spec.encoder.backend = "nonexistent".into();
+        assert!(spec.validate().is_err());
     }
 
     #[test]
@@ -1171,12 +1240,15 @@ mod tests {
     #[test]
     fn test_adaptive_toml_forms() {
         // Untagged key: bool switch, inline knobs, and absent all parse.
+        // The fragments are the contents of a `[encoder]` table, so the
+        // wrapper struct expects that table header.
         #[derive(Deserialize)]
         struct W {
             encoder: EncoderSpec,
         }
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1192,6 +1264,7 @@ mod tests {
 
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1209,6 +1282,7 @@ mod tests {
 
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1553,6 +1627,59 @@ mod tests {
         assert_eq!(params.encoder_backend, "v4l2-m2m");
         assert_eq!(params.codec, 100); // h264
         assert_eq!(params.profile, "42001f");
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_cedar() {
+        let params = cedar_spec().to_native_params().unwrap();
+        assert_eq!(params.capture_backend, "v4l2");
+        assert_eq!(params.capture_device, "/dev/video0");
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.encoder_backend, "cedar");
+        assert_eq!(params.codec, 100); // h264
+        assert_eq!(params.profile, "640028");
+        // cedar parses the H.264 profile-level-id into numerics (like rkmpp):
+        // the encoder must emit the profile the SDP advertises.
+        assert_eq!(params.profile_idc, 100); // High
+        assert_eq!(params.level_idc, 40); // Level 4.0
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_cedar_h264_rejects_non_high_profile() {
+        // The cedar VE only produces a valid H.264 stream in High profile.
+        let mut spec = cedar_spec();
+        spec.encoder.profile = "42001f".into(); // Baseline
+        assert!(spec.validate().is_err());
+        let mut spec = cedar_spec();
+        spec.encoder.profile = "4d0028".into(); // Main
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_cedar_h265() {
+        let mut spec = cedar_spec();
+        spec.encoder.codec = "h265".into();
+        spec.encoder.profile = "main".into();
+        spec.encoder.level = Some("4.0".into());
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.encoder_backend, "cedar");
+        assert_eq!(params.codec, 101); // h265
+        // H.265 numerics feed both the cedar encoder and the SDP fmtp line.
+        assert_eq!(params.profile_idc, 1); // Main
+        assert_eq!(params.level_idc, 120); // Level 4.0
+        assert_eq!(params.tier_flag, 0);
+        assert!(params.profile.is_empty()); // no H.264-style profile-level-id
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_cedar_rejects_unsupported_codec() {
+        let mut spec = cedar_spec();
+        spec.encoder.codec = "vp9".into();
+        assert!(spec.validate().is_err());
     }
 
     #[test]

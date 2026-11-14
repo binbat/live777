@@ -50,6 +50,14 @@ jobs:
         run: cargo llvm-cov nextest --profile ci --workspace --features source-all,webui,net4mqtt,recorder,cascade,rsmpeg,whepwright,rtsp,target-whip,target-rtp,target-rtsp --lcov --output-path lcov.info
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
+      - name: Run native-source unit tests
+        # The coverage run above uses the portable feature set, so tests gated
+        # on native-source (e.g. stream::source::source_config) are compiled
+        # by the build job's --all-features pass but never executed anywhere.
+        # Run them explicitly with the generic V4L2 preset, which gives livehal
+        # a linkable native pipeline on x86_64 Linux.
+        if: runner.os == 'Linux'
+        run: cargo nextest run --profile ci -p liveion --lib --features native-generic-v4l2
       - name: Upload coverage to codecov.io
         uses: codecov/codecov-action@v6
         with:

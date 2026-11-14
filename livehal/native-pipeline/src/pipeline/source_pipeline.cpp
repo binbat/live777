@@ -66,6 +66,20 @@ public:
         // NV12, passes UYVY through unchanged, and libcamera always
         // delivers YUV420P regardless of the configured pixel_format.
         encoder_cfg.input_format = capture_->outputFormat();
+        // Same for the frame size: the driver may clamp the requested
+        // geometry to its supported range (e.g. Allwinner VIN caps the ISP
+        // output at 1920x1080).  The encoder must match what the capture
+        // actually delivers — a mismatch would fail every submit.
+        if (const auto [w, h] = capture_->negotiatedSize();
+            w != 0 && h != 0
+            && (w != encoder_cfg.width || h != encoder_cfg.height)) {
+            fprintf(stderr,
+                    "[SourcePipeline] capture negotiated %ux%u (requested %ux%u); "
+                    "sizing the encoder to match\n",
+                    w, h, encoder_cfg.width, encoder_cfg.height);
+            encoder_cfg.width = w;
+            encoder_cfg.height = h;
+        }
         // Zero-copy needs both sides: the user opts in via prefer_dmabuf on
         // capture and encoder, and the capture backend must actually arm
         // the deferred-requeue dmabuf contract on its frames.

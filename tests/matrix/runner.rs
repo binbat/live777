@@ -1187,7 +1187,10 @@ where
 /// Wait until a stream has no live publish session left: the WHIP target's
 /// push is torn down when the upstream media goes away, so the downstream
 /// publisher must disappear within the poll budget.
-#[cfg(any(feature = "target-whip", feature = "target-rtsp"))]
+#[cfg(any(
+    feature = "target-whip",
+    all(feature = "target-rtsp", feature = "rtsp")
+))]
 async fn wait_for_no_live_publish(api_addr: &SocketAddr, stream_id: &str) {
     for attempt in 0..300 {
         let res = reqwest::get(format!("http://{api_addr}{}", api::path::streams("")))

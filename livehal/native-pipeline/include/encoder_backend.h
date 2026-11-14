@@ -31,7 +31,7 @@ enum EncodedFlags : uint32_t {
 // Encoder configuration
 // ---------------------------------------------------------------------------
 struct EncoderConfig {
-    std::string backend;  // "v4l2-m2m", "rdk", or "rkmpp"
+    std::string backend;  // "v4l2-m2m", "rdk", "rkmpp", or "cedar"
     VideoCodec codec;     // H264 or H265
     RawPixelFormat input_format = RawPixelFormat::Yuv420p;
     uint32_t width;
@@ -129,6 +129,7 @@ public:
 std::shared_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
 std::shared_ptr<EncoderBackend> create_rdk_x5_encoder_backend(const EncoderConfig& cfg);
 std::shared_ptr<EncoderBackend> create_rkmpp_encoder_backend(const EncoderConfig& cfg);
+std::shared_ptr<EncoderBackend> create_cedar_encoder_backend(const EncoderConfig& cfg);
 
 /// Dispatcher: selects the right backend based on cfg.backend.
 /// Defined exactly once in src/pipeline/backend_factory.cpp.
