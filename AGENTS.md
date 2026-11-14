@@ -193,7 +193,7 @@ device-pulled sysroot when developing locally:
   `RPI_SYSROOT`.
 - RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
   `AGENTS.md` "Security Considerations").
-- Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): no published image (the cedar
+- Allwinner A733 / sun60iw2 (Orange Pi 4 Pro): no published image (the cedar
   SDK is device-only); set `SUNXI_SYSROOT` to a device-extracted sysroot, build
   the `docker/Dockerfile.cross-aarch64-sunxi` image from it, or build natively
   on the device (the system-installed SDK is auto-detected via
@@ -441,8 +441,8 @@ clients via Link headers).
   (`stream/source/adaptive_bitrate.rs`) retunes the running encoder from
   WHEP subscriber RTCP feedback (sampled by
   `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
-  support (`EncoderBackend::setBitrate` in livehal — rkmpp and v4l2-m2m
-  today). Two admin surfaces sit on top, deliberately separate:
+  support (`EncoderBackend::setBitrate` in livehal — rkmpp, v4l2-m2m and
+  cedar today). Two admin surfaces sit on top, deliberately separate:
   `GET /api/sources/{stream}/bitrate` is read-only encoder telemetry
   (drive mode `adaptive`/`fixed` plus the current rate), while
   `GET`/`POST /api/sources/{stream}/tier` is the control surface — a

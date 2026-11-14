@@ -402,7 +402,7 @@ cargo build --bin live777 --release \
 
 Cross Images 工作流会发布 `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`，这是一个内置 MPP sysroot（位于 `/opt/rkmpp-sysroot`，由 `docker/Dockerfile.cross-aarch64-rkmpp` 构建）的 aarch64 交叉编译镜像。通过 `CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE` 指定给 cross 使用，或直接运行 `just rkmpp-pack-size`；设置 `RKMPP_SYSROOT` 可改用从设备拉取的 sysroot。
 
-### 全志 A733（Orange Pi Zero 3W，sun60iw2）
+### 全志 A733（Orange Pi 4 Pro，sun60iw2）
 
 ```bash
 cargo build --bin live777 --release \
@@ -410,7 +410,7 @@ cargo build --bin live777 --release \
   --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
 ```
 
-采集走标准 V4L2（IMX219 CSI，协商为 `NV12M` 2-plane），编码走全志 cedar VE（`libvencoder`）。全志 VIN 管线需要用户态 ISP（`AWIspApi`）在开流前启动，`native-sunxi` 已把这段生命周期通过 `ENABLE_BACKEND_SUNXI` 编译进 V4L2 采集路径（`sunxi_isp.cpp`，运行时 `dlopen` 加载 `libAWIspApi.so`）——**不要手动执行 `media-ctl` 配置链路/格式**，链路是设备树预配置的，强行设置会导致 `isp0 width error`、无法出帧。
+采集走标准 V4L2（IMX219 CSI，协商为 `NV12M` 2-plane），编码走全志 cedar VE（`libvencoder`）。全志 VIN 管线需要用户态 ISP（`AWIspApi`）在开流前启动，`native-sunxi` 已把这段生命周期通过 `ENABLE_BACKEND_SUNXI` 编译进 V4L2 采集路径（`sunxi_isp.cpp`，运行时 `dlopen` 加载 `libAWIspApi.so`）——**不要手动执行 `media-ctl` 配置链路/格式**，链路是设备树预配置的，强行设置会导致 `isp0 width error`、无法出帧。注意 ISP 挂载是编译期决定且无条件的：`native-sunxi` 构建里每个 `v4l2` 采集源都会驱动 `AWIspApi`，因此该二进制无法采集非 ISP 的 V4L2 设备（如 USB 摄像头），这类设备请用 `native-generic-v4l2` 构建。
 
 全志 cedar/ISP SDK 是设备专属闭源二进制、没有公开 apt 源。交叉编译时把从设备抽取的 sysroot（`include/` 头文件 + `lib/` 的 `libvencoder.so`、`libVE.so`、`libAWIspApi.so` 等）bake 进 cross 镜像 `/opt/sunxi-sysroot`（`docker/Dockerfile.cross-aarch64-sunxi`），或设置 `SUNXI_SYSROOT` 指向该目录由 cross 挂载。运行 `just sunxi-cross-build` 即可。目标机上还需 `sudo modprobe vin_v4l2`（Trixie 不自动加载 VIN 驱动）。也可以直接在设备上原生构建：SDK 头文件在 `/usr/include/vencoder.h`、库在多架构 lib 目录时，`cargo build --features native-sunxi` 无需 `SUNXI_SYSROOT` 即可编译出真实编码器。
 
@@ -567,7 +567,7 @@ payload_type = 96
 clock_rate = 90000
 ```
 
-### 全志 A733（Orange Pi Zero 3W / IMX219 CSI + cedar VE）
+### 全志 A733（Orange Pi 4 Pro / IMX219 CSI + cedar VE）
 
 ```toml
 [stream.sunxi-cam]

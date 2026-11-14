@@ -1,4 +1,4 @@
-# Cross-compilation image for the Allwinner A733 / sun60iw2 (Orange Pi Zero 3W)
+# Cross-compilation image for the Allwinner A733 / sun60iw2 (Orange Pi 4 Pro)
 # `native-sunxi` build: cedar VE (libvencoder) + AWIspApi ISP SDK.
 #
 # Unlike the Raspberry Pi image, the cedar/ISP SDK is closed-source and ships

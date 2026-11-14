@@ -116,7 +116,7 @@ native-generic-v4l2 = ["capture-v4l2", "encoder-v4l2-m2m"]
 native-rdk = ["capture-v4l2", "encoder-rdk"]
 # native-rkmpp: Rockchip MPP boards (RK3588, RV1126B, etc.) — V4L2 capture + MPP encoder.
 native-rkmpp = ["capture-v4l2", "encoder-rkmpp"]
-# native-sunxi: Allwinner A733 (Orange Pi Zero 3W) — V4L2 capture + cedar VE encoder.
+# native-sunxi: Allwinner A733 (Orange Pi 4 Pro) — V4L2 capture + cedar VE encoder.
 native-sunxi = ["capture-v4l2", "encoder-cedar"]
 
 [dev-dependencies]

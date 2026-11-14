@@ -250,7 +250,7 @@ ice_udp_addrs = ["auto"]
 # payload_type = 96
 # clock_rate = 90000
 #
-# Allwinner A733 (Orange Pi Zero 3W) CSI camera (IMX219) + cedar VE encoder.
+# Allwinner A733 (Orange Pi 4 Pro) CSI camera (IMX219) + cedar VE encoder.
 # Requires the device-side AWIspApi/cedar SDK at runtime (libAWIspApi.so via
 # dlopen, libvencoder.so et al. linked) and `sudo modprobe vin_v4l2` first
 # (Trixie does not auto-load the VIN driver). The Allwinner ISP (AWIspApi) is
