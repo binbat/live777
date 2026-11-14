@@ -449,14 +449,16 @@ The Cross Images workflow publishes `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:l
 ```bash
 cargo build --bin live777 --release \
   --target aarch64-unknown-linux-gnu \
-  --no-default-features --features native-sunxi,webui
+  --no-default-features --features native-sunxi,webui,target-rtp,target-rtsp
 ```
 
 Capture uses standard V4L2 (IMX219 CSI, negotiated as `NV12M` 2-plane); encoding uses the Allwinner cedar VE (`libvencoder`). The Allwinner VIN pipeline requires its userspace ISP (`AWIspApi`) to be started before streaming — `native-sunxi` compiles that lifecycle into the V4L2 capture path via `ENABLE_BACKEND_SUNXI` (`sunxi_isp.cpp`, `dlopen`s `libAWIspApi.so` at runtime). **Do NOT run `media-ctl` link/format commands**: the pipeline is preconfigured by the device tree, and forcing it causes `isp0 width error` / no frames.
 
-The cedar/ISP SDK is device-specific, closed-source, and has no public apt source. For cross builds, bake a sysroot extracted from the device (`include/` headers + `lib/` with `libvencoder.so`, `libVE.so`, `libAWIspApi.so`, ...) into the cross image at `/opt/sunxi-sysroot` (`docker/Dockerfile.cross-aarch64-sunxi`), or set `SUNXI_SYSROOT` to that directory and let cross mount it. Use `just sunxi-cross-build`. On the device, run `sudo modprobe vin_v4l2` first (Trixie does not auto-load the VIN driver).
+The cedar/ISP SDK is device-specific, closed-source, and has no public apt source. For cross builds, bake a sysroot extracted from the device (`include/` headers + `lib/` with `libvencoder.so`, `libVE.so`, `libAWIspApi.so`, ...) into the cross image at `/opt/sunxi-sysroot` (`docker/Dockerfile.cross-aarch64-sunxi`), or set `SUNXI_SYSROOT` to that directory and let cross mount it. Use `just sunxi-cross-build`. On the device, run `sudo modprobe vin_v4l2` first (Trixie does not auto-load the VIN driver). A native build directly on the device also works: with the SDK headers at `/usr/include/vencoder.h` and the libraries in the multiarch lib dir, `cargo build --features native-sunxi` compiles the real encoder without `SUNXI_SYSROOT`.
 
-> **Note:** This is the "make it work first" stage: H.264 only, CPU-copied NV12 input (no DMA-BUF zero-copy), no 4K / adaptive-bitrate tuning. cedar IDR frames do not carry SPS/PPS, so the encoder prepends parameter sets to every keyframe to keep WHEP subscribers decodable at any join point.
+The cedar encoder accepts `codec = "h264"` (default; decodable in every browser, recommended for WHEP viewing) and `codec = "h265"` (`profile = "main"`, optional `level = "3.0"`–`"5.1"` default `"4.0"`). H.265 roughly halves the bitrate at the same quality, but browsers only decode WebRTC HEVC with hardware support (no software fallback), so prefer it for recording, RTSP/RTP targets and cascade links rather than browser playback. For H.264, `profile` must be a 6-character profile-level-id hex string (same as rkmpp) and the cedar VE is configured to emit exactly that profile/level, so the SDP and the wire always match.
+
+> **Note:** "make it work first" stage: CPU-copied NV12 input (no DMA-BUF zero-copy), no 4K tuning. cedar IDR frames do not carry parameter sets, so the encoder prepends SPS/PPS (plus VPS for H.265) to every keyframe to keep WHEP subscribers decodable at any join point.
 
 ### macOS (development / check only)
 

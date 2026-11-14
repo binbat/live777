@@ -166,9 +166,10 @@ Key feature groups defined in the root `Cargo.toml`:
   built on the `libs/rtsp` client shared with whepfrom).
 - `native-source`  — required base for capture/encoder features.
 - `capture-libcamera`, `capture-v4l2` — video capture backends.
-- `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp` — encoder backends.
+- `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar` — encoder
+  backends (cedar = Allwinner VE, e.g. A733/sun60iw2; H.264 + H.265).
 - Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
-  `native-rkmpp`.
+  `native-rkmpp`, `native-sunxi`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
@@ -188,6 +189,11 @@ device-pulled sysroot when developing locally:
   `RPI_SYSROOT`.
 - RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
   `AGENTS.md` "Security Considerations").
+- Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): no published image (the cedar
+  SDK is device-only); set `SUNXI_SYSROOT` to a device-extracted sysroot, build
+  the `docker/Dockerfile.cross-aarch64-sunxi` image from it, or build natively
+  on the device (the system-installed SDK is auto-detected via
+  `/usr/include/vencoder.h`). Recipe: `just sunxi-cross-build`.
 
 Example:
 
@@ -204,8 +210,8 @@ CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64
   --no-default-features --features native-rkmpp,webui
 ```
 
-`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT` to
-configure `pkg-config` and linker paths.
+`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT`/
+`SUNXI_SYSROOT` to configure `pkg-config` and linker paths.
 
 ### Static musl diagnostics
 
