@@ -43,8 +43,11 @@
 
 namespace {
 
+#if defined(SUNXI_HAS_CEDAR_SDK)
 // ---------------------------------------------------------------------------
-// H.264 Annex-B NAL flags (shared logic with encoder_rdk.cpp:53-98).
+// H.264 Annex-B NAL flags (shared logic with encoder_rdk.cpp:53-98). Only the
+// real SDK build uses these; keeping them inside the ifdef avoids unused-
+// function warnings in the stub build.
 // ---------------------------------------------------------------------------
 bool is_annex_b_start_code(const uint8_t* data, size_t pos, size_t len,
                             size_t* start_len) {
@@ -106,7 +109,6 @@ uint32_t detect_h265_flags(const uint8_t* data, size_t len) {
     return flags;
 }
 
-#if defined(SUNXI_HAS_CEDAR_SDK)
 // Copy one NV12 plane row-by-row, tolerating a capture stride that differs
 // from the encoder's 16-aligned stride.
 void copy_plane(uint8_t* dst, uint32_t dst_stride, const uint8_t* src,
@@ -493,6 +495,11 @@ private:
         const int fd_c = frame.planes[1].dma_fd;
         if (zc.fd_y != fd_y || zc.fd_c != fd_c) {
             zc_unmap(zc);
+            // Record the fds BEFORE mapping so the failure path's zc_unmap
+            // releases whichever plane mapped successfully (e.g. Y mapped but
+            // C failed) instead of leaking its IOVA.
+            zc.fd_y = fd_y;
+            zc.fd_c = fd_c;
             user_iommu_param map{};
             map.fd = fd_y;
             VideoEncoderGetVeIommuAddr(enc_, &map);
@@ -509,8 +516,6 @@ private:
                 zc_unmap(zc);
                 return false;
             }
-            zc.fd_y = fd_y;
-            zc.fd_c = fd_c;
             std::fprintf(stderr,
                          "[CedarEncoder] zero-copy: mapped buf %u planes "
                          "(fd %d->%#x, fd %d->%#x)\n",

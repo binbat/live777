@@ -361,13 +361,19 @@ bool V4L2CaptureImpl::make_frame(
             // width/2 (e.g. 320 for 640x480), but the buffer actually holds
             // standard interleaved UV at width bytes per line. Trusting the
             // driver value makes consumers read overlapping rows and corrupts
-            // chroma (a fully green image after H.264 encode/decode).
-            if (plane == 1) stride = width;
+            // chroma (a fully green image after H.264 encode/decode). Only
+            // clamp an under-reported stride UP to the NV12 minimum; a
+            // legitimately padded stride (> width) must be kept.
+            if (plane == 1 && stride < width) stride = width;
 #endif
             frame->planes[plane] = {
                 static_cast<const uint8_t*>(mapped.planes[plane].start)
                     + data_offset(plane),
-                stride, static_cast<uint32_t>(used), mapped.planes[plane].dma_fd, 0};
+                stride, static_cast<uint32_t>(used), mapped.planes[plane].dma_fd,
+                // Keep the plane's byte offset within its own dma-buf so a
+                // zero-copy consumer can reconstruct the hardware address
+                // (the data pointer above already includes it).
+                static_cast<uint32_t>(data_offset(plane))};
         }
         return true;
     }
