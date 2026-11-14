@@ -275,6 +275,7 @@ impl SourceSpec {
     fn resolve_profile(&self) -> anyhow::Result<(u32, u32, u32, String)> {
         let codec_str = self.encoder.codec.to_ascii_lowercase();
         let is_rkmpp = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
+        let is_cedar = self.encoder.backend.eq_ignore_ascii_case("cedar");
 
         if is_rkmpp && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
             anyhow::bail!(
@@ -282,13 +283,20 @@ impl SourceSpec {
                 self.encoder.codec
             );
         }
+        if is_cedar && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
+            anyhow::bail!(
+                "encoder backend 'cedar' supports only h264 and h265, got '{}'",
+                self.encoder.codec
+            );
+        }
 
         // Resolve profile_idc / level_idc / tier_flag per codec.
         // Rust is the sole parsing layer; C++ receives numeric values directly.
-        // rkmpp passes them to the encoder; every backend needs the H.265
-        // numerics for the SDP fmtp line.
+        // rkmpp passes them to the encoder; cedar does too (the cedar VE
+        // profile/level enums share the profile_idc/level_idc numbering), and
+        // every backend needs the H.265 numerics for the SDP fmtp line.
         let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
-            "h264" if is_rkmpp => {
+            "h264" if is_rkmpp || is_cedar => {
                 let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
                 (u32::from(pidc), u32::from(lidc), 0u32)
             }
@@ -1218,12 +1226,15 @@ mod tests {
     #[test]
     fn test_adaptive_toml_forms() {
         // Untagged key: bool switch, inline knobs, and absent all parse.
+        // The fragments are the contents of a `[encoder]` table, so the
+        // wrapper struct expects that table header.
         #[derive(Deserialize)]
         struct W {
             encoder: EncoderSpec,
         }
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1239,6 +1250,7 @@ mod tests {
 
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1256,6 +1268,7 @@ mod tests {
 
         let w: W = toml::from_str(
             r#"
+            [encoder]
             backend = "rkmpp"
             codec = "h264"
             bitrate = 4000000
@@ -1612,9 +1625,35 @@ mod tests {
         assert_eq!(params.encoder_backend, "cedar");
         assert_eq!(params.codec, 100); // h264
         assert_eq!(params.profile, "42001f");
-        // cedar uses the default (non-rkmpp) profile path — numeric fields unused.
-        assert_eq!(params.profile_idc, 0);
-        assert_eq!(params.level_idc, 0);
+        // cedar parses the H.264 profile-level-id into numerics (like rkmpp):
+        // the encoder must emit the profile the SDP advertises.
+        assert_eq!(params.profile_idc, 66); // Baseline
+        assert_eq!(params.level_idc, 31); // Level 3.1
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_cedar_h265() {
+        let mut spec = cedar_spec();
+        spec.encoder.codec = "h265".into();
+        spec.encoder.profile = "main".into();
+        spec.encoder.level = Some("4.0".into());
+        let params = spec.to_native_params().unwrap();
+        assert_eq!(params.encoder_backend, "cedar");
+        assert_eq!(params.codec, 101); // h265
+        // H.265 numerics feed both the cedar encoder and the SDP fmtp line.
+        assert_eq!(params.profile_idc, 1); // Main
+        assert_eq!(params.level_idc, 120); // Level 4.0
+        assert_eq!(params.tier_flag, 0);
+        assert!(params.profile.is_empty()); // no H.264-style profile-level-id
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_cedar_rejects_unsupported_codec() {
+        let mut spec = cedar_spec();
+        spec.encoder.codec = "vp9".into();
+        assert!(spec.validate().is_err());
     }
 
     #[test]

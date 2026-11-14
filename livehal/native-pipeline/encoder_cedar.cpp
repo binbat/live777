@@ -1,13 +1,13 @@
-//! Allwinner cedar VE hardware H.264 encoder backend (A733 / sun60iw2).
+//! Allwinner cedar VE hardware video encoder backend (A733 / sun60iw2).
 //!
 //! Uses the closed-source libvencoder.so C API. CPU-copy NV12 input path only
-//! (no DMA-BUF zero-copy yet; "make it work first").
+//! (no DMA-BUF zero-copy yet; "make it work first"). Supports H.264 and H.265.
 //!
 //! The real SDK implementation is compiled only when SUNXI_HAS_CEDAR_SDK is
-//! defined by CMake (i.e. SUNXI_SYSROOT supplies vencoder.h). Without the SDK
+//! defined by CMake (i.e. SUNXI_SYSROOT supplies vencoder.h, or the SDK is
+//! installed in the system include/lib paths on-device). Without the SDK
 //! headers this translation unit falls back to a self-contained stub, so the
-//! skeleton still builds on any Linux host (CI / no-sysroot checks). Phase 4
-//! cross builds and the device always define the macro.
+//! skeleton still builds on any host (CI / no-sysroot checks).
 //!
 //! Per-frame flow (synchronous, mirrors encoder_rdk.cpp):
 //!   GetOneAllocInputBuffer -> copy Y/UV -> FlushCacheAllocInputBuffer ->
@@ -73,6 +73,30 @@ uint32_t detect_h264_flags(const uint8_t* data, size_t len) {
     return flags;
 }
 
+// H.265 Annex-B: NAL type is (byte >> 1) & 0x3F. IDR_W_RADL/IDR_N_LP = 19/20,
+// VPS/SPS/PPS = 32/33/34.
+uint32_t detect_h265_flags(const uint8_t* data, size_t len) {
+    uint32_t flags = 0;
+    size_t pos = 0;
+    while (pos < len) {
+        size_t start_len = 0;
+        if (!is_annex_b_start_code(data, pos, len, &start_len)) {
+            ++pos;
+            continue;
+        }
+        const size_t nal_start = pos + start_len;
+        if (nal_start >= len) break;
+        const uint8_t nal_type = (data[nal_start] >> 1) & 0x3F;
+        if (nal_type == 19 || nal_type == 20) {
+            flags |= static_cast<uint32_t>(EncodedKeyframe);
+        } else if (nal_type >= 32 && nal_type <= 34) {
+            flags |= static_cast<uint32_t>(EncodedConfig);
+        }
+        pos = nal_start;
+    }
+    return flags;
+}
+
 #if defined(SUNXI_HAS_CEDAR_SDK)
 // Copy one NV12 plane row-by-row, tolerating a capture stride that differs
 // from the encoder's 16-aligned stride.
@@ -95,8 +119,8 @@ public:
         codec_ = cfg.codec;
         stride_ = (width_ + 15u) & ~15u;
 
-        if (codec_ != VideoCodec::H264) {
-            if (err) *err = "cedar backend currently supports H.264 only";
+        if (codec_ != VideoCodec::H264 && codec_ != VideoCodec::H265) {
+            if (err) *err = "cedar backend supports H.264 and H.265 only";
             return false;
         }
         if (cfg.input_format != RawPixelFormat::Nv12) {
@@ -104,42 +128,35 @@ public:
             return false;
         }
         if ((width_ & 1u) || (height_ & 1u)) {
-            if (err) *err = "cedar H.264 requires even width and height";
+            if (err) *err = "cedar requires even width and height";
             return false;
         }
 
-        enc_ = VideoEncCreate(VENC_CODEC_H264);
+        enc_ = VideoEncCreate(codec_ == VideoCodec::H265 ? VENC_CODEC_H265
+                                                         : VENC_CODEC_H264);
         if (!enc_) {
-            if (err) *err = "cedar: VideoEncCreate(H264) failed";
+            if (err) *err = "cedar: VideoEncCreate failed";
             return false;
         }
 
-        // cedar snapshots the H.264 parameters into SPS/PPS at VideoEncInit()
-        // time. These MUST be set before init: with the zero/default values the
-        // encoder emits a placeholder parameter set that does not match the
-        // actual slices, so decoders fail at the first macroblock and conceal
-        // the picture as green/gray. All-skip (flat) frames happen to decode,
-        // which masks the problem in synthetic tests. Verified on A733: the
-        // resulting out-of-band SPS/PPS (High/L5.1) makes the stream decode
-        // with zero errors.
-        VencH264Param h264{};
-        h264.nFramerate = static_cast<int>(cfg.fps);
-        h264.nSrcFramerate = static_cast<int>(cfg.fps);
-        h264.nBitrate = static_cast<int>(cfg.bitrate);
-        h264.nMaxKeyInterval = cfg.gop > 0 ? static_cast<int>(cfg.gop)
-                                           : static_cast<int>(cfg.fps);
-        h264.bEntropyCodingCABAC = 1;
-        h264.sProfileLevel.nProfile = VENC_H264ProfileHigh;
-        h264.sProfileLevel.nLevel = VENC_H264Level51;
-        h264.sQPRange.nMaxqp = 51;
-        h264.sQPRange.nMinqp = 10;
-        h264.sQPRange.nMaxPqp = 51;
-        h264.sQPRange.nMinPqp = 10;
-        h264.sQPRange.nQpInit = 26;
-        if (VideoEncSetParameter(enc_, VENC_IndexParamH264Param, &h264) != 0) {
-            if (err) *err = "cedar: failed to set H264 params before init";
-            destroy();
-            return false;
+        // cedar snapshots the codec parameters into the SPS/PPS (and VPS for
+        // H.265) at VideoEncInit() time. These MUST be set before init: with
+        // the zero/default values the encoder emits a placeholder parameter
+        // set that does not match the actual slices, so decoders fail at the
+        // first macroblock and conceal the picture as green/gray. All-skip
+        // (flat) frames happen to decode, which masks the problem in
+        // synthetic tests. Verified on A733: a parameter set configured
+        // before init makes the stream decode with zero errors.
+        if (codec_ == VideoCodec::H265) {
+            if (!setup_h265(cfg, err)) {
+                destroy();
+                return false;
+            }
+        } else {
+            if (!setup_h264(cfg, err)) {
+                destroy();
+                return false;
+            }
         }
 
         VencBaseConfig base{};
@@ -180,25 +197,101 @@ public:
             return false;
         }
 
-        // cedar emits SPS/PPS out-of-band and does NOT prepend them to IDR
-        // frames. Cache the Annex-B header and prepend it to every keyframe so
-        // a WHEP subscriber can initialise its decoder at any join point.
+        // cedar emits the parameter sets out-of-band and does NOT prepend
+        // them to IDR frames. Cache the Annex-B header and prepend it to
+        // every keyframe so a WHEP subscriber can initialise its decoder at
+        // any join point. H.264: SPS/PPS; H.265: VPS/SPS/PPS.
+        const VENC_INDEXTYPE header_index =
+            codec_ == VideoCodec::H265 ? VENC_IndexParamH265Header
+                                       : VENC_IndexParamH264SPSPPS;
         VencHeaderData header{};
-        if (VideoEncGetParameter(enc_, VENC_IndexParamH264SPSPPS, &header) == 0
+        if (VideoEncGetParameter(enc_, header_index, &header) == 0
             && header.pBuffer && header.nLength > 0 && header.nLength <= 4096) {
             sps_pps_.assign(header.pBuffer, header.pBuffer + header.nLength);
-            std::fprintf(stderr, "[CedarEncoder] cached SPS/PPS header: %zu bytes\n",
+            std::fprintf(stderr, "[CedarEncoder] cached %s header: %zu bytes\n",
+                         codec_ == VideoCodec::H265 ? "VPS/SPS/PPS" : "SPS/PPS",
                          sps_pps_.size());
         } else {
             std::fprintf(stderr,
-                         "[CedarEncoder] WARNING: could not read SPS/PPS header; "
-                         "in-band keyframes will lack parameter sets\n");
+                         "[CedarEncoder] WARNING: could not read parameter-set "
+                         "header; in-band keyframes will lack parameter sets\n");
         }
 
         running_.store(true);
         std::fprintf(stderr,
-                     "[CedarEncoder] H264 %ux%u @%u fps, bitrate=%u, gop=%u, stride=%u\n",
+                     "[CedarEncoder] %s %ux%u @%u fps, bitrate=%u, gop=%u, stride=%u\n",
+                     codec_ == VideoCodec::H265 ? "H265" : "H264",
                      width_, height_, fps_, cfg.bitrate, cfg.gop, stride_);
+        return true;
+    }
+
+    // Configure the H.264 encoder parameters. Must run BEFORE VideoEncInit:
+    // cedar snapshots them into SPS/PPS at init time. Honours the configured
+    // profile/level (parsed from the profile-level-id hex on the Rust side)
+    // so the bitstream matches the advertised SDP; defaults to High/L5.1.
+    bool setup_h264(const EncoderConfig& cfg, std::string* err) {
+        VENC_H264PROFILETYPE profile = VENC_H264ProfileHigh;
+        if (cfg.profile_idc == 66 || cfg.profile_idc == 77 || cfg.profile_idc == 100) {
+            profile = static_cast<VENC_H264PROFILETYPE>(cfg.profile_idc);
+        }
+        int level = VENC_H264Level51;
+        if (cfg.level_idc >= 10 && cfg.level_idc <= 62) {
+            level = static_cast<int>(cfg.level_idc);
+        }
+
+        VencH264Param h264{};
+        h264.nFramerate = static_cast<int>(cfg.fps);
+        h264.nSrcFramerate = static_cast<int>(cfg.fps);
+        h264.nBitrate = static_cast<int>(cfg.bitrate);
+        h264.nMaxKeyInterval = cfg.gop > 0 ? static_cast<int>(cfg.gop)
+                                           : static_cast<int>(cfg.fps);
+        // Baseline profile has no CABAC; Main/High do.
+        h264.bEntropyCodingCABAC = profile == VENC_H264ProfileBaseline ? 0 : 1;
+        h264.sProfileLevel.nProfile = profile;
+        h264.sProfileLevel.nLevel = static_cast<VENC_H264LEVELTYPE>(level);
+        h264.sQPRange.nMaxqp = 51;
+        h264.sQPRange.nMinqp = 10;
+        h264.sQPRange.nMaxPqp = 51;
+        h264.sQPRange.nMinPqp = 10;
+        h264.sQPRange.nQpInit = 26;
+        if (VideoEncSetParameter(enc_, VENC_IndexParamH264Param, &h264) != 0) {
+            if (err) *err = "cedar: failed to set H264 params before init";
+            return false;
+        }
+        return true;
+    }
+
+    // Configure the H.265 encoder parameters. Must run BEFORE VideoEncInit:
+    // cedar snapshots them into VPS/SPS/PPS at init time. Verified on-device
+    // (A733): VideoEncCreate(VENC_CODEC_H265) + this param block encodes fine,
+    // and the VPS/SPS/PPS header is readable via VENC_IndexParamH265Header.
+    bool setup_h265(const EncoderConfig& cfg, std::string* err) {
+        const int gop = cfg.gop > 0 ? static_cast<int>(cfg.gop)
+                                    : static_cast<int>(cfg.fps);
+        VencH265Param h265{};
+        h265.idr_period = gop;
+        h265.sProfileLevel.nProfile =
+            cfg.profile_idc != 0
+                ? static_cast<VENC_H265PROFILETYPE>(cfg.profile_idc)
+                : VENC_H265ProfileMain;
+        h265.sProfileLevel.nLevel =
+            cfg.level_idc != 0 ? static_cast<VENC_H265LEVELTYPE>(cfg.level_idc)
+                               : VENC_H265Level4;
+        h265.sQPRange.nMaxqp = 51;
+        h265.sQPRange.nMinqp = 10;
+        h265.sQPRange.nMaxPqp = 51;
+        h265.sQPRange.nMinPqp = 10;
+        h265.sQPRange.nQpInit = 26;
+        h265.nFramerate = static_cast<int>(cfg.fps);
+        h265.nSrcFramerate = static_cast<int>(cfg.fps);
+        h265.nBitrate = static_cast<int>(cfg.bitrate);
+        h265.nIntraPeriod = gop;
+        h265.nGopSize = gop;
+        h265.nQPInit = 26;
+        if (VideoEncSetParameter(enc_, VENC_IndexParamH265Param, &h265) != 0) {
+            if (err) *err = "cedar: failed to set H265 params before init";
+            return false;
+        }
         return true;
     }
 
@@ -234,8 +327,28 @@ public:
 
         VencInputBuffer in{};
         if (GetOneAllocInputBuffer(enc_, &in) != 0 || !in.pAddrVirY || !in.pAddrVirC) {
-            if (err) *err = "cedar: GetOneAllocInputBuffer failed / null addresses";
-            return false;
+            // The fixed-size SDK pool starves if frames ever pile up without a
+            // matching AlreadyUsedInputBuffer drain (e.g. an encode that did
+            // not complete synchronously). Reclaim any pending used buffers
+            // and retry once before failing the frame.
+            VencInputBuffer stray{};
+            uint32_t reclaimed = 0;
+            while (reclaimed < kInputBufferCount
+                   && AlreadyUsedInputBuffer(enc_, &stray) == 0) {
+                ReturnOneAllocInputBuffer(enc_, &stray);
+                ++reclaimed;
+                std::memset(&stray, 0, sizeof(stray));
+            }
+            if (reclaimed > 0) {
+                std::fprintf(stderr,
+                             "[CedarEncoder] input pool starved; reclaimed %u stray buffer(s)\n",
+                             reclaimed);
+            }
+            std::memset(&in, 0, sizeof(in));
+            if (GetOneAllocInputBuffer(enc_, &in) != 0 || !in.pAddrVirY || !in.pAddrVirC) {
+                if (err) *err = "cedar: GetOneAllocInputBuffer failed / null addresses";
+                return false;
+            }
         }
 
         const uint32_t y_stride = frame.planes[0].stride ? frame.planes[0].stride : width_;
@@ -256,6 +369,17 @@ public:
         VencInputBuffer used{};
         if (AlreadyUsedInputBuffer(enc_, &used) == 0) {
             ReturnOneAllocInputBuffer(enc_, &used);
+        } else {
+            // The pool starves after kInputBufferCount consecutive misses;
+            // submit() reclaims strays when that happens, but log the leak so
+            // a systematically asynchronous SDK is visible in the field.
+            ++reclaim_misses_;
+            if (reclaim_misses_ == 1 || reclaim_misses_ % 25 == 0) {
+                std::fprintf(stderr,
+                             "[CedarEncoder] WARNING: input buffer not returned by SDK "
+                             "(misses=%u); pool may starve\n",
+                             reclaim_misses_);
+            }
         }
         if (encode_rc != 0) {
             if (err) *err = "cedar: VideoEncodeOneFrame failed";
@@ -317,7 +441,9 @@ private:
                 au_.insert(au_.end(), out.pData2, out.pData2 + out.nSize2);
             }
             if (!au_.empty() && au_.size() <= 16u * 1024u * 1024u && encoded_cb_) {
-                uint32_t flags = detect_h264_flags(au_.data(), au_.size());
+                uint32_t flags = codec_ == VideoCodec::H265
+                                     ? detect_h265_flags(au_.data(), au_.size())
+                                     : detect_h264_flags(au_.data(), au_.size());
                 if (keyframe) {
                     flags |= static_cast<uint32_t>(EncodedKeyframe);
                 }
@@ -360,7 +486,9 @@ private:
     std::mutex mutex_;
     EncodedPacketCallback encoded_cb_;
     std::vector<uint8_t> au_;       // scratch for assembling pData0/1/2 into one AU
-    std::vector<uint8_t> sps_pps_;  // out-of-band Annex-B SPS/PPS, prepended to IDRs
+    std::vector<uint8_t> sps_pps_;  // out-of-band Annex-B SPS/PPS (VPS/SPS/PPS for
+                                    // H.265), prepended to IDRs
+    uint32_t reclaim_misses_ = 0;   // AlreadyUsedInputBuffer miss counter (diagnostics)
 };
 #else
 // ---------------------------------------------------------------------------
@@ -372,7 +500,9 @@ public:
         (void)cfg;
         if (err) {
             *err = "cedar encoder backend: SDK headers not available at build "
-                   "time (SUNXI_HAS_CEDAR_SDK not defined); rebuild with SUNXI_SYSROOT";
+                   "time (SUNXI_HAS_CEDAR_SDK not defined); rebuild with "
+                   "SUNXI_SYSROOT, or natively on a device with the cedar SDK "
+                   "installed at /usr/include";
         }
         return false;
     }
