@@ -213,7 +213,7 @@ encoder-cedar = ["liveion/encoder-cedar", "native-source"]
 encoder-opus = ["liveion/encoder-opus", "native-source"]
 
 # Audio capture backends
-capture-alsa = ["liveion/capture-alsa"]
+capture-alsa = ["encoder-opus", "liveion/capture-alsa"]
 
 # Platform presets (recommended for users)
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]

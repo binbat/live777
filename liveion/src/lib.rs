@@ -83,17 +83,23 @@ where
     {
         let total: usize = cfg.stream.streams.values().map(|e| e.sources.len()).sum();
         if total > 0 {
-            tracing::info!("[Server] Auto-starting {} configured sources...", total);
-
-            if let Err(e) = app_state
-                .stream_manager
-                .auto_start_sources(&cfg.stream)
-                .await
-            {
-                tracing::error!("Failed to auto-start sources: {:?}", e);
-            } else {
-                tracing::info!("All configured sources started successfully");
-            }
+            tracing::info!(
+                "[Server] Auto-starting {} configured sources in the background",
+                total
+            );
+            let stream_manager = app_state.stream_manager.clone();
+            let stream_config = cfg.stream.clone();
+            let startup_cancel = cancel.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = startup_cancel.cancelled() => {}
+                    result = stream_manager.auto_start_sources(&stream_config) => {
+                        if let Err(e) = result {
+                            tracing::error!("Failed to auto-start sources: {:?}", e);
+                        }
+                    }
+                }
+            });
         } else {
             tracing::info!("No sources configured for auto-start");
         }

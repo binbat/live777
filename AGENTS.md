@@ -197,7 +197,8 @@ device-pulled sysroot when developing locally:
 - Rockchip RKMPP (RK3588, RV1126B): `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`
   (sysroot at `/opt/rkmpp-sysroot`), or set `RKMPP_SYSROOT`.
 - Raspberry Pi: `ghcr.io/binbat/crossbuilder-aarch64-rpi:latest`, or set
-  `RPI_SYSROOT`.
+  `RPI_SYSROOT`. The image includes `libasound2-dev:arm64` for `capture-alsa`;
+  use a device-pulled sysroot when the target requires a different camera ABI.
 - RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
   `AGENTS.md` "Security Considerations").
 - Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): no published image (the cedar
@@ -455,23 +456,38 @@ clients via Link headers).
   `GET`/`POST /api/sources/{stream}/tier` is the control surface — a
   source-level ladder (`stream/source/tier.rs`): bitrate-only tiers
   retune in place, and a tier carrying `width`/`height`/`fps` switches
-  the whole rung by rebuilding the capture+encoder pipeline
+  the whole rung by rebuilding the video capture+encoder pipeline
   (`NativeEncodedSource::reconfigure` — the RTP broadcast channels
   survive, so subscribers stay attached across the sub-second gap; a
-  failed rebuild rolls back to the previous params). A per-stream
-  `BitrateControl` (created for every native source in `create_bridge`)
-  coordinates tier applies with the controller: the tier's bitrate
-  becomes the AIMD's rung ceiling and resume seed without suspending
+  failed rebuild rolls back to the previous video params). An audio leg,
+  when configured, keeps its pipeline and RTP packetizer running across
+  video rebuilds and rollbacks, preserving its SSRC and timestamp base.
+  A per-stream `BitrateControl` (created for every native source in
+  `create_bridge`) coordinates tier applies with the controller: the tier's
+  bitrate becomes the AIMD's rung ceiling and resume seed without suspending
   it, and an external-change generation counter guarantees the
   controller re-seeds even for applies shorter than its 1 s tick.
   Native sources may be audio-only or video+audio: the audio leg is
   `sine`/ALSA capture → opus-rs encode (`livehal::AudioPipeline`) → the
   `NativeEncodedSource` audio packetize task → `MediaPacket::AudioRtpPacket`
   → `PeerForward::inject_audio_rtp_packet` (fixed wire contract: Opus
-  PT 111, 48 kHz, fmtp `minptime=10;useinbandfec=1`). Tiers and the
-  adaptive controller target the video encoder when both legs exist (the
-  audio leg's own `adaptive` key is ignored); on an audio-only source they
-  drive the Opus encoder.
+  PT 111, 48 kHz, fmtp `minptime=10;useinbandfec=1`). Initial ALSA open
+  attempts fail synchronously and are retried by the source manager. Configured
+  sources retry independently in the background without delaying HTTP;
+  on-demand starts use their configured timeout, and shutdown cancels retries.
+  Subscriptions to a configured stream whose source bridge is pending wait for
+  a bounded startup period and fail as not ready if it is still unavailable,
+  rather than creating a trackless session. Cable-only configurations do not
+  wait for a media bridge. A pending
+  source start rejects competing WHIP publishers and has its own cancellation
+  token, so removal and `stop_all` interrupt its retry wait; bridge creation
+  also rejects a live publisher rather than mixing real and virtual tracks.
+  After a successful start, capture retries recovery/reopen with bounded waits. Opus
+  RTP timestamps advance by the
+  encoded frame's sample count, not capture-read wall-clock deltas. Tiers
+  and the adaptive controller target the video encoder when both legs exist
+  (the audio leg's own `adaptive` key is ignored); on an audio-only source
+  they drive the Opus encoder.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
@@ -665,9 +681,16 @@ Integration test binaries live in `tests/`:
   livetwo client peers (`utils::webrtc::setting_engine`).
 - `tests/native_audio.rs` — native audio (Opus) source end-to-end: a
   provisioned `sine`+opus stream WHEP-subscribed by a real peer, asserting
-  PT 111 and opus-rs-decoding every received packet. Gated on
-  `native-source,encoder-opus` — excluded from the default CI feature set,
-  where it compiles to an empty binary.
+  PT 111, sample-continuous RTP timestamps and opus-rs-decoding every
+  received packet. With `capture-alsa` on Linux, another test proves a
+  permanently unavailable microphone does not block HTTP or an independent
+  source, and that graceful shutdown cancels the pending retry. Unit tests cover
+  retry budgets/cancellation and an injected read failure followed by ALSA
+  reopen and bounded stop. An additional ignored test in
+  `liveion/src/stream/source/native_encoded_source.rs` checks video
+  reconfigure/rollback while preserving the sine audio SSRC. The integration
+  test is gated on `native-source,encoder-opus` — excluded from the default CI
+  feature set, where it compiles to an empty binary.
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

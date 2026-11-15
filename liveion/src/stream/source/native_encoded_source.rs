@@ -203,17 +203,46 @@ impl NativeEncodedSource {
         self.state_tx.subscribe()
     }
 
+    #[cfg(feature = "encoder-opus")]
+    pub(crate) fn should_retry_start(&self, error: &anyhow::Error) -> bool {
+        self.audio_params
+            .as_ref()
+            .is_some_and(|params| params.capture_backend == "alsa")
+            && error
+                .chain()
+                .any(|cause| cause.to_string().contains("snd_pcm_open"))
+    }
+
     pub async fn start(&mut self) -> Result<()> {
-        if self.shutdown_tx.is_some() {
-            anyhow::bail!("Already started");
+        self.start_inner(false).await
+    }
+
+    async fn start_inner(&mut self, preserve_audio: bool) -> Result<()> {
+        if !preserve_audio {
+            if self.pipeline.is_some() {
+                anyhow::bail!("Already started");
+            }
+            #[cfg(feature = "encoder-opus")]
+            if self.audio_pipeline.is_some() {
+                anyhow::bail!("Already started");
+            }
         }
 
-        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-        self.shutdown_tx = Some(shutdown_tx.clone());
+        let shutdown_tx = if preserve_audio {
+            let Some(tx) = self.shutdown_tx.clone() else {
+                anyhow::bail!("source is not running");
+            };
+            tx
+        } else {
+            let (tx, _) = broadcast::channel(1);
+            self.shutdown_tx = Some(tx.clone());
+            tx
+        };
 
         // Video leg: capture+encode pipeline, RTCP keyframe relay and the
         // RTP packetize task.
         if let Some(params) = self.params.clone() {
+            let mut shutdown_rx = shutdown_tx.subscribe();
             let mut pipeline = livehal::NativePipeline::new(&params)?;
             let keyframe_handle = pipeline.keyframe_handle();
             self.bitrate_handle = Some(pipeline.bitrate_handle());
@@ -369,7 +398,8 @@ impl NativeEncodedSource {
         // Audio leg: livehal's pure-Rust capture → Opus pipeline plus its
         // own packetize task.  No RTCP task — audio has no keyframes.
         #[cfg(feature = "encoder-opus")]
-        if let Some(audio_params) = self.audio_params.clone()
+        if !preserve_audio
+            && let Some(audio_params) = self.audio_params.clone()
             && let Err(e) = self.start_audio_leg(audio_params, &shutdown_tx)
         {
             // Roll back a started video leg so a half-started source never
@@ -417,10 +447,6 @@ impl NativeEncodedSource {
                 audio_params.clock_rate,
             );
 
-            // Samples per Opus frame at the 48 kHz RTP clock — the
-            // fallback delta when a timestamp regresses.
-            let fallback_delta = audio_params.frame_ms * 48;
-            let mut last_rtp_ts: Option<u32> = None;
             let mut wire_stats = WireLatencyStats::new();
 
             loop {
@@ -428,22 +454,8 @@ impl NativeEncodedSource {
                     pkt = rx.recv() => {
                         let Some(pkt) = pkt else { break };
 
-                        // Convert PTS (microseconds) to the RTP clock.
-                        let rtp_ts = if pkt.pts_us > 0 {
-                            pts_us_to_rtp_ts(pkt.pts_us, audio_params.clock_rate)
-                        } else {
-                            0u32
-                        };
-
-                        // Delta across calls — monotonic, no backward steps.
-                        let delta = match last_rtp_ts {
-                            Some(prev) if rtp_ts > prev => rtp_ts - prev,
-                            Some(_prev) => fallback_delta,
-                            None => 0, // first frame: let Packetizer use
-                                       // its internal base timestamp
-                        };
-                        last_rtp_ts = Some(rtp_ts);
-
+                        // Opus RTP timestamps count samples, not capture-read completion times.
+                        let delta = audio_params.frame_ms * 48;
                         match packetizer.packetize(std::time::Instant::now(), &pkt.data.into(), delta) {
                             Ok(packets) => {
                                 for packet in packets {
@@ -478,18 +490,15 @@ impl NativeEncodedSource {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-
-        // Drop the RTCP sender so the RTCP task exits naturally.
-        self.rtcp_sender = None;
-
-        // Abort and wait for the worker tasks so they do not touch
-        // rtp_tx / rx after we drop the pipeline.
-        if let Some(handle) = self.packetize_handle.take() {
-            handle.abort();
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
-        }
+        self.stop_video_leg().await;
         #[cfg(feature = "encoder-opus")]
-        if let Some(handle) = self.audio_packetize_handle.take() {
+        self.stop_audio_leg().await;
+        self.set_state(StreamSourceState::Disconnected, None).await;
+    }
+
+    async fn stop_video_leg(&mut self) {
+        self.rtcp_sender = None;
+        if let Some(handle) = self.packetize_handle.take() {
             handle.abort();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
@@ -497,16 +506,19 @@ impl NativeEncodedSource {
             handle.abort();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
-
         self.pipeline = None;
-        // Dropping the audio pipeline stops and joins its capture/encode
-        // threads (AudioPipeline::drop calls stop()).
-        #[cfg(feature = "encoder-opus")]
-        {
-            self.audio_pipeline = None;
-        }
         self.keyframe_handle = None;
-        self.set_state(StreamSourceState::Disconnected, None).await;
+        self.bitrate_handle = None;
+    }
+
+    #[cfg(feature = "encoder-opus")]
+    async fn stop_audio_leg(&mut self) {
+        if let Some(handle) = self.audio_packetize_handle.take() {
+            handle.abort();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        }
+        self.audio_pipeline = None;
+        self.audio_bitrate_handle = None;
     }
 
     #[cfg(feature = "source")]
@@ -674,12 +686,11 @@ impl NativeEncodedSource {
         return false;
     }
 
-    /// Rebuild the capture+encoder pipeline with new params (quality-tier
-    /// switch carrying resolution/framerate).  The RTP/state broadcast
-    /// channels survive, so subscribers stay attached across the rebuild;
-    /// they only observe a short frame gap and an in-band SPS/PPS change.
-    /// On start failure the previous params are restored (best effort) so
-    /// the stream is not left dead.
+    /// Rebuild only the video leg with new params (quality-tier switch
+    /// carrying resolution/framerate). The audio pipeline and RTP packetizer
+    /// stay running, preserving their SSRC, sequence and timestamp base.
+    /// On start failure the previous video params are restored (best effort)
+    /// without disconnecting the audio leg.
     ///
     /// Video-leg only: an audio-only source has no pipeline to rebuild
     /// (validated tiers never carry geometry there, so this is
@@ -691,20 +702,27 @@ impl NativeEncodedSource {
         let Some(old_params) = self.params.clone() else {
             anyhow::bail!("source is not running");
         };
-        self.stop().await;
+        self.stop_video_leg().await;
         self.params = Some(params);
-        // The new stream's SPS may carry a different profile-level-id —
-        // let it be re-derived instead of serving the stale value.
         #[cfg(feature = "source")]
         self.dynamic_profile.write().await.take();
-        if let Err(e) = self.start().await {
+        if let Err(e) = self.start_inner(true).await {
             tracing::error!(
                 "[{}] reconfigure failed ({}), rolling back to previous params",
                 self.stream_id,
                 e
             );
+            self.stop_video_leg().await;
             self.params = Some(old_params);
-            let _ = self.start().await;
+            #[cfg(feature = "source")]
+            self.dynamic_profile.write().await.take();
+            if let Err(rollback_error) = self.start_inner(true).await {
+                tracing::error!(
+                    "[{}] failed to restore previous video params: {}",
+                    self.stream_id,
+                    rollback_error
+                );
+            }
             return Err(e);
         }
         Ok(())
@@ -804,6 +822,26 @@ mod tests {
             clock_rate: 48_000,
             complexity: 9,
         }
+    }
+
+    #[cfg(all(feature = "capture-alsa", target_os = "linux"))]
+    #[tokio::test]
+    async fn failed_audio_start_does_not_block_restart() {
+        let mut params = sine_audio_params();
+        params.capture_backend = "alsa".into();
+        params.capture_device = "live777-test-no-such-device".into();
+        let mut source =
+            NativeEncodedSource::new("mic".to_string(), None, Some(params), None, vec![]);
+
+        let error = source.start().await.unwrap_err();
+        assert!(source.should_retry_start(&error));
+        assert!(source.shutdown_tx.is_none());
+        assert_eq!(source.state(), StreamSourceState::Disconnected);
+
+        source.audio_params = Some(sine_audio_params());
+        source.start().await.expect("restart with valid audio");
+        assert_eq!(source.state(), StreamSourceState::Connected);
+        source.stop().await;
     }
 
     #[tokio::test]
@@ -934,5 +972,108 @@ mod tests {
             .inject_video_rtp_packet(std::sync::Arc::new(video_packet))
             .await
             .expect_err("no video track");
+    }
+
+    #[cfg(all(feature = "capture-libcamera", feature = "encoder-v4l2-m2m"))]
+    #[tokio::test]
+    #[ignore = "requires an attached libcamera camera"]
+    async fn native_av_reconfigure_rolls_back_without_restarting_audio() {
+        use crate::stream::source::source_config::SourceSpec;
+
+        async fn next_audio(
+            rx: &mut tokio::sync::broadcast::Receiver<MediaPacket>,
+        ) -> (u32, u32, u16) {
+            loop {
+                match rx.recv().await {
+                    Ok(MediaPacket::AudioRtpPacket(packet)) => {
+                        return (
+                            packet.header.ssrc,
+                            packet.header.timestamp,
+                            packet.header.sequence_number,
+                        );
+                    }
+                    Ok(_) => continue,
+                    Err(error) => panic!("audio stream ended: {error}"),
+                }
+            }
+        }
+
+        let spec: SourceSpec = toml::from_str(
+            r#"
+            stream_id = "camera-audio-lifecycle"
+            capture = { backend = "libcamera", device = "0", width = 640, height = 480, fps = 30, pixel_format = "yuv420", prefer_dmabuf = true }
+            encoder = { backend = "v4l2-m2m", codec = "h264", bitrate = 1000000, profile = "high", level = "4.0", gop = 60, prefer_dmabuf = true }
+            audio_capture = { backend = "sine", channels = 2 }
+            audio_encoder = { codec = "opus", bitrate = 48000, complexity = 3, adaptive = false }
+            "#,
+        )
+        .unwrap();
+        spec.validate().unwrap();
+        let video_params = spec.to_native_params().unwrap().unwrap();
+        let audio_params = spec.to_audio_params();
+        let mut source = NativeEncodedSource::new(
+            "camera-audio-lifecycle".into(),
+            Some(video_params.clone()),
+            audio_params,
+            None,
+            vec![],
+        );
+        let mut rx = source.subscribe_rtp();
+        source.start().await.unwrap();
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), next_audio(&mut rx))
+            .await
+            .unwrap();
+        while rx.try_recv().is_ok() {}
+        let mut valid_params = video_params.clone();
+        valid_params.width = 1280;
+        valid_params.height = 720;
+        source.reconfigure(valid_params.clone()).await.unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), next_audio(&mut rx))
+            .await
+            .unwrap();
+        assert_eq!(first.0, second.0);
+        assert!(second.1.wrapping_sub(first.1) > 0);
+        assert!(second.2.wrapping_sub(first.2) > 0);
+
+        while rx.try_recv().is_ok() {}
+        let mut invalid_params = valid_params.clone();
+        invalid_params.encoder_backend = "not-a-real-encoder".into();
+        let failed = source
+            .reconfigure(invalid_params)
+            .await
+            .expect_err("an unavailable encoder must reject the rebuild");
+        assert!(
+            failed
+                .to_string()
+                .contains("failed to create encoder backend"),
+            "{failed:#}"
+        );
+        let third = tokio::time::timeout(std::time::Duration::from_secs(5), next_audio(&mut rx))
+            .await
+            .unwrap();
+        assert_eq!(second.0, third.0);
+        assert!(third.1.wrapping_sub(second.1) > 0);
+        assert!(third.2.wrapping_sub(second.2) > 0);
+        assert_eq!(source.state(), StreamSourceState::Connected);
+        let restored = source.params.as_ref().expect("video params restored");
+        assert_eq!(restored.capture_backend, valid_params.capture_backend);
+        assert_eq!(restored.capture_device, valid_params.capture_device);
+        assert_eq!(restored.encoder_backend, valid_params.encoder_backend);
+        assert_eq!(restored.width, valid_params.width);
+        assert_eq!(restored.height, valid_params.height);
+        let video = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(MediaPacket::RtpPacket(packet)) => break packet,
+                    Ok(_) => continue,
+                    Err(error) => panic!("video stream ended: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("video resumes after rollback");
+        assert!(!video.payload.is_empty());
+        source.stop().await;
     }
 }

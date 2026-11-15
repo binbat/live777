@@ -57,6 +57,7 @@ struct AudioStats {
     pt111: AtomicU64,
     decoded_samples: AtomicU64,
     decode_errors: AtomicU64,
+    timestamp_errors: AtomicU64,
 }
 
 /// WHEP client handler: report connection state; on the audio track count
@@ -82,9 +83,15 @@ impl PeerConnectionEventHandler for SubscriberHandler {
             // stereo decoder also plays mono packets, as in libopus.
             let mut decoder = opus_rs::OpusDecoder::new(48_000, 2).expect("opus decoder");
             let mut pcm = vec![0f32; 5760 * 2];
+            let mut previous_timestamp = None;
             while let Some(event) = track.poll().await {
                 if let TrackRemoteEvent::OnRtpPacket(packet) = event {
                     stats.packets.fetch_add(1, Ordering::Relaxed);
+                    if let Some(previous) = previous_timestamp.replace(packet.header.timestamp)
+                        && packet.header.timestamp.wrapping_sub(previous) != 960
+                    {
+                        stats.timestamp_errors.fetch_add(1, Ordering::Relaxed);
+                    }
                     if packet.header.payload_type == 111 {
                         stats.pt111.fetch_add(1, Ordering::Relaxed);
                     }
@@ -174,6 +181,10 @@ async fn native_audio_source_sine_whep_opus() {
             && s.codecs
                 .iter()
                 .any(|c| c.kind == "audio" && c.codec == "opus")
+            && s.publish
+                .sessions
+                .iter()
+                .any(|session| session.id == "virtual-source")
         {
             stream = Some(s);
             break;
@@ -237,15 +248,28 @@ async fn native_audio_source_sine_whep_opus() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let offer_sdp = peer.local_description().await.unwrap().sdp;
 
-    let res = reqwest::Client::new()
-        .post(format!("http://{addr}{}", api::path::whep("mic")))
-        .header(http::header::CONTENT_TYPE, "application/sdp")
-        .body(offer_sdp)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(http::StatusCode::CREATED, res.status());
-    let answer = res.text().await.unwrap();
+    let client = reqwest::Client::new();
+    let mut answer = None;
+    for _ in 0..50 {
+        let res = client
+            .post(format!("http://{addr}{}", api::path::whep("mic")))
+            .header(http::header::CONTENT_TYPE, "application/sdp")
+            .body(offer_sdp.clone())
+            .send()
+            .await
+            .unwrap();
+        if res.status() == http::StatusCode::CREATED {
+            answer = Some(res.text().await.unwrap());
+            break;
+        }
+        assert_eq!(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            res.status(),
+            "unexpected WHEP failure"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let answer = answer.expect("source bridge did not become ready within 5s");
     peer.set_remote_description(RTCSessionDescription::answer(answer).unwrap())
         .await
         .unwrap();
@@ -280,5 +304,141 @@ async fn native_audio_source_sine_whep_opus() {
         "opus decode errors: {:?}",
         first_error.lock().unwrap()
     );
+    assert_eq!(
+        stats.timestamp_errors.load(Ordering::Relaxed),
+        0,
+        "every 20 ms Opus packet must advance the RTP timestamp by 960 samples"
+    );
     assert!(decoded > 0, "no opus samples decoded");
+}
+
+#[cfg(all(feature = "capture-alsa", target_os = "linux"))]
+#[tokio::test]
+async fn unavailable_alsa_does_not_block_http_or_other_sources() {
+    init_liveion_test_environment();
+    let busy: liveion::config::StreamEntry = toml::from_str(
+        r#"
+        [[sources]]
+        [sources.audio_capture]
+        backend = "alsa"
+        device = "live777-test-no-such-device"
+
+        [sources.audio_encoder]
+        codec = "opus"
+        bitrate = 64000
+        "#,
+    )
+    .unwrap();
+    let healthy: liveion::config::StreamEntry = toml::from_str(
+        r#"
+        [[sources]]
+        [sources.audio_capture]
+        backend = "sine"
+
+        [sources.audio_encoder]
+        codec = "opus"
+        bitrate = 64000
+        "#,
+    )
+    .unwrap();
+    let mut cfg = liveion::config::Config::default();
+    cfg.stream.streams.insert("busy".into(), busy);
+    cfg.stream.streams.insert("healthy".into(), healthy);
+    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(liveion::serve(cfg, listener, async move {
+        let _ = shutdown_rx.await;
+    }));
+
+    let (state_tx, _state_rx) = watch::channel(RTCPeerConnectionState::New);
+    let handler: Arc<dyn PeerConnectionEventHandler> = Arc::new(SubscriberHandler {
+        state_tx,
+        stats: Arc::new(AudioStats::default()),
+        first_error: Arc::new(Mutex::new(None)),
+    });
+    let mut media_engine = MediaEngine::default();
+    media_engine.register_default_codecs().unwrap();
+    let peer: Arc<dyn PeerConnection> = Arc::new(
+        PeerConnectionBuilder::<SocketAddr>::new()
+            .with_media_engine(media_engine)
+            .with_handler(handler)
+            .with_udp_addrs(livetwo::utils::webrtc::ice_udp_addrs())
+            .with_configuration(RTCConfigurationBuilder::new().build())
+            .build()
+            .await
+            .unwrap(),
+    );
+    peer.add_transceiver_from_kind(
+        RtpCodecKind::Audio,
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Recvonly,
+            streams: vec![],
+            send_encodings: vec![],
+        }),
+    )
+    .await
+    .unwrap();
+    let offer = peer.create_offer(None).await.unwrap();
+    peer.set_local_description(offer).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let offer_sdp = peer.local_description().await.unwrap().sdp;
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}{}", api::path::whip("busy")))
+        .header(http::header::CONTENT_TYPE, "application/sdp")
+        .body(offer_sdp.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        http::StatusCode::CONFLICT,
+        response.status(),
+        "a pending configured source must reject a competing WHIP publisher"
+    );
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}{}", api::path::whep("busy")))
+        .header(http::header::CONTENT_TYPE, "application/sdp")
+        .body(offer_sdp)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        http::StatusCode::INTERNAL_SERVER_ERROR,
+        response.status(),
+        "a source that has not opened must fail WHEP instead of creating a silent session"
+    );
+    peer.close().await.unwrap();
+
+    let mut healthy_ready = false;
+    for _ in 0..100 {
+        if let Ok(response) = reqwest::get(format!("http://{addr}{}", api::path::streams(""))).await
+        {
+            let streams = response.json::<Vec<api::response::Stream>>().await.unwrap();
+            healthy_ready = streams.iter().any(|stream| {
+                stream.id == "healthy"
+                    && stream
+                        .codecs
+                        .iter()
+                        .any(|codec| codec.kind == "audio" && codec.codec == "opus")
+            });
+            if healthy_ready {
+                let busy = streams.iter().find(|stream| stream.id == "busy").unwrap();
+                assert!(busy.provisioned);
+                assert!(busy.codecs.is_empty());
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        healthy_ready,
+        "a permanently unavailable microphone must not block HTTP or an independent source"
+    );
+    shutdown_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("graceful shutdown must cancel the pending ALSA retry")
+        .unwrap();
 }
