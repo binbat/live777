@@ -1184,31 +1184,14 @@ impl PeerForward {
     }
 
     /// Pre-packetized audio counterpart of [`Self::inject_video_rtp_packet`]
-    /// (the wayland source's Opus pipeline hands over ready-made packets).
-    #[cfg(feature = "source-wayland")]
-    pub async fn inject_audio_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
-        let tracks = self.internal.publish_tracks.read().await;
-        let audio_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Audio);
-        match audio_track {
-            Some(track) => match track.inject_rtp(packet) {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    error!("[{}] Failed to inject audio RTP packet: {}", self.stream, e);
-                    Err(anyhow::anyhow!("Inject failed: {}", e).into())
-                }
-            },
-            None => {
-                warn!("[{}] No audio track found for injection", self.stream);
-                Err(anyhow::anyhow!("No audio track").into())
-            }
-        }
-    }
-
+    /// (a native source's or the wayland source's Opus pipeline hands over
+    /// ready-made packets).
     #[cfg(any(
         feature = "source-rtsp",
         feature = "source-sdp",
         feature = "source-whep",
-        feature = "native-source"
+        feature = "native-source",
+        feature = "source-wayland"
     ))]
     pub async fn inject_audio_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
         let tracks = self.internal.publish_tracks.read().await;
