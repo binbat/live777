@@ -262,6 +262,20 @@ codec = "opus"
 bitrate = 64_000
 ```
 
+Initial ALSA open/configuration errors fail the start attempt; transient
+`snd_pcm_open` failures are retried by the source manager instead of publishing
+a silent audio track. Configured sources retry independently in the background
+without delaying the HTTP server. On-demand starts use the configured timeout,
+and shutdown cancels pending retries. While a configured source is still being
+retried, subscriptions fail explicitly as not ready instead of establishing a
+trackless session; clients can retry after its bridge is created. A pending
+configured source also rejects competing WHIP publishers. Once running,
+capture recovers from overruns and reopens after unrecoverable errors, retrying every second. Capture
+waits are bounded so that stopping the source does not depend on a stalled
+`readi()` returning.
+Opus RTP timestamps advance by `frame_ms * 48` samples per encoded packet,
+independently of when capture reads complete.
+
 #### `audio_capture` fields
 
 | Field | Default | Values |
@@ -354,9 +368,11 @@ because a rung spans both blocks: the `encoder` overlay retunes the
 encoder, while the `capture` overlay reconfigures the capture (livehal
 has no scaler stage — capture size is encoder input size — and framerate
 is a capture-side property).  An encoder-only tier switches seamlessly
-in place; a tier touching capture geometry rebuilds the pipeline
+in place; a tier touching capture geometry rebuilds the video pipeline
 underneath the stream — the RTP session survives, subscribers just see a
-brief freeze and an in-band SPS/PPS change.  `capture.width`/`height`
+brief freeze and an in-band SPS/PPS change. If an audio leg is configured,
+its capture and RTP packetization continue across video rebuilds and
+rollbacks, preserving the audio SSRC and timestamp base.  `capture.width`/`height`
 must be set together and may be any size the sensor supports — including
 above the boot profile, so the ladder top need not be the boot config (a
 972p30 boot with a 1080p20 max-quality rung); `capture.fps` may likewise

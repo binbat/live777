@@ -245,6 +245,10 @@ pub trait StreamSource: Send + Sync {
 
     async fn start(&mut self) -> Result<()>;
 
+    fn should_retry_start(&self, _error: &anyhow::Error) -> bool {
+        false
+    }
+
     async fn stop(&mut self) -> Result<()>;
 
     fn subscribe_rtp(&self) -> broadcast::Receiver<MediaPacket>;

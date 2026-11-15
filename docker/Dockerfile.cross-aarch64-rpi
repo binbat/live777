@@ -76,3 +76,8 @@ FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
 ENV RPI_SYSROOT=/opt/rpi-sysroot
 
 COPY --from=rpi-sysroot /rpi-sysroot/ /opt/rpi-sysroot/
+
+RUN dpkg --add-architecture arm64 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libasound2-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*

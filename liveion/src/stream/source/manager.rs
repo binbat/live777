@@ -1,15 +1,31 @@
 use super::{StreamSource, StreamSourceState};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 #[cfg(feature = "source")]
 use crate::forward::{PeerForward, SourceBridge};
 
 type SourceMap = Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<Box<dyn StreamSource>>>>>>;
+type PendingStarts = Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>;
+
+struct PendingStartGuard {
+    stream_id: String,
+    pending: PendingStarts,
+}
+
+impl Drop for PendingStartGuard {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.stream_id);
+    }
+}
 
 /// Default per-attempt codec re-wait inside bridge creation, for callers
 /// without their own wait budget (startup auto-start, source API).
@@ -133,6 +149,7 @@ pub struct SourceTierInfo {
 #[derive(Clone)]
 pub struct SourceManager {
     pub(crate) sources: SourceMap,
+    pending_starts: PendingStarts,
 
     #[cfg(feature = "source")]
     bridges: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<SourceBridge>>>>>,
@@ -158,6 +175,7 @@ impl SourceManager {
     pub fn new() -> Self {
         Self {
             sources: Arc::new(RwLock::new(HashMap::new())),
+            pending_starts: Default::default(),
             #[cfg(feature = "source")]
             bridges: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "source")]
@@ -177,12 +195,114 @@ impl SourceManager {
         manager
     }
 
-    pub async fn add_source(&self, mut source: Box<dyn StreamSource>) -> Result<String> {
-        let stream_id = source.stream_id().to_string();
+    fn begin_start(
+        &self,
+        stream_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<(PendingStartGuard, CancellationToken)> {
+        let cancel = cancel.child_token();
+        let mut pending = self
+            .pending_starts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if pending.contains_key(stream_id) {
+            anyhow::bail!("Source start already in progress: {stream_id}");
+        }
+        pending.insert(stream_id.to_owned(), cancel.clone());
+        drop(pending);
+        Ok((
+            PendingStartGuard {
+                stream_id: stream_id.to_owned(),
+                pending: Arc::clone(&self.pending_starts),
+            },
+            cancel,
+        ))
+    }
 
-        source.start().await?;
+    pub fn is_starting(&self, stream_id: &str) -> bool {
+        self.pending_starts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(stream_id)
+    }
+
+    pub fn cancel_start(&self, stream_id: &str) {
+        if let Some(cancel) = self
+            .pending_starts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(stream_id)
+            .cloned()
+        {
+            cancel.cancel();
+        }
+    }
+
+    fn cancel_all_starts(&self) {
+        for cancel in self
+            .pending_starts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            cancel.cancel();
+        }
+    }
+
+    pub async fn add_source(&self, source: Box<dyn StreamSource>) -> Result<String> {
+        self.add_source_with_retry(source, Some(Duration::ZERO), CancellationToken::new())
+            .await
+    }
+
+    /// Start and register a source. `retry_timeout` bounds retry waits when
+    /// supplied; `None` keeps retrying transient capture-open failures until
+    /// `cancel` fires. Callers with a waiting subscriber must supply a budget.
+    pub async fn add_source_with_retry(
+        &self,
+        mut source: Box<dyn StreamSource>,
+        retry_timeout: Option<Duration>,
+        cancel: CancellationToken,
+    ) -> Result<String> {
+        let stream_id = source.stream_id().to_string();
+        let (_start_guard, cancel) = self.begin_start(&stream_id, cancel)?;
+        let started = std::time::Instant::now();
+
+        loop {
+            if let Err(error) = source.start().await {
+                if !source.should_retry_start(&error) {
+                    return Err(error);
+                }
+                let delay = match retry_timeout {
+                    Some(timeout) => {
+                        let remaining = timeout.saturating_sub(started.elapsed());
+                        if remaining.is_zero() {
+                            return Err(error).context(format!(
+                                "capture start retry budget exhausted for {stream_id}"
+                            ));
+                        }
+                        Duration::from_secs(1).min(remaining)
+                    }
+                    None => Duration::from_secs(1),
+                };
+                warn!("Failed to start source {stream_id}: {error}; retrying in {delay:?}");
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        source.stop().await?;
+                        anyhow::bail!("source start cancelled: {stream_id}");
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                continue;
+            }
+            break;
+        }
 
         let mut sources = self.sources.write().await;
+        if cancel.is_cancelled() {
+            drop(sources);
+            source.stop().await?;
+            anyhow::bail!("source start cancelled: {stream_id}");
+        }
         if sources.contains_key(&stream_id) {
             source.stop().await?;
             anyhow::bail!("Source already exists: {}", stream_id);
@@ -195,6 +315,7 @@ impl SourceManager {
     }
 
     pub async fn remove_source(&self, stream_id: &str) -> Result<()> {
+        self.cancel_start(stream_id);
         #[cfg(feature = "source")]
         {
             let mut bridges = self.bridges.write().await;
@@ -319,6 +440,10 @@ impl SourceManager {
                 .nth(1)
                 .map(|s| s.to_string())
         });
+
+        if !forward.has_no_live_publisher().await {
+            anyhow::bail!("Cannot bridge a configured source over a live WHIP publisher");
+        }
 
         if let Some(codec) = video_codec {
             info!(
@@ -560,9 +685,9 @@ impl SourceManager {
             }
         }
 
-        // The rebuild swaps the whole pipeline; the adaptive controller
-        // never touches the encoder mid-rebuild because it only applies
-        // decisions under this same source lock.
+        // A geometry change rebuilds the video pipeline; the adaptive
+        // controller never touches that encoder mid-rebuild because it only
+        // applies decisions under this same source lock.
         let mut source_guard = source.lock().await;
         if !source_guard.apply_tier(tier).await {
             let restored = source_guard.active_tier_state();
@@ -670,6 +795,7 @@ impl SourceManager {
 
     pub async fn stop_all(&self) -> Result<()> {
         info!("Stopping all sources");
+        self.cancel_all_starts();
 
         #[cfg(feature = "source")]
         {
@@ -716,6 +842,7 @@ mod tests {
         rtp_tx: broadcast::Sender<MediaPacket>,
         state_tx: broadcast::Sender<StateChangeEvent>,
         started: bool,
+        failures_remaining: usize,
         #[cfg(feature = "source")]
         tiers: Vec<super::super::tier::QualityTier>,
         #[cfg(feature = "source")]
@@ -738,6 +865,7 @@ mod tests {
                 rtp_tx,
                 state_tx,
                 started: false,
+                failures_remaining: 0,
                 #[cfg(feature = "source")]
                 tiers: Vec::new(),
                 #[cfg(feature = "source")]
@@ -763,9 +891,18 @@ mod tests {
         }
 
         async fn start(&mut self) -> Result<()> {
+            if self.failures_remaining > 0 {
+                self.failures_remaining -= 1;
+                self.state = StreamSourceState::Disconnected;
+                anyhow::bail!("snd_pcm_open simulated busy");
+            }
             self.started = true;
             self.state = StreamSourceState::Connected;
             Ok(())
+        }
+
+        fn should_retry_start(&self, error: &anyhow::Error) -> bool {
+            error.to_string().contains("snd_pcm_open")
         }
 
         async fn stop(&mut self) -> Result<()> {
@@ -836,6 +973,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_source_retries_alsa_open_failure() {
+        let manager = SourceManager::new();
+        let mut source = MockSource::new("retry");
+        source.failures_remaining = 1;
+
+        let stream_id = manager
+            .add_source_with_retry(
+                Box::new(source),
+                Some(Duration::from_secs(5)),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream_id, "retry");
+        let sources = manager.list_sources().await;
+        assert!(
+            sources
+                .iter()
+                .any(|(id, _, state)| id == "retry" && *state == StreamSourceState::Connected)
+        );
+    }
+
+    #[tokio::test]
+    async fn add_source_honors_retry_budget() {
+        let manager = SourceManager::new();
+        let mut source = MockSource::new("unavailable");
+        source.failures_remaining = usize::MAX;
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            manager.add_source_with_retry(
+                Box::new(source),
+                Some(Duration::from_millis(10)),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("retry budget must not wait for another retry interval");
+        assert!(result.is_err());
+        assert!(!manager.has_source("unavailable").await);
+    }
+
+    #[tokio::test]
+    async fn add_source_retry_stops_on_cancellation() {
+        let manager = SourceManager::new();
+        let cancel = CancellationToken::new();
+        let mut source = MockSource::new("shutdown");
+        source.failures_remaining = usize::MAX;
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            let cancel = cancel.clone();
+            async move {
+                manager
+                    .add_source_with_retry(Box::new(source), None, cancel)
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown must interrupt retry sleep")
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!manager.has_source("shutdown").await);
+    }
+
+    #[tokio::test]
     async fn add_source_rejects_duplicate_stream_id() {
         let manager = SourceManager::new();
         let source1 = Box::new(MockSource::new("test"));
@@ -865,6 +1069,26 @@ mod tests {
 
         let sources = manager.list_sources().await;
         assert!(sources.is_empty());
+
+        let mut source = MockSource::new("pending");
+        source.failures_remaining = usize::MAX;
+        let task = tokio::spawn({
+            let manager = manager.clone();
+            async move {
+                manager
+                    .add_source_with_retry(Box::new(source), None, CancellationToken::new())
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        manager.stop_all().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("stop_all must cancel pending starts")
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!manager.is_starting("pending"));
+        assert!(manager.list_sources().await.is_empty());
     }
 
     #[cfg(feature = "source")]

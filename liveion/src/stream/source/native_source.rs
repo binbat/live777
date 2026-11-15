@@ -136,6 +136,11 @@ impl StreamSource for NativeSource {
         self.inner.state()
     }
 
+    #[cfg(feature = "encoder-opus")]
+    fn should_retry_start(&self, error: &anyhow::Error) -> bool {
+        self.inner.should_retry_start(error)
+    }
+
     async fn start(&mut self) -> Result<()> {
         self.inner.start().await
     }

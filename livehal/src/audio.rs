@@ -121,8 +121,8 @@ struct PcmChunk {
 }
 
 trait Capture: Send {
-    /// Blocking producer loop: push chunks until `stop` is set, the receiver
-    /// is gone, or a fatal error occurs (traced, never panicked).
+    /// Blocking producer loop: push chunks until `stop` is set or the receiver
+    /// is gone. Backends may recover and reopen after capture errors.
     fn run(self: Box<Self>, tx: mpsc::UnboundedSender<PcmChunk>, stop: Arc<AtomicBool>);
 }
 
@@ -133,11 +133,7 @@ fn build_capture(params: &AudioSourceParams) -> Result<Box<dyn Capture>> {
             channels: params.channels as usize,
         })),
         #[cfg(all(feature = "capture-alsa", target_os = "linux"))]
-        "alsa" => Ok(Box::new(alsa_capture::AlsaCapture {
-            device: params.capture_device.clone(),
-            sample_rate: params.sample_rate,
-            channels: params.channels as usize,
-        })),
+        "alsa" => Ok(Box::new(alsa_capture::AlsaCapture::new(params)?)),
         other => bail!("unknown or unavailable audio capture backend {other:?}"),
     }
 }
@@ -193,26 +189,41 @@ mod alsa_capture {
     use tracing::error;
 
     pub struct AlsaCapture {
-        pub device: String,
-        pub sample_rate: u32,
-        pub channels: usize,
-    }
-
-    impl Capture for AlsaCapture {
-        fn run(self: Box<Self>, tx: mpsc::UnboundedSender<PcmChunk>, stop: Arc<AtomicBool>) {
-            if let Err(e) = self.run_inner(&tx, &stop) {
-                error!(device = %self.device, "alsa capture failed: {e:#}");
-            }
-        }
+        device: String,
+        sample_rate: u32,
+        channels: usize,
+        pcm: Option<PCM>,
+        #[cfg(test)]
+        fail_after_first_chunk: std::cell::Cell<bool>,
+        #[cfg(test)]
+        reopen_failures_remaining: std::cell::Cell<u8>,
     }
 
     impl AlsaCapture {
-        fn run_inner(
-            &self,
-            tx: &mpsc::UnboundedSender<PcmChunk>,
-            stop: &Arc<AtomicBool>,
-        ) -> Result<()> {
-            let pcm = PCM::new(&self.device, Direction::Capture, false)
+        pub fn new(params: &AudioSourceParams) -> Result<Self> {
+            let mut capture = Self {
+                device: params.capture_device.clone(),
+                sample_rate: params.sample_rate,
+                channels: params.channels as usize,
+                pcm: None,
+                #[cfg(test)]
+                fail_after_first_chunk: std::cell::Cell::new(false),
+                #[cfg(test)]
+                reopen_failures_remaining: std::cell::Cell::new(0),
+            };
+            let pcm = capture.open()?;
+            capture.pcm = Some(pcm);
+            Ok(capture)
+        }
+
+        fn open(&self) -> Result<PCM> {
+            #[cfg(test)]
+            if self.reopen_failures_remaining.get() > 0 {
+                self.reopen_failures_remaining
+                    .set(self.reopen_failures_remaining.get() - 1);
+                bail!("injected ALSA reopen failure");
+            }
+            let pcm = PCM::new(&self.device, Direction::Capture, true)
                 .with_context(|| format!("snd_pcm_open {:?}", self.device))?;
             {
                 let hwp = HwParams::any(&pcm)?;
@@ -231,25 +242,191 @@ mod alsa_capture {
                 pcm.hw_params(&hwp)?;
             }
             pcm.prepare()?;
+            pcm.io_i16()?;
+            Ok(pcm)
+        }
+
+        fn capture(
+            &self,
+            pcm: &PCM,
+            tx: &mpsc::UnboundedSender<PcmChunk>,
+            stop: &Arc<AtomicBool>,
+        ) -> Result<()> {
             let io = pcm.io_i16()?;
             let period = self.sample_rate as usize * CHUNK_MS as usize / 1000;
             let mut buf = vec![0i16; period * self.channels];
             while !stop.load(Ordering::Relaxed) {
                 match io.readi(&mut buf) {
                     Ok(frames) => {
+                        if frames == 0 {
+                            continue;
+                        }
                         let pts_us = crate::monotonic_us();
                         let samples = buf[..frames * self.channels].to_vec();
                         if tx.send(PcmChunk { pts_us, samples }).is_err() {
-                            break;
+                            return Ok(());
+                        }
+                        #[cfg(test)]
+                        if self.fail_after_first_chunk.replace(false) {
+                            bail!("injected ALSA read failure");
+                        }
+                    }
+                    Err(e) if e.errno() == libc::EAGAIN || e.errno() == libc::EINTR => {
+                        if !pcm.wait(Some(100))? {
+                            continue;
                         }
                     }
                     Err(e) => {
-                        // Overrun (-EPIPE) etc.: recover and keep going.
-                        pcm.recover(e.errno(), true).context("snd_pcm_recover")?;
+                        pcm.recover(e.errno(), true)
+                            .with_context(|| format!("snd_pcm_recover after {e}"))?;
                     }
                 }
             }
             Ok(())
+        }
+
+        fn reopen(&self, stop: &Arc<AtomicBool>) -> Option<PCM> {
+            while !stop.load(Ordering::Relaxed) {
+                match self.open() {
+                    Ok(pcm) => {
+                        tracing::info!(device = %self.device, "ALSA capture reopened");
+                        return Some(pcm);
+                    }
+                    Err(e) => {
+                        warn!(device = %self.device, error = %e, "ALSA reopen failed; retrying in 1s");
+                    }
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                while !stop.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+            None
+        }
+    }
+
+    impl Capture for AlsaCapture {
+        fn run(mut self: Box<Self>, tx: mpsc::UnboundedSender<PcmChunk>, stop: Arc<AtomicBool>) {
+            let Some(mut pcm) = self.pcm.take() else {
+                error!(device = %self.device, "ALSA PCM was not initialized");
+                return;
+            };
+            while !stop.load(Ordering::Relaxed) {
+                match self.capture(&pcm, &tx, &stop) {
+                    Ok(()) => return,
+                    Err(e) => {
+                        warn!(device = %self.device, error = %e, "ALSA capture interrupted; reopening");
+                    }
+                }
+                drop(pcm);
+                let Some(reopened) = self.reopen(&stop) else {
+                    break;
+                };
+                pcm = reopened;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn invalid_device_fails_open() {
+            let mut params = AudioSourceParams {
+                capture_backend: "alsa".into(),
+                capture_device: "live777-test-no-such-device".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                bitrate: 64_000,
+                application: AudioApplication::Audio,
+                frame_ms: 20,
+                vbr: true,
+                inband_fec: false,
+                dtx: false,
+                payload_type: 111,
+                clock_rate: 48_000,
+                complexity: 9,
+            };
+            assert!(AlsaCapture::new(&params).is_err());
+
+            params.capture_device = "live777-test-no-such-device-2".into();
+            let capture = AlsaCapture {
+                device: params.capture_device,
+                sample_rate: params.sample_rate,
+                channels: params.channels as usize,
+                pcm: None,
+                fail_after_first_chunk: std::cell::Cell::new(false),
+                reopen_failures_remaining: std::cell::Cell::new(0),
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_from_thread = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                stop_from_thread.store(true, Ordering::Relaxed);
+            });
+            let start = std::time::Instant::now();
+            assert!(capture.reopen(&stop).is_none());
+            assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        }
+
+        #[test]
+        fn capture_reopens_and_stops_after_read_failure() {
+            let params = AudioSourceParams {
+                capture_backend: "alsa".into(),
+                capture_device: std::env::var("LIVE777_TEST_ALSA_DEVICE")
+                    .unwrap_or_else(|_| "null".into()),
+                sample_rate: 48_000,
+                channels: 2,
+                bitrate: 64_000,
+                application: AudioApplication::Audio,
+                frame_ms: 20,
+                vbr: true,
+                inband_fec: false,
+                dtx: false,
+                payload_type: 111,
+                clock_rate: 48_000,
+                complexity: 9,
+            };
+            let capture = AlsaCapture::new(&params).unwrap();
+            capture.fail_after_first_chunk.set(true);
+            capture.reopen_failures_remaining.set(1);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let capture_stop = Arc::clone(&stop);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                Box::new(capture).run(tx, capture_stop);
+                let _ = done_tx.send(());
+            });
+            let (chunk_tx, chunk_rx) = std::sync::mpsc::channel();
+            let forward = std::thread::spawn(move || {
+                while let Some(chunk) = rx.blocking_recv() {
+                    if chunk_tx.send(chunk).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let first = chunk_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("initial capture chunk");
+            assert!(!first.samples.is_empty());
+            assert!(
+                chunk_rx
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .is_ok(),
+                "capture did not resume after reopen"
+            );
+            stop.store(true, Ordering::Relaxed);
+            assert!(
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .is_ok(),
+                "capture did not stop within its bounded wait"
+            );
+            thread.join().unwrap();
+            forward.join().unwrap();
         }
     }
 }
@@ -394,17 +571,15 @@ impl AudioPipeline {
     }
 
     /// Start streaming; returns a receiver that yields [`EncodedPacket`]
-    /// Opus frames.  Capture open/read failures surface by ending the stream
-    /// (traced in the capture thread), not by panicking across threads.
+    /// Opus frames. Capture open failures are returned synchronously; a
+    /// successfully opened capture can recover and reopen after read failures.
     pub fn start(&mut self) -> Result<mpsc::UnboundedReceiver<EncodedPacket>> {
-        let rx = self
-            .rx
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("start called twice"))?;
-        let pkt_tx = self
-            .pkt_tx
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("start called twice"))?;
+        if self.rx.is_none() || self.pkt_tx.is_none() {
+            bail!("start called twice");
+        }
+        let capture = build_capture(&self.params)?;
+        let rx = self.rx.take().expect("audio receiver was checked");
+        let pkt_tx = self.pkt_tx.take().expect("audio sender was checked");
         let params = &self.params;
 
         let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmChunk>();
@@ -438,13 +613,21 @@ impl AudioPipeline {
             .spawn(move || task.run())
             .context("spawn audio encode thread")?;
 
-        let capture = build_capture(params)?;
         let stop = Arc::clone(&self.stop);
-        let cap_thread = std::thread::Builder::new()
+        let cap_thread = match std::thread::Builder::new()
             .name("livehal-audio-capture".into())
             .spawn(move || capture.run(pcm_tx, stop))
-            .context("spawn audio capture thread")?;
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                self.stop.store(true, Ordering::Relaxed);
+                let _ = enc_thread.join();
+                self.stop.store(false, Ordering::Relaxed);
+                return Err(e).context("spawn audio capture thread");
+            }
+        };
 
+        self.stop.store(false, Ordering::Relaxed);
         self.threads = vec![cap_thread, enc_thread];
         self.running.store(true, Ordering::Relaxed);
         Ok(rx)
@@ -697,15 +880,37 @@ mod tests {
 
     #[cfg(all(feature = "capture-alsa", target_os = "linux"))]
     #[test]
+    fn alsa_open_failure_is_synchronous() {
+        let mut params = sine_params();
+        params.capture_backend = "alsa".into();
+        params.capture_device = "live777-test-no-such-device".into();
+        let mut pipe = AudioPipeline::new(&params).unwrap();
+        let error = match pipe.start() {
+            Ok(_) => panic!("an invalid ALSA device must not start"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("snd_pcm_open"));
+        assert!(!pipe.bitrate_handle().set_bitrate(32_000));
+        pipe.stop();
+    }
+
+    #[cfg(all(feature = "capture-alsa", target_os = "linux"))]
+    #[test]
     fn alsa_capture_smoke() {
         let mut params = sine_params();
         params.capture_backend = "alsa".into();
-        params.capture_device = "default".into();
+        params.capture_device =
+            std::env::var("LIVE777_TEST_ALSA_DEVICE").unwrap_or_else(|_| "default".into());
         let mut pipe = AudioPipeline::new(&params).unwrap();
-        let mut rx = pipe.start().unwrap();
+        let mut rx = match pipe.start() {
+            Ok(rx) => rx,
+            Err(e) => {
+                eprintln!("alsa_capture_smoke: no ALSA device present, skipping: {e:#}");
+                pipe.stop();
+                return;
+            }
+        };
 
-        // No sound card on CI: a missing/failing device ends the stream —
-        // skip instead of failing.
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             while let Some(p) = rx.blocking_recv() {

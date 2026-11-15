@@ -155,6 +155,10 @@ struct SourceStartBudget {
     /// How long to wait for the source's codec to become known before the
     /// start is considered failed.
     codec_timeout: Duration,
+    /// Retry budget for transient capture-open failures. Background startup
+    /// retries until shutdown; subscriber-triggered starts use the configured
+    /// on-demand budget instead of retrying indefinitely under its lock.
+    capture_retry_timeout: Option<Duration>,
     /// Per-attempt codec re-wait inside bridge creation. Startup paths give
     /// the source an extra grace period here; on-demand passes zero because
     /// the subscriber's wait budget was already spent on `codec_timeout`.
@@ -171,6 +175,7 @@ struct SourceStartBudget {
 #[cfg(feature = "source")]
 const STARTUP_SOURCE_BUDGET: SourceStartBudget = SourceStartBudget {
     codec_timeout: Duration::from_secs(10),
+    capture_retry_timeout: None,
     bridge_codec_wait: crate::stream::source::manager::DEFAULT_BRIDGE_CODEC_WAIT,
     rtcp_wait: crate::stream::source::manager::DEFAULT_BRIDGE_RTCP_WAIT,
     max_bridge_retries: 3,
@@ -190,6 +195,7 @@ impl SourceStartBudget {
     fn on_demand(entry: &crate::config::StreamEntry) -> Self {
         Self {
             codec_timeout: Duration::from_millis(entry.on_demand_start_timeout_ms),
+            capture_retry_timeout: Some(Duration::from_millis(entry.on_demand_start_timeout_ms)),
             bridge_codec_wait: Duration::ZERO,
             rtcp_wait: Duration::from_millis(500),
             max_bridge_retries: 1,
@@ -798,9 +804,12 @@ impl Manager {
         // starting the on-demand source while a publisher is live — is
         // guarded in `ensure_on_demand_source`.)
         #[cfg(feature = "source")]
-        if self.source_manager.has_bridge(&stream).await {
+        if self.source_manager.has_bridge(&stream).await
+            || self.source_manager.has_source(&stream).await
+            || self.source_manager.is_starting(&stream)
+        {
             return Err(AppError::stream_source_active(format!(
-                "stream '{stream}' has an active configured source"
+                "stream '{stream}' has an active or starting configured source"
             )));
         }
         let forward = self
@@ -1468,10 +1477,10 @@ impl Manager {
     /// media; instead the subscribe fails with an error and the client can
     /// retry.
     ///
-    /// No-op (Ok) for non-on-demand streams, streams whose source bridge is
-    /// already up, and streams with a live WHIP publisher (the publisher
-    /// feeds the media, starting the configured source would mix two
-    /// publishers' tracks).
+    /// Non-on-demand streams with configured sources require a ready source
+    /// bridge while their background start is pending; a live WHIP publisher
+    /// satisfies the same requirement. Otherwise subscribing fails explicitly
+    /// rather than establishing a trackless session that cannot recover.
     ///
     /// Readiness is judged by the *bridge*, not by source existence: a
     /// source that is merely present (a concurrent start still waiting for
@@ -1487,8 +1496,21 @@ impl Manager {
         let Some(entry) = self.config.stream.streams.get(stream) else {
             return Ok(());
         };
-        if !entry.on_demand || entry.sources.is_empty() {
+        if entry.sources.is_empty() {
             return Ok(());
+        }
+        if !entry.on_demand {
+            if self.source_manager.has_bridge(stream).await {
+                return Ok(());
+            }
+            if let Some(forward) = self.stream_map.read().await.get(stream).cloned()
+                && !forward.has_no_live_publisher().await
+            {
+                return Ok(());
+            }
+            return Err(AppError::throw(format!(
+                "source for stream '{stream}' is not ready"
+            )));
         }
         if self.source_manager.has_bridge(stream).await {
             // The sources are already running, and the pending stop was
@@ -1661,12 +1683,12 @@ impl Manager {
         stream: &str,
         reason: SessionStopReason,
     ) -> Result<()> {
-        if !self.source_manager.has_source(stream).await {
-            return Ok(());
-        }
+        self.source_manager.cancel_start(stream);
         // Snapshot before removal: `remove_source` drops the bridge too.
         let had_bridge = self.source_manager.has_bridge(stream).await;
-        self.source_manager.remove_source(stream).await?;
+        if self.source_manager.has_source(stream).await {
+            self.source_manager.remove_source(stream).await?;
+        }
         if let Some(forward) = self.stream_map.read().await.get(stream) {
             forward.remove_virtual_tracks().await;
         }
@@ -1840,13 +1862,25 @@ impl Manager {
 
         tracing::info!("Auto-starting {} sources", count);
 
+        let mut starts = tokio::task::JoinSet::new();
         for (stream_id, entry) in &stream_config.streams {
             // On-demand sources start on the first subscriber instead.
             if entry.on_demand {
                 continue;
             }
-            self.start_stream_sources(stream_id, entry, STARTUP_SOURCE_BUDGET)
-                .await;
+            let manager = self.clone();
+            let stream_id = stream_id.clone();
+            let entry = entry.clone();
+            starts.spawn(async move {
+                manager
+                    .start_stream_sources(&stream_id, &entry, STARTUP_SOURCE_BUDGET)
+                    .await;
+            });
+        }
+        while let Some(result) = starts.join_next().await {
+            if let Err(e) = result {
+                tracing::error!("Source auto-start task failed: {e}");
+            }
         }
 
         tracing::info!("Auto-start sources completed");
@@ -1860,7 +1894,11 @@ impl Manager {
         stream_id: &str,
         budget: SourceStartBudget,
     ) {
-        if let Err(e) = self.source_manager.add_source(source).await {
+        if let Err(e) = self
+            .source_manager
+            .add_source_with_retry(source, budget.capture_retry_timeout, self.cancel.clone())
+            .await
+        {
             tracing::error!("Failed to start source {}: {}", stream_id, e);
             return;
         }
@@ -2043,6 +2081,7 @@ mod tests {
     fn whep_source_extends_on_demand_codec_budget() {
         let budget = SourceStartBudget {
             codec_timeout: Duration::from_secs(10),
+            capture_retry_timeout: Some(Duration::ZERO),
             bridge_codec_wait: Duration::ZERO,
             rtcp_wait: Duration::ZERO,
             max_bridge_retries: 1,
@@ -2711,6 +2750,7 @@ mod tests {
                     "dead",
                     SourceStartBudget {
                         codec_timeout: Duration::from_millis(10),
+                        capture_retry_timeout: Some(Duration::ZERO),
                         bridge_codec_wait: Duration::ZERO,
                         rtcp_wait: Duration::ZERO,
                         max_bridge_retries: 1,

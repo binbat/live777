@@ -24,6 +24,8 @@ mod utils;
     "encoder-rdk",
     "encoder-rkmpp",
     "encoder-cedar",
+    "encoder-opus",
+    "capture-alsa",
     "native-rpi",
     "native-generic-v4l2",
     "native-rdk",
