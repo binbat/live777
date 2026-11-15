@@ -1477,7 +1477,7 @@ impl Manager {
     /// media; instead the subscribe fails with an error and the client can
     /// retry.
     ///
-    /// Non-on-demand streams with configured sources wait up to the normal
+    /// Non-on-demand streams with actual media sources wait up to the normal
     /// startup budget while their background start is pending; a live WHIP
     /// publisher satisfies the same requirement. A source that is still
     /// unavailable at the deadline fails explicitly rather than establishing
@@ -1497,7 +1497,19 @@ impl Manager {
         let Some(entry) = self.config.stream.streams.get(stream) else {
             return Ok(());
         };
-        if entry.sources.is_empty() {
+        let has_media_source = entry.sources.iter().any(|source| {
+            source.url.is_some() || {
+                #[cfg(feature = "native-source")]
+                {
+                    source.to_spec(stream).is_some()
+                }
+                #[cfg(not(feature = "native-source"))]
+                {
+                    false
+                }
+            }
+        });
+        if !has_media_source {
             return Ok(());
         }
         if !entry.on_demand {
@@ -2085,6 +2097,34 @@ mod tests {
             #[cfg(feature = "native-source")]
             tiers: vec![],
         }
+    }
+
+    #[cfg(feature = "source")]
+    #[tokio::test]
+    async fn cable_only_source_does_not_wait_for_media() {
+        let mut cfg = crate::config::Config::default();
+        cfg.stream.streams.insert(
+            "dc-only".into(),
+            crate::config::StreamEntry {
+                sources: vec![crate::config::SourceConfig {
+                    cables: vec![crate::config::CableEndpoint {
+                        label: "control".into(),
+                        url: "udp://127.0.0.1:0".into(),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let manager = Manager::new(cfg, CancellationToken::new()).await;
+        manager.provision_streams().await;
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            manager.ensure_on_demand_source("dc-only"),
+        )
+        .await
+        .expect("cable-only streams must not wait for a media bridge")
+        .unwrap();
     }
 
     #[cfg(feature = "source")]
