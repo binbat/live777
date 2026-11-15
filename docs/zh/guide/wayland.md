@@ -61,7 +61,7 @@ Environment=XDG_RUNTIME_DIR=/run/live777
 ## 当前限制
 
 - **GPU 客户端需要宿主机上有可用的 GPU/EGL 驱动** —— 满足条件时会广播
-  `zwp_linux_dmabuf_v1`，GL 客户端（Qt Quick、浏览器、mpv、Gazebo 等）
+  `zwp_linux_dmabuf_v1`，GL 客户端（Qt Quick、浏览器、mpv 等）
   可以直接渲染进流；不满足时合成器回退到 CPU 合成，仅支持 SHM
   （wl_shm）客户端。DRM 设备默认依次尝试 `/dev/dri/renderD128` 和
   `/dev/dri/card0`，可用 `LIVE777_WAYLAND_DRM_DEVICE` 覆盖。
