@@ -267,9 +267,10 @@ Initial ALSA open/configuration errors fail the start attempt; transient
 a silent audio track. Configured sources retry independently in the background
 without delaying the HTTP server. On-demand starts use the configured timeout,
 and shutdown cancels pending retries. While a configured source is still being
-retried, subscriptions fail explicitly as not ready instead of establishing a
-trackless session; clients can retry after its bridge is created. A pending
-configured source also rejects competing WHIP publishers. Once running,
+retried, subscriptions wait for its bridge for a bounded startup period instead
+of establishing a trackless session, then fail as not ready if it is still
+unavailable; clients can retry after the bridge is created. A pending configured
+source also rejects competing WHIP publishers. Once running,
 capture recovers from overruns and reopens after unrecoverable errors, retrying every second. Capture
 waits are bounded so that stopping the source does not depend on a stalled
 `readi()` returning.

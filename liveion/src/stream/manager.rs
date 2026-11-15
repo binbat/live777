@@ -1477,10 +1477,11 @@ impl Manager {
     /// media; instead the subscribe fails with an error and the client can
     /// retry.
     ///
-    /// Non-on-demand streams with configured sources require a ready source
-    /// bridge while their background start is pending; a live WHIP publisher
-    /// satisfies the same requirement. Otherwise subscribing fails explicitly
-    /// rather than establishing a trackless session that cannot recover.
+    /// Non-on-demand streams with configured sources wait up to the normal
+    /// startup budget while their background start is pending; a live WHIP
+    /// publisher satisfies the same requirement. A source that is still
+    /// unavailable at the deadline fails explicitly rather than establishing
+    /// a trackless session that cannot recover.
     ///
     /// Readiness is judged by the *bridge*, not by source existence: a
     /// source that is merely present (a concurrent start still waiting for
@@ -1500,17 +1501,27 @@ impl Manager {
             return Ok(());
         }
         if !entry.on_demand {
-            if self.source_manager.has_bridge(stream).await {
-                return Ok(());
+            let deadline = std::time::Instant::now() + STARTUP_SOURCE_BUDGET.codec_timeout;
+            loop {
+                if self.source_manager.has_bridge(stream).await {
+                    return Ok(());
+                }
+                if let Some(forward) = self.stream_map.read().await.get(stream).cloned()
+                    && !forward.has_no_live_publisher().await
+                {
+                    return Ok(());
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(AppError::throw(format!(
+                        "source for stream '{stream}' is not ready"
+                    )));
+                }
+                tokio::time::sleep(
+                    Duration::from_millis(50).min(deadline.saturating_duration_since(now)),
+                )
+                .await;
             }
-            if let Some(forward) = self.stream_map.read().await.get(stream).cloned()
-                && !forward.has_no_live_publisher().await
-            {
-                return Ok(());
-            }
-            return Err(AppError::throw(format!(
-                "source for stream '{stream}' is not ready"
-            )));
         }
         if self.source_manager.has_bridge(stream).await {
             // The sources are already running, and the pending stop was

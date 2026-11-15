@@ -475,8 +475,9 @@ clients via Link headers).
   attempts fail synchronously and are retried by the source manager. Configured
   sources retry independently in the background without delaying HTTP;
   on-demand starts use their configured timeout, and shutdown cancels retries.
-  Subscriptions to a configured stream whose source bridge is pending fail
-  explicitly as not ready instead of creating a trackless session. A pending
+  Subscriptions to a configured stream whose source bridge is pending wait for
+  a bounded startup period and fail as not ready if it is still unavailable,
+  rather than creating a trackless session. A pending
   source start rejects competing WHIP publishers and has its own cancellation
   token, so removal and `stop_all` interrupt its retry wait; bridge creation
   also rejects a live publisher rather than mixing real and virtual tracks.
