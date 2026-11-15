@@ -151,6 +151,7 @@ impl AudioState {
                 self.logged_frame = true;
             }
             match self.packetizer.packetize(
+                std::time::Instant::now(),
                 &bytes::Bytes::copy_from_slice(&out[..len]),
                 FRAME_SAMPLES as u32,
             ) {
@@ -339,6 +340,7 @@ fn run(
         stream_id: stream_id.clone(),
         rtp_tx,
         packetizer: Box::new(new_packetizer(
+            std::time::Instant::now(),
             1400,
             AUDIO_PAYLOAD_TYPE,
             ssrc,
@@ -481,7 +483,7 @@ mod tests {
         state.emit_frames();
 
         let mut timestamps = Vec::new();
-        while let Ok(MediaPacket::RtpAudioPacket(p)) = rtp_rx.try_recv() {
+        while let Ok(MediaPacket::AudioRtpPacket(p)) = rtp_rx.try_recv() {
             assert_eq!(p.header.payload_type, AUDIO_PAYLOAD_TYPE);
             assert_eq!(p.header.ssrc, 42);
             assert!(!p.payload.is_empty());
@@ -520,7 +522,7 @@ mod tests {
             else {
                 panic!("timed out waiting for audio packets (got {received})");
             };
-            assert!(matches!(msg.unwrap(), MediaPacket::RtpAudioPacket(_)));
+            assert!(matches!(msg.unwrap(), MediaPacket::AudioRtpPacket(_)));
             received += 1;
         }
         assert!(handle.running());
