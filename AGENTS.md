@@ -567,9 +567,10 @@ clients via Link headers).
   unreachable → video-only with a warning), taps the monitor of an
   `Audio/Sink` node (session manager such as wireplumber must be running to
   link it), encodes 20 ms Opus frames and broadcasts
-  `MediaPacket::RtpAudioPacket` — a pre-packetized variant the bridge
-  injects into the audio track via `PeerForward::inject_audio_rtp_packet`
-  (`RtpPacket` stays video). `get_audio_codec` is gated on the video codec
+  `MediaPacket::AudioRtpPacket` — the pre-packetized audio variant shared
+  with the native source's audio leg, which the bridge injects into the
+  audio track via `PeerForward::inject_audio_rtp_packet` (`RtpPacket` stays
+  video). `get_audio_codec` is gated on the video codec
   being known because the bridge adds tracks in a single pass once any
   codec is ready.
   Remote input (`input=1`, off by default — every subscriber can then drive
