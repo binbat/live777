@@ -109,6 +109,13 @@ encoder-rdk = ["native-source", "livehal/encoder-rdk"]
 encoder-rkmpp = ["native-source", "livehal/encoder-rkmpp"]
 encoder-cedar = ["native-source", "livehal/encoder-cedar"]
 
+# Audio (pure-Rust Opus encode in livehal; pairs with the `sine` capture or
+# an ALSA microphone via capture-alsa)
+encoder-opus = ["native-source", "livehal/encoder-opus"]
+
+# Audio capture backends
+capture-alsa = ["encoder-opus", "livehal/capture-alsa"]
+
 # Platform presets
 # native-rpi: builds both libcamera (Pi CSI camera) and V4L2 (Pi USB camera).
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]

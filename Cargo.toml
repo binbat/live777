@@ -131,6 +131,9 @@ tempfile = "3"
 http = { workspace = true }
 serde_json = { workspace = true }
 portpicker = "0.1.1"
+# Only used by tests/native_audio.rs (gated on native-source,encoder-opus);
+# pure Rust, so it builds under every feature set.
+opus-rs = "=0.1.42"
 
 api = { path = "libs/api" }
 reqwest = { workspace = true, features = ["socks", "json"] }
@@ -205,6 +208,12 @@ encoder-v4l2-m2m = ["liveion/encoder-v4l2-m2m", "native-source"]
 encoder-rdk = ["liveion/encoder-rdk", "native-source"]
 encoder-rkmpp = ["liveion/encoder-rkmpp", "native-source"]
 encoder-cedar = ["liveion/encoder-cedar", "native-source"]
+
+# Audio (Opus) encoder — pure-Rust livehal pipeline, `sine` test-tone capture
+encoder-opus = ["liveion/encoder-opus", "native-source"]
+
+# Audio capture backends
+capture-alsa = ["liveion/capture-alsa"]
 
 # Platform presets (recommended for users)
 native-rpi = ["capture-libcamera", "capture-v4l2", "encoder-v4l2-m2m"]

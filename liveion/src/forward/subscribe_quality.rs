@@ -148,8 +148,9 @@ impl SubscribeRtcpStats {
 
     fn is_video_ssrc(&self, ssrc: u32) -> bool {
         // Before the first bind the set is empty; attribute feedback to
-        // video anyway so early loss is not silently dropped (audio-only
-        // subscribers simply never matter for the encoder).
+        // video anyway so early loss is not silently dropped.  The set also
+        // stays empty on an audio-only stream, where the feedback is exactly
+        // what drives the Opus encoder.
         let ssrcs = self.video_ssrcs.lock().unwrap();
         ssrcs.is_empty() || ssrcs.contains(&ssrc)
     }

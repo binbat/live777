@@ -20,28 +20,34 @@ use rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters;
 
 pub struct NativeSource {
     inner: NativeEncodedSource,
-    /// Configured (spec) pipeline params — the ladder's top rung and the
-    /// fallback for tier fields a tier leaves unset.
-    base_params: livehal::NativeSourceParams,
+    /// Configured (spec) video pipeline params — the ladder's top rung and
+    /// the fallback for tier fields a tier leaves unset.  `None` on an
+    /// audio-only source (which has no rebuildable video pipeline).
+    base_params: Option<livehal::NativeSourceParams>,
 }
 
 impl NativeSource {
     pub fn from_spec(spec: &SourceSpec) -> Result<Self> {
         spec.validate()?;
-        let native_params = spec.to_native_params()?;
+        let video_params = spec.to_native_params()?;
+        #[cfg(feature = "encoder-opus")]
+        let audio_params = spec.to_audio_params();
         let tiers: Vec<super::tier::QualityTier> = spec
             .tiers
             .iter()
             .map(|t| super::tier::QualityTier {
                 name: t.name.clone(),
                 // Unset fields overlay on the configured capture — the
-                // derivation sees the tier's effective geometry.
+                // derivation sees the tier's effective geometry.  On an
+                // audio-only source validation guarantees every tier has an
+                // explicit bitrate, so the derivation never runs there.
                 bitrate: t.encoder.bitrate.unwrap_or_else(|| {
-                    super::source_config::TierSpec::derived_bitrate(
-                        t.capture.width.unwrap_or(spec.capture.width),
-                        t.capture.height.unwrap_or(spec.capture.height),
-                        t.capture.fps.unwrap_or(spec.capture.fps),
-                    )
+                    let (width, height, fps) = spec
+                        .capture
+                        .as_ref()
+                        .map(|c| (c.width, c.height, c.fps))
+                        .unwrap_or((0, 0, 0));
+                    super::source_config::TierSpec::derived_bitrate(width, height, fps)
                 }),
                 width: t.capture.width,
                 height: t.capture.height,
@@ -51,43 +57,72 @@ impl NativeSource {
 
         // Adaptive bitrate is on unless explicitly switched off.  The
         // floor defaults to the lowest rung when tiers are declared (the
-        // ladder bottom is the natural floor), else the generic
-        // `max(target / 8, 300 kbps)` inside AdaptiveBitrateConfig::new.
+        // ladder bottom is the natural floor).  A video leg drives the
+        // rule as today (generic `max(target / 8, 300 kbps)` inside
+        // AdaptiveBitrateConfig::new); on an audio-only source the AIMD
+        // drives the Opus encoder with a floor of `max(bitrate / 4, 16
+        // kbps)`.  With both legs the video rule wins and the audio leg's
+        // own `adaptive` key is ignored.
         use super::source_config::AdaptiveConfig;
         let floor = tiers.iter().map(|t| t.bitrate).min();
-        let adaptive = match spec.encoder.adaptive {
-            Some(AdaptiveConfig::Switch(false)) => None,
-            Some(AdaptiveConfig::Knobs { min_bitrate }) => {
-                Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
-                    spec.encoder.bitrate,
-                    min_bitrate.or(floor),
-                ))
+        let adaptive = if let Some(encoder) = &spec.encoder {
+            match encoder.adaptive {
+                Some(AdaptiveConfig::Switch(false)) => None,
+                Some(AdaptiveConfig::Knobs { min_bitrate }) => {
+                    Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                        encoder.bitrate,
+                        min_bitrate.or(floor),
+                    ))
+                }
+                Some(AdaptiveConfig::Switch(true)) | None => Some(
+                    super::adaptive_bitrate::AdaptiveBitrateConfig::new(encoder.bitrate, floor),
+                ),
             }
-            Some(AdaptiveConfig::Switch(true)) | None => Some(
-                super::adaptive_bitrate::AdaptiveBitrateConfig::new(spec.encoder.bitrate, floor),
-            ),
+        } else if let Some(audio_encoder) = &spec.audio_encoder {
+            let audio_floor = (audio_encoder.bitrate / 4).max(16_000);
+            match audio_encoder.adaptive {
+                Some(AdaptiveConfig::Switch(false)) => None,
+                Some(AdaptiveConfig::Knobs { min_bitrate }) => {
+                    Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                        audio_encoder.bitrate,
+                        min_bitrate.or(floor).or(Some(audio_floor)),
+                    ))
+                }
+                Some(AdaptiveConfig::Switch(true)) | None => {
+                    Some(super::adaptive_bitrate::AdaptiveBitrateConfig::new(
+                        audio_encoder.bitrate,
+                        floor.or(Some(audio_floor)),
+                    ))
+                }
+            }
+        } else {
+            // Unreachable: validate() requires at least one complete leg.
+            None
         };
         Ok(Self {
             inner: NativeEncodedSource::new(
                 spec.stream_id.clone(),
-                native_params.clone(),
+                video_params.clone(),
+                #[cfg(feature = "encoder-opus")]
+                audio_params,
                 adaptive,
                 tiers,
             ),
-            base_params: native_params,
+            base_params: video_params,
         })
     }
 
     /// Effective pipeline params for a tier: the configured (spec) values
-    /// with the tier's geometry/bitrate overlaid.
+    /// with the tier's geometry/bitrate overlaid.  `None` on an audio-only
+    /// source (no video pipeline to rebuild).
     #[cfg(feature = "source")]
-    fn tier_params(&self, tier: &super::tier::QualityTier) -> livehal::NativeSourceParams {
-        let mut params = self.base_params.clone();
+    fn tier_params(&self, tier: &super::tier::QualityTier) -> Option<livehal::NativeSourceParams> {
+        let mut params = self.base_params.clone()?;
         params.width = tier.width.unwrap_or(params.width);
         params.height = tier.height.unwrap_or(params.height);
         params.fps = tier.fps.unwrap_or(params.fps);
         params.bitrate = tier.bitrate;
-        params
+        Some(params)
     }
 }
 
@@ -165,7 +200,9 @@ impl StreamSource for NativeSource {
 
     #[cfg(feature = "source")]
     async fn apply_tier(&mut self, tier: &super::tier::QualityTier) -> bool {
-        // Bitrate-only rung: seamless in-place retune, no rebuild.
+        // Bitrate-only rung: seamless in-place retune, no rebuild.  On an
+        // audio-only source this retunes the Opus encoder (see
+        // NativeEncodedSource::set_bitrate).
         if !tier.needs_rebuild() {
             if !self.inner.set_bitrate(tier.bitrate) {
                 return false;
@@ -173,7 +210,11 @@ impl StreamSource for NativeSource {
             self.inner.set_active_tier(Some(tier.name.clone()));
             return true;
         }
-        let params = self.tier_params(tier);
+        // Geometry rung: rebuild the video pipeline.  Unreachable on an
+        // audio-only source — validation rejects geometry tiers there.
+        let Some(params) = self.tier_params(tier) else {
+            return false;
+        };
         if self.inner.reconfigure(params).await.is_ok() {
             self.inner.set_active_tier(Some(tier.name.clone()));
             true

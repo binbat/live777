@@ -45,6 +45,10 @@ pub struct NativeSourceParams {
     pub tier_flag: u32,
 }
 
+/// Audio codec id for Opus packets (video codecs occupy 100-104 in liveion's
+/// mapping; the FFI `VideoCodec` enum is untouched).
+pub const AUDIO_CODEC_OPUS: u32 = 200;
+
 /// An encoded video packet received from the C++ pipeline.
 ///
 /// Data is copied from the FFI callback immediately — the `data` field

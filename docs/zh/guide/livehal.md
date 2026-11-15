@@ -188,6 +188,85 @@ control 只存在于 sensor 子设备节点上，绕开 libcamera 手动设置�
 
 `conf/live777.toml` 自带注释掉的 Pi / RDK 示例。复制它们到你自己的配置中即可启用摄像头源。
 
+### 音频源（麦克风 / sine → Opus）
+
+原生源可以携带一条**音频腿**（`audio_capture` + `audio_encoder`），替代视频腿或与其并存。
+音频管线是纯 Rust 实现（不涉及 C++ `native-pipeline`）：采集 → 经 `opus-rs` 做 Opus 编码 →
+RTP 打包，线上契约固定（Opus 48 kHz，RTP payload type 111，时钟 48000，
+fmtp `minptime=10;useinbandfec=1`，RFC 7587）。需要 `encoder-opus` cargo 特性；
+使用真实麦克风还需要 `capture-alsa`（仅 Linux）。
+
+纯音频最简配置——`sine` 后端生成 440 Hz 测试音，无需声卡，适合做冒烟测试和 CI：
+
+```toml
+[stream.mic]
+[[stream.mic.sources]]
+
+[stream.mic.sources.audio_capture]
+backend = "sine"          # 合成 440 Hz 测试音，无需声卡
+
+[stream.mic.sources.audio_encoder]
+codec = "opus"
+```
+
+视频 + 音频（摄像头加一支 ALSA 麦克风）：
+
+```toml
+[stream.cam]
+[[stream.cam.sources]]
+
+[stream.cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 1280
+height = 720
+fps = 30
+pixel_format = "nv12"
+
+[stream.cam.sources.encoder]
+backend = "rkmpp"
+codec = "h264"
+bitrate = 4_000_000
+profile = "640028"
+gop = 60
+
+[stream.cam.sources.audio_capture]
+backend = "alsa"
+device = "default"
+channels = 2
+
+[stream.cam.sources.audio_encoder]
+codec = "opus"
+bitrate = 64_000
+```
+
+#### `audio_capture` 字段
+
+| 字段 | 默认值 | 取值 |
+|---|---|---|
+| `backend` | —（必填） | `"alsa"`（麦克风；需要 `capture-alsa`）、`"sine"`（合成 440 Hz 测试音） |
+| `device` | `"default"` | ALSA PCM 设备；`sine` 后端忽略此项 |
+| `sample_rate` | `48000` | v1 仅支持 48000（不重采样） |
+| `channels` | `2` | 1 或 2 |
+
+#### `audio_encoder` 字段
+
+| 字段 | 默认值 | 取值 |
+|---|---|---|
+| `codec` | —（必填） | 仅 `"opus"` |
+| `bitrate` | `64000` | 6000–510000 bps |
+| `application` | `"audio"` | `"audio"`、`"voip"`、`"lowdelay"` |
+| `frame_ms` | `20` | 5、10、20、40、60 |
+| `vbr` | `true` | `false` = CBR（恒定码率） |
+| `inband_fec` | `false` | Opus 带内 FEC |
+| `dtx` | `false` | Opus 非连续传输 |
+| `complexity` | `9` | 0–10 |
+| `adaptive` | 开启 | 与 `encoder.adaptive` 相同的无标签形态；下限默认 `max(bitrate / 4, 16_000)` |
+
+在视频 + 音频源上，质量档位和自适应控制器都以视频编码器为目标
+（音频腿自己的 `adaptive` 键被忽略）。在纯音频源上，仅改码率的档位会就地
+调整运行中的 Opus 编码器，AIMD 控制器同样作用于它。
+
 ### 自适应码率(实验性) {#adaptive-bitrate}
 
 原生编码源**默认开启**自适应码率 —— 运行中的编码器目标码率由
@@ -298,6 +377,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 |---------|------|
 | `capture-libcamera` | libcamera（树莓派 CSI 摄像头） |
 | `capture-v4l2` | V4L2 视频采集（USB 摄像头、通用 Linux） |
+| `capture-alsa` | ALSA 音频采集（麦克风，仅 Linux；隐含 `encoder-opus`） |
 
 ### 编码后端
 
@@ -307,6 +387,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 | `encoder-rdk` | 地平线 RDK X5 硬件编码器 |
 | `encoder-rkmpp` | 瑞芯微 MPP 硬件编码器（仅 aarch64） |
 | `encoder-cedar` | 全志 cedar VE 硬件编码器（仅 aarch64，A733 / sun60iw2） |
+| `encoder-opus` | Opus 音频编码器（纯 Rust `opus-rs`；搭配 `sine` 测试音或 ALSA 麦克风） |
 
 ### 平台预设
 

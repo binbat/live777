@@ -1182,6 +1182,30 @@ impl PeerForward {
         feature = "source-rtsp",
         feature = "source-sdp",
         feature = "source-whep",
+        feature = "native-source"
+    ))]
+    pub async fn inject_audio_rtp_packet(&self, packet: Arc<Packet>) -> Result<()> {
+        let tracks = self.internal.publish_tracks.read().await;
+        let audio_track = tracks.iter().find(|t| t.kind() == RtpCodecKind::Audio);
+        match audio_track {
+            Some(track) => match track.inject_rtp(packet) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    error!("[{}] Failed to inject audio RTP packet: {}", self.stream, e);
+                    Err(anyhow::anyhow!("Inject failed: {}", e).into())
+                }
+            },
+            None => {
+                warn!("[{}] No audio track found for injection", self.stream);
+                Err(anyhow::anyhow!("No audio track").into())
+            }
+        }
+    }
+
+    #[cfg(any(
+        feature = "source-rtsp",
+        feature = "source-sdp",
+        feature = "source-whep",
         feature = "rtsp"
     ))]
     pub async fn inject_audio_rtp(&self, mut data: &[u8]) -> Result<()> {

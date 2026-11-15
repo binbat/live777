@@ -82,6 +82,10 @@ fn dc_source(listen: u16, target: u16, label: &str) -> liveion::config::SourceCo
         #[cfg(feature = "native-source")]
         encoder: None,
         #[cfg(feature = "native-source")]
+        audio_capture: None,
+        #[cfg(feature = "native-source")]
+        audio_encoder: None,
+        #[cfg(feature = "native-source")]
         output: Default::default(),
         #[cfg(feature = "native-source")]
         tiers: Vec::new(),

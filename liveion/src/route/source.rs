@@ -144,6 +144,10 @@ async fn create_source(
         #[cfg(feature = "native-source")]
         encoder: None,
         #[cfg(feature = "native-source")]
+        audio_capture: None,
+        #[cfg(feature = "native-source")]
+        audio_encoder: None,
+        #[cfg(feature = "native-source")]
         output: Default::default(),
         #[cfg(feature = "native-source")]
         tiers: vec![],

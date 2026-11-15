@@ -10,8 +10,14 @@ mod native_ffi; // crate-private
 pub mod source_pipeline;
 pub mod types;
 
+#[cfg(feature = "encoder-opus")]
+pub mod audio;
+
 pub use source_pipeline::{BitrateHandle, KeyframeHandle, NativePipeline};
-pub use types::{EncodedPacket, NativeSourceParams};
+pub use types::{AUDIO_CODEC_OPUS, EncodedPacket, NativeSourceParams};
+
+#[cfg(feature = "encoder-opus")]
+pub use audio::{AudioApplication, AudioBitrateHandle, AudioPipeline, AudioSourceParams};
 
 /// Monotonic clock (`CLOCK_MONOTONIC`) in microseconds — the same epoch the
 /// C++ pipeline uses for frame timestamps (V4L2 buffer SOF / steady_clock),

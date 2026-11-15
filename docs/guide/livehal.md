@@ -207,6 +207,89 @@ not offered: the Raspberry Pi ISP cannot transpose an image in hardware.
 
 `conf/live777.toml` ships with commented-out Pi / RDK examples.  Copy them into your own config to enable a camera source.
 
+### Audio sources (microphone / sine → Opus)
+
+A native source can carry an **audio leg** (`audio_capture` + `audio_encoder`)
+instead of — or alongside — the video leg. The audio pipeline is pure Rust
+(no C++ `native-pipeline` involvement): capture → Opus encode via `opus-rs`
+→ RTP packetize, with a fixed wire contract (Opus 48 kHz, RTP payload type
+111, clock 48000, fmtp `minptime=10;useinbandfec=1`, RFC 7587). It requires
+the `encoder-opus` cargo feature; a real microphone additionally needs
+`capture-alsa` (Linux only).
+
+Audio-only minimal — the `sine` backend generates a 440 Hz test tone and
+needs no sound card, so it is the go-to shape for smoke tests and CI:
+
+```toml
+[stream.mic]
+[[stream.mic.sources]]
+
+[stream.mic.sources.audio_capture]
+backend = "sine"          # synthetic 440 Hz test tone, no sound card
+
+[stream.mic.sources.audio_encoder]
+codec = "opus"
+```
+
+Video + audio (camera plus an ALSA microphone):
+
+```toml
+[stream.cam]
+[[stream.cam.sources]]
+
+[stream.cam.sources.capture]
+backend = "v4l2"
+device = "/dev/video0"
+width = 1280
+height = 720
+fps = 30
+pixel_format = "nv12"
+
+[stream.cam.sources.encoder]
+backend = "rkmpp"
+codec = "h264"
+bitrate = 4_000_000
+profile = "640028"
+gop = 60
+
+[stream.cam.sources.audio_capture]
+backend = "alsa"
+device = "default"
+channels = 2
+
+[stream.cam.sources.audio_encoder]
+codec = "opus"
+bitrate = 64_000
+```
+
+#### `audio_capture` fields
+
+| Field | Default | Values |
+|---|---|---|
+| `backend` | — (required) | `"alsa"` (microphone; needs `capture-alsa`), `"sine"` (synthetic 440 Hz tone) |
+| `device` | `"default"` | ALSA PCM device; unused by `sine` |
+| `sample_rate` | `48000` | 48000 only in v1 (no resampling) |
+| `channels` | `2` | 1 or 2 |
+
+#### `audio_encoder` fields
+
+| Field | Default | Values |
+|---|---|---|
+| `codec` | — (required) | `"opus"` only |
+| `bitrate` | `64000` | 6000–510000 bps |
+| `application` | `"audio"` | `"audio"`, `"voip"`, `"lowdelay"` |
+| `frame_ms` | `20` | 5, 10, 20, 40, 60 |
+| `vbr` | `true` | `false` = CBR |
+| `inband_fec` | `false` | Opus in-band FEC |
+| `dtx` | `false` | Opus discontinuous transmission |
+| `complexity` | `9` | 0–10 |
+| `adaptive` | on | same untagged shape as `encoder.adaptive`; floor defaults to `max(bitrate / 4, 16_000)` |
+
+On a video+audio source, tiers and the adaptive controller target the video
+encoder (the audio leg's own `adaptive` key is ignored). On an audio-only
+source a bitrate-only tier retunes the running Opus encoder in place, and
+the AIMD controller drives it.
+
 ### Adaptive bitrate (experimental)
 
 Adaptive bitrate is **on by default** for native encoder sources — the
@@ -338,6 +421,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 |---------|---------|
 | `capture-libcamera` | libcamera (Raspberry Pi CSI cameras) |
 | `capture-v4l2` | V4L2 video capture (USB cameras, generic Linux) |
+| `capture-alsa` | ALSA audio capture (microphones, Linux only; implies `encoder-opus`) |
 
 ### Encoder backends
 
@@ -347,6 +431,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 | `encoder-rdk` | Horizon RDK X5 hardware encoder |
 | `encoder-rkmpp` | Rockchip MPP hardware encoder (aarch64 only) |
 | `encoder-cedar` | Allwinner cedar VE hardware encoder (aarch64 only, A733 / sun60iw2) |
+| `encoder-opus` | Opus audio encoder (pure-Rust `opus-rs`; pairs with the `sine` test-tone or an ALSA microphone) |
 
 ### Platform presets
 

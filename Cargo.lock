@@ -68,6 +68,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alsa"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3f93573e7ddb15145d27c58c0fa0a452faad9f5452ac17ed4554ea035ea9b71"
+dependencies = [
+ "alsa-sys",
+ "bitflags 2.13.0",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "alsa-sys"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0320138053ef93099f168102c37b46ac0b9c53affc56ef7696633ad5477e2be"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2375,6 +2398,7 @@ dependencies = [
  "livetwo",
  "net4mqtt",
  "opendal",
+ "opus-rs",
  "playwright-whep",
  "portpicker",
  "reqwest",
@@ -2400,12 +2424,15 @@ dependencies = [
 name = "livehal"
 version = "0.10.2"
 dependencies = [
+ "alsa",
  "anyhow",
  "cc",
  "cmake",
  "libc",
+ "opus-rs",
  "pkg-config",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2952,6 +2979,12 @@ dependencies = [
  "url",
  "uuid",
 ]
+
+[[package]]
+name = "opus-rs"
+version = "0.1.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bafbcaf2ed381cdf68ced4ed8d16517de90ffd7424e36f0b9e45d67fbe30b1f9"
 
 [[package]]
 name = "ordered-float"
