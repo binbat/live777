@@ -176,6 +176,29 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIVEHAL_CXX_STDLIB");
     println!("cargo:rerun-if-env-changed=LIVEHAL_RDK_ALLOW_UNDEFINED");
 
+    // The stub and the C++ library define the same source_pipeline_*
+    // symbols — compile the stub only when the CMake build did not run,
+    // otherwise the linker would see a double definition.
+    if !build_native_pipeline() {
+        build_stub_pipeline();
+    }
+}
+
+/// Compile the stub source_pipeline_* symbols
+/// (native-pipeline/stub_pipeline.c) so Rust-only feature combos (e.g.
+/// `encoder-opus` alone) still link: src/native_ffi.rs declares the externs
+/// unconditionally, but the C++ library that defines them is only built when
+/// a C++ capture/encoder backend is enabled on Linux.
+fn build_stub_pipeline() {
+    println!("cargo:rerun-if-changed=native-pipeline/stub_pipeline.c");
+    cc::Build::new()
+        .file("native-pipeline/stub_pipeline.c")
+        .compile("native-pipeline-stub");
+}
+
+/// Build the C++ native-pipeline library when a C++ capture/encoder backend
+/// is enabled on Linux.  Returns whether the CMake build ran.
+fn build_native_pipeline() -> bool {
     let has_capture_libcamera = env::var("CARGO_FEATURE_CAPTURE_LIBCAMERA").is_ok();
     let has_capture_v4l2 = env::var("CARGO_FEATURE_CAPTURE_V4L2").is_ok();
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
@@ -202,7 +225,7 @@ fn main() {
                  CMake build skipped. Use a Linux target or omit native features."
             );
         }
-        return;
+        return false;
     }
 
     // RDK X5 backend requires aarch64 Linux (ARM NEON + Horizon SDK).
@@ -263,7 +286,7 @@ fn main() {
                  capture-v4l2 / capture-libcamera alongside the encoder."
             );
         }
-        return;
+        return false;
     }
 
     // Native backend selection — inferred from enabled capture/encoder features.
@@ -301,7 +324,7 @@ fn main() {
     } else if has_capture_v4l2 || has_encoder_v4l2_m2m {
         "generic-v4l2".to_string()
     } else {
-        return;
+        return false;
     };
 
     // Rerun-if-changed — all source files that affect the native build
@@ -555,6 +578,7 @@ fn main() {
     }
 
     let dst = cmake_config.build();
+    let cmake_ran = true;
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=native-pipeline");
@@ -627,4 +651,6 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=camera-base");
         println!("cargo:rustc-link-lib=dylib=event");
     }
+
+    cmake_ran
 }

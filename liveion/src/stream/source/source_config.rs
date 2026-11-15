@@ -1,7 +1,9 @@
 //! Native source configuration types.
 //!
 //! Structured TOML config under a per-stream `[[stream.<name>.sources]]` block.
-//! The source type is determined by `capture.backend`:
+//! A source carries a video leg (`capture` + `encoder`), an audio leg
+//! (`audio_capture` + `audio_encoder`), or both.  The video source type is
+//! determined by `capture.backend`:
 //!
 //! ```toml
 //! [stream.usb-cam]
@@ -27,6 +29,32 @@
 //! [stream.usb-cam.sources.output]
 //! payload_type = 96
 //! clock_rate = 90000
+//! ```
+//!
+//! An audio leg (microphone → Opus, or the `sine` test-tone generator) —
+//! alone for an audio-only stream, or alongside the video leg.  Requires
+//! the `encoder-opus` feature:
+//!
+//! ```toml
+//! [stream.mic]
+//! [[stream.mic.sources]]
+//!
+//! [stream.mic.sources.audio_capture]
+//! backend = "alsa"            # or "sine" (synthetic 440 Hz test tone)
+//! device = "default"          # optional, default "default"
+//! sample_rate = 48000         # optional, only 48000 accepted in v1
+//! channels = 2                # optional, 1|2
+//!
+//! [stream.mic.sources.audio_encoder]
+//! codec = "opus"
+//! bitrate = 64000             # optional default
+//! application = "audio"       # optional: audio|voip|lowdelay
+//! frame_ms = 20               # optional: 5|10|20|40|60
+//! vbr = true                  # optional
+//! inband_fec = false          # optional
+//! dtx = false                 # optional
+//! complexity = 9              # optional 0..=10
+//! adaptive = false            # optional, same untagged shape as encoder.adaptive
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -144,6 +172,97 @@ fn default_gop() -> u32 {
     60
 }
 
+/// Audio capture (input device) specification — see the module header for
+/// the TOML shape.  Every field except `backend` has a default, so the
+/// minimal form is `backend = "alsa"` (or `"sine"`) alone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioCaptureSpec {
+    /// Capture backend: `"alsa"` (microphone) or `"sine"` (synthetic
+    /// 440 Hz test tone, no sound card required).
+    pub backend: String,
+    /// Capture device identifier (the ALSA PCM device, e.g. `"default"`;
+    /// unused by the `sine` backend).
+    #[serde(default = "default_audio_device")]
+    pub device: String,
+    /// Capture sample rate; v1 captures at 48000 Hz only (no resampling).
+    #[serde(default = "default_audio_sample_rate")]
+    pub sample_rate: u32,
+    /// Channel count: 1 or 2.
+    #[serde(default = "default_audio_channels")]
+    pub channels: u32,
+}
+
+/// Audio encoder (Opus) specification — see the module header for the TOML
+/// shape.  Every field except `codec` has a default, so the minimal form is
+/// `codec = "opus"` alone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioEncoderSpec {
+    /// Audio codec: `"opus"` only (fixed wire contract: Opus 48 kHz, RTP
+    /// payload type 111, clock 48000, RFC 7587).
+    pub codec: String,
+    /// Opus bitrate in bits per second (6_000..=510_000, default 64000).
+    #[serde(default = "default_audio_bitrate")]
+    pub bitrate: u32,
+    /// Opus application mode: `"audio"` (default), `"voip"` or `"lowdelay"`.
+    #[serde(default = "default_audio_application")]
+    pub application: String,
+    /// Opus frame size in ms: 5 | 10 | 20 (default) | 40 | 60.
+    #[serde(default = "default_audio_frame_ms")]
+    pub frame_ms: u32,
+    /// Variable bitrate (default `true`; `false` = CBR).
+    #[serde(default = "default_audio_vbr")]
+    pub vbr: bool,
+    /// Opus in-band FEC (default `false`).
+    #[serde(default)]
+    pub inband_fec: bool,
+    /// Opus discontinuous transmission (default `false`).
+    #[serde(default)]
+    pub dtx: bool,
+    /// Opus encoder complexity, 0..=10 (default 9).
+    #[serde(default = "default_audio_complexity")]
+    pub complexity: u32,
+    /// Adaptive bitrate — the same untagged shape as
+    /// [`EncoderSpec::adaptive`], on by default; the floor defaults to the
+    /// lowest tier's bitrate when tiers are declared, else
+    /// `max(bitrate / 4, 16_000)`.  Ignored when the source also has a
+    /// video leg: the shared AIMD controller then drives the video
+    /// encoder (mirroring the tier rule, which targets video first).
+    #[serde(default)]
+    pub adaptive: Option<AdaptiveConfig>,
+}
+
+fn default_audio_device() -> String {
+    "default".to_owned()
+}
+
+fn default_audio_sample_rate() -> u32 {
+    48_000
+}
+
+fn default_audio_channels() -> u32 {
+    2
+}
+
+fn default_audio_bitrate() -> u32 {
+    64_000
+}
+
+fn default_audio_application() -> String {
+    "audio".to_owned()
+}
+
+fn default_audio_frame_ms() -> u32 {
+    20
+}
+
+fn default_audio_vbr() -> bool {
+    true
+}
+
+fn default_audio_complexity() -> u32 {
+    9
+}
+
 /// RTP output specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputSpec {
@@ -225,6 +344,12 @@ impl TierSpec {
     pub fn derived_bitrate(width: u32, height: u32, fps: u32) -> u32 {
         ((width as u64 * height as u64 * fps as u64 * 7 / 100) as u32).max(50_000)
     }
+
+    /// Whether this tier overrides capture geometry (such a rung rebuilds
+    /// the video capture+encoder pipeline at apply time).
+    pub fn has_geometry(&self) -> bool {
+        self.capture.width.is_some() || self.capture.height.is_some() || self.capture.fps.is_some()
+    }
 }
 
 fn default_payload_type() -> u8 {
@@ -238,21 +363,35 @@ fn default_clock_rate() -> u32 {
 /// Full specification for a single media source.
 ///
 /// This is the recommended structured config format replacing the
-/// URL query-string approach.
+/// URL query-string approach.  A source carries a video leg
+/// (`capture` + `encoder`), an audio leg (`audio_capture` +
+/// `audio_encoder`), or both; each leg must be complete or absent
+/// entirely (half-legs are rejected by [`SourceSpec::validate`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceSpec {
     /// Unique stream identifier.
     pub stream_id: String,
-    /// Capture / input device configuration.
-    pub capture: CaptureSpec,
-    /// Encoder configuration.
-    pub encoder: EncoderSpec,
-    /// RTP output parameters.
+    /// Video leg: capture / input device configuration.
+    #[serde(default)]
+    pub capture: Option<CaptureSpec>,
+    /// Video leg: encoder configuration.
+    #[serde(default)]
+    pub encoder: Option<EncoderSpec>,
+    /// Audio leg: capture configuration (microphone / test tone).
+    #[serde(default)]
+    pub audio_capture: Option<AudioCaptureSpec>,
+    /// Audio leg: Opus encoder configuration.
+    #[serde(default)]
+    pub audio_encoder: Option<AudioEncoderSpec>,
+    /// RTP output parameters (video leg).
     #[serde(default)]
     pub output: OutputSpec,
     /// Optional named quality tiers (bitrate presets; resolution/framerate
     /// tiers reserved).  See [`TierSpec`] for why this lives at source
-    /// level rather than inside the encoder block.
+    /// level rather than inside the encoder block.  `tier.encoder.bitrate`
+    /// targets the video encoder when a video leg exists, else the audio
+    /// encoder; capture-geometry fields are invalid on an audio-only
+    /// source.
     #[serde(default)]
     pub tiers: Vec<TierSpec>,
 }
@@ -272,21 +411,21 @@ impl SourceSpec {
     /// `profile_idc`/`level_idc`/`tier_flag` are the numeric values passed
     /// to the native encoder and the H.265 SDP fmtp line; `profile_string`
     /// is the H.264-style profile-level-id (empty for H.265).
-    fn resolve_profile(&self) -> anyhow::Result<(u32, u32, u32, String)> {
-        let codec_str = self.encoder.codec.to_ascii_lowercase();
-        let is_rkmpp = self.encoder.backend.eq_ignore_ascii_case("rkmpp");
-        let is_cedar = self.encoder.backend.eq_ignore_ascii_case("cedar");
+    fn resolve_profile(encoder: &EncoderSpec) -> anyhow::Result<(u32, u32, u32, String)> {
+        let codec_str = encoder.codec.to_ascii_lowercase();
+        let is_rkmpp = encoder.backend.eq_ignore_ascii_case("rkmpp");
+        let is_cedar = encoder.backend.eq_ignore_ascii_case("cedar");
 
         if is_rkmpp && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
             anyhow::bail!(
                 "encoder backend 'rkmpp' supports only h264 and h265, got '{}'",
-                self.encoder.codec
+                encoder.codec
             );
         }
         if is_cedar && !matches!(codec_str.as_str(), "h264" | "h265" | "hevc") {
             anyhow::bail!(
                 "encoder backend 'cedar' supports only h264 and h265, got '{}'",
-                self.encoder.codec
+                encoder.codec
             );
         }
 
@@ -297,7 +436,7 @@ impl SourceSpec {
         // every backend needs the H.265 numerics for the SDP fmtp line.
         let (profile_idc, level_idc, tier_flag) = match codec_str.as_str() {
             "h264" if is_rkmpp || is_cedar => {
-                let (pidc, lidc) = self.encoder.h264_profile_level_id()?;
+                let (pidc, lidc) = encoder.h264_profile_level_id()?;
                 if is_cedar && pidc != 100 {
                     // The A733 cedar VE emits a stream whose slices do not match
                     // the SPS for Baseline/Main (decoders conceal to green/gray);
@@ -306,7 +445,7 @@ impl SourceSpec {
                     anyhow::bail!(
                         "encoder backend 'cedar' supports only H.264 High profile \
                          (e.g. profile = \"640028\"); got '{}' (profile_idc {})",
-                        self.encoder.profile,
+                        encoder.profile,
                         pidc
                     );
                 }
@@ -314,7 +453,7 @@ impl SourceSpec {
             }
             "h265" | "hevc" => {
                 // h265_profile_params returns (profile_idc, tier_flag, level_idc)
-                let (pidc, tier, lidc) = self.encoder.h265_profile_params()?;
+                let (pidc, tier, lidc) = encoder.h265_profile_params()?;
                 (u32::from(pidc), u32::from(lidc), u32::from(tier))
             }
             // v4l2-m2m / rdk H.264 and the other codecs: profile/level are
@@ -328,7 +467,7 @@ impl SourceSpec {
         let profile_string = if is_h265 {
             String::new()
         } else {
-            self.encoder.profile_level_id()?
+            encoder.profile_level_id()?
         };
 
         Ok((profile_idc, level_idc, tier_flag, profile_string))
@@ -340,8 +479,8 @@ impl SourceSpec {
     /// compressed MJPEG is unsupported end-to-end in the livehal pipeline
     /// (the V4L2 backend rejects it at runtime too).  Surface it here, at
     /// configuration time, instead of failing on the device.
-    fn ensure_supported_pixel_format(&self) -> anyhow::Result<()> {
-        if pixel_format_from_str(&self.capture.pixel_format)? == PixelFormat::Mjpeg {
+    fn ensure_supported_pixel_format(capture: &CaptureSpec) -> anyhow::Result<()> {
+        if pixel_format_from_str(&capture.pixel_format)? == PixelFormat::Mjpeg {
             anyhow::bail!(
                 "capture.pixel_format: MJPEG capture is not supported by \
                  the livehal pipeline; use yuyv, uyvy, nv12, yuv420 or \
@@ -356,60 +495,49 @@ impl SourceSpec {
         if self.stream_id.trim().is_empty() {
             anyhow::bail!("stream_id cannot be empty");
         }
-        if self
-            .capture
-            .device
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            anyhow::bail!("capture.device cannot be empty");
-        }
-        let backend = self.capture.backend.to_lowercase();
-        if backend != "libcamera" && backend != "v4l2" {
+
+        // A native source is video-only (capture + encoder), audio-only
+        // (audio_capture + audio_encoder), or video+audio.  Each leg must
+        // be complete or absent entirely — half-legs are config errors.
+        let video_present = self.capture.is_some() || self.encoder.is_some();
+        let audio_present = self.audio_capture.is_some() || self.audio_encoder.is_some();
+        if !video_present && !audio_present {
             anyhow::bail!(
-                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
-                self.capture.backend
+                "a native source needs at least one complete media leg: \
+                 capture + encoder (video) or audio_capture + audio_encoder (audio)"
             );
         }
-        if (self.capture.hflip || self.capture.vflip) && backend != "libcamera" {
-            anyhow::bail!(
-                "capture.hflip/vflip are supported only by the libcamera backend: \
-                 the v4l2 video node (unicam) only DMA-moves frames and has no \
-                 image-processing capability; flip controls exist only on the \
-                 sensor sub-device, and setting them behind libcamera's back \
-                 would desync the ISP's Bayer order"
-            );
+
+        if video_present {
+            let capture = self.capture.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("encoder requires a matching capture (incomplete video leg)")
+            })?;
+            let encoder = self.encoder.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("capture requires a matching encoder (incomplete video leg)")
+            })?;
+            Self::validate_video_leg(capture, encoder)?;
         }
-        if self.capture.width == 0 || self.capture.height == 0 {
-            anyhow::bail!("capture width/height must be non-zero");
-        }
-        if self.capture.fps == 0 {
-            anyhow::bail!("capture.fps must be non-zero");
-        }
-        if self.encoder.bitrate == 0 {
-            anyhow::bail!("encoder.bitrate must be non-zero");
-        }
-        // gop = 0 (no periodic keyframes; IDR only on request) is a
-        // v4l2-m2m / bcm2835-codec capability — MMAL INTRAPERIOD = 0.
-        // Other backends have no defined zero semantics, so keep
-        // rejecting it there.
-        if self.encoder.gop == 0 && !self.encoder.backend.eq_ignore_ascii_case("v4l2-m2m") {
-            anyhow::bail!(
-                "encoder.gop must be non-zero (gop = 0 is supported only by the v4l2-m2m backend)"
-            );
-        }
-        if let Some(mode) = &self.encoder.bitrate_mode {
-            bitrate_mode_to_u32(mode)
-                .map_err(|e| anyhow::anyhow!("encoder.bitrate_mode: {}", e))?;
-        }
-        if let Some(AdaptiveConfig::Knobs {
-            min_bitrate: Some(min),
-        }) = &self.encoder.adaptive
-            && *min > self.encoder.bitrate
-        {
-            anyhow::bail!("encoder.adaptive.min_bitrate must not exceed encoder.bitrate");
+
+        if audio_present {
+            let audio_capture = self.audio_capture.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "audio_encoder requires a matching audio_capture (incomplete audio leg)"
+                )
+            })?;
+            let audio_encoder = self.audio_encoder.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "audio_capture requires a matching audio_encoder (incomplete audio leg)"
+                )
+            })?;
+            #[cfg(not(feature = "encoder-opus"))]
+            {
+                let _ = (audio_capture, audio_encoder);
+                anyhow::bail!(
+                    "audio sources (audio_capture/audio_encoder) require the 'encoder-opus' feature"
+                );
+            }
+            #[cfg(feature = "encoder-opus")]
+            Self::validate_audio_leg(audio_capture, audio_encoder)?;
         }
 
         let mut tier_names = std::collections::HashSet::new();
@@ -464,6 +592,15 @@ impl SourceSpec {
             {
                 anyhow::bail!("tier '{}': capture.fps must be non-zero", tier.name);
             }
+            // Geometry rungs rebuild the video capture+encoder pipeline;
+            // an audio-only source has neither, so they are meaningless
+            // there (tier.capture.* semantics stay video-only).
+            if !video_present && tier.has_geometry() {
+                anyhow::bail!(
+                    "tier '{}': capture.width/height/fps are invalid on an audio-only source",
+                    tier.name
+                );
+            }
             // A tier is a parameter preset — it must change something.
             if tier.capture.width.is_none()
                 && tier.capture.height.is_none()
@@ -476,8 +613,62 @@ impl SourceSpec {
                 );
             }
         }
+        Ok(())
+    }
 
-        let encoder_backend = self.encoder.backend.to_lowercase();
+    /// Video-leg checks (capture geometry/pixel format, encoder
+    /// codec/profile/rate control).
+    fn validate_video_leg(capture: &CaptureSpec, encoder: &EncoderSpec) -> anyhow::Result<()> {
+        if capture.device.as_deref().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("capture.device cannot be empty");
+        }
+        let backend = capture.backend.to_lowercase();
+        if backend != "libcamera" && backend != "v4l2" {
+            anyhow::bail!(
+                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
+                capture.backend
+            );
+        }
+        if (capture.hflip || capture.vflip) && backend != "libcamera" {
+            anyhow::bail!(
+                "capture.hflip/vflip are supported only by the libcamera backend: \
+                 the v4l2 video node (unicam) only DMA-moves frames and has no \
+                 image-processing capability; flip controls exist only on the \
+                 sensor sub-device, and setting them behind libcamera's back \
+                 would desync the ISP's Bayer order"
+            );
+        }
+        if capture.width == 0 || capture.height == 0 {
+            anyhow::bail!("capture width/height must be non-zero");
+        }
+        if capture.fps == 0 {
+            anyhow::bail!("capture.fps must be non-zero");
+        }
+        if encoder.bitrate == 0 {
+            anyhow::bail!("encoder.bitrate must be non-zero");
+        }
+        // gop = 0 (no periodic keyframes; IDR only on request) is a
+        // v4l2-m2m / bcm2835-codec capability — MMAL INTRAPERIOD = 0.
+        // Other backends have no defined zero semantics, so keep
+        // rejecting it there.
+        if encoder.gop == 0 && !encoder.backend.eq_ignore_ascii_case("v4l2-m2m") {
+            anyhow::bail!(
+                "encoder.gop must be non-zero (gop = 0 is supported only by the v4l2-m2m backend)"
+            );
+        }
+        if let Some(mode) = &encoder.bitrate_mode {
+            bitrate_mode_to_u32(mode)
+                .map_err(|e| anyhow::anyhow!("encoder.bitrate_mode: {}", e))?;
+        }
+        if let Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(min),
+        }) = &encoder.adaptive
+            && *min > encoder.bitrate
+        {
+            anyhow::bail!("encoder.adaptive.min_bitrate must not exceed encoder.bitrate");
+        }
+
+        let encoder_backend = encoder.backend.to_lowercase();
         if encoder_backend != "v4l2-m2m"
             && encoder_backend != "rdk"
             && encoder_backend != "rkmpp"
@@ -485,24 +676,106 @@ impl SourceSpec {
         {
             anyhow::bail!(
                 "encoder.backend must be 'v4l2-m2m', 'rdk', 'rkmpp', or 'cedar', got '{}'",
-                self.encoder.backend
+                encoder.backend
             );
         }
 
         // Profile/level/tier are resolved with the same rules
         // to_native_params() uses, so anything validate() accepts can be
         // converted and vice versa.
-        if let Err(e) = self.resolve_profile() {
+        if let Err(e) = Self::resolve_profile(encoder) {
             anyhow::bail!("encoder.profile/level/tier: {}", e);
         }
 
         // Validate pixel_format and codec strings early so config errors
         // surface during validation rather than at source creation time.
-        self.ensure_supported_pixel_format()?;
-        pixel_format_to_u32(&self.capture.pixel_format)
+        Self::ensure_supported_pixel_format(capture)?;
+        pixel_format_to_u32(&capture.pixel_format)
             .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
-        codec_to_u32(&self.encoder.codec).map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
+        codec_to_u32(&encoder.codec).map_err(|e| anyhow::anyhow!("encoder.codec: {}", e))?;
         Ok(())
+    }
+
+    /// Audio-leg checks: the fixed Opus wire contract plus the encoder and
+    /// capture parameter ranges livehal accepts.
+    #[cfg(feature = "encoder-opus")]
+    fn validate_audio_leg(
+        capture: &AudioCaptureSpec,
+        encoder: &AudioEncoderSpec,
+    ) -> anyhow::Result<()> {
+        if !encoder.codec.eq_ignore_ascii_case("opus") {
+            anyhow::bail!(
+                "audio_encoder.codec must be 'opus', got '{}'",
+                encoder.codec
+            );
+        }
+        let backend = capture.backend.to_lowercase();
+        if backend != "alsa" && backend != "sine" {
+            anyhow::bail!(
+                "audio_capture.backend must be 'alsa' or 'sine', got '{}'",
+                capture.backend
+            );
+        }
+        if capture.device.trim().is_empty() {
+            anyhow::bail!("audio_capture.device cannot be empty");
+        }
+        if capture.sample_rate != 48_000 {
+            anyhow::bail!(
+                "audio_capture.sample_rate must be 48000 (v1 has no resampling), got {}",
+                capture.sample_rate
+            );
+        }
+        if capture.channels != 1 && capture.channels != 2 {
+            anyhow::bail!(
+                "audio_capture.channels must be 1 or 2, got {}",
+                capture.channels
+            );
+        }
+        if !(6_000..=510_000).contains(&encoder.bitrate) {
+            anyhow::bail!(
+                "audio_encoder.bitrate must be in 6000..=510000, got {}",
+                encoder.bitrate
+            );
+        }
+        if audio_application(&encoder.application).is_none() {
+            anyhow::bail!(
+                "audio_encoder.application must be 'audio', 'voip' or 'lowdelay', got '{}'",
+                encoder.application
+            );
+        }
+        if ![5, 10, 20, 40, 60].contains(&encoder.frame_ms) {
+            anyhow::bail!(
+                "audio_encoder.frame_ms must be one of 5/10/20/40/60, got {}",
+                encoder.frame_ms
+            );
+        }
+        if encoder.complexity > 10 {
+            anyhow::bail!(
+                "audio_encoder.complexity must be in 0..=10, got {}",
+                encoder.complexity
+            );
+        }
+        if let Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(min),
+        }) = &encoder.adaptive
+            && *min > encoder.bitrate
+        {
+            anyhow::bail!(
+                "audio_encoder.adaptive.min_bitrate must not exceed audio_encoder.bitrate"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Parse the Opus application mode string (`audio` | `voip` | `lowdelay`).
+#[cfg(feature = "encoder-opus")]
+fn audio_application(s: &str) -> Option<livehal::AudioApplication> {
+    match s.to_ascii_lowercase().as_str() {
+        "audio" => Some(livehal::AudioApplication::Audio),
+        "voip" => Some(livehal::AudioApplication::Voip),
+        "lowdelay" => Some(livehal::AudioApplication::LowDelay),
+        _ => None,
     }
 }
 
@@ -772,49 +1045,83 @@ impl SourceSpec {
     /// Build `NativeSourceParams` directly from a structured `SourceSpec`.
     ///
     /// This is the direct path — no URL-based roundtrip.
-    /// Returns an error if `pixel_format` or `codec` strings are unrecognised.
+    /// Returns `None` when the source has no video leg (audio-only);
+    /// returns an error if `pixel_format` or `codec` strings are
+    /// unrecognised.
     #[cfg(feature = "native-source")]
-    pub fn to_native_params(&self) -> anyhow::Result<NativeSourceParams> {
-        let backend = self.capture.backend.to_lowercase();
+    pub fn to_native_params(&self) -> anyhow::Result<Option<NativeSourceParams>> {
+        let (Some(capture), Some(encoder)) = (&self.capture, &self.encoder) else {
+            return Ok(None);
+        };
+
+        let backend = capture.backend.to_lowercase();
         if backend != "libcamera" && backend != "v4l2" {
-            anyhow::bail!("unsupported capture backend: {}", self.capture.backend);
+            anyhow::bail!("unsupported capture backend: {}", capture.backend);
         }
-        let capture_device = self.capture.device.clone().unwrap_or_default();
+        let capture_device = capture.device.clone().unwrap_or_default();
 
         // Same early rejection as validate(): MJPEG cannot reach the
         // native capture/encoder pipeline.
-        self.ensure_supported_pixel_format()?;
+        Self::ensure_supported_pixel_format(capture)?;
 
         // Profile resolution is shared with validate() — see resolve_profile().
-        let (profile_idc, level_idc, tier_flag, profile_string) = self.resolve_profile()?;
+        let (profile_idc, level_idc, tier_flag, profile_string) = Self::resolve_profile(encoder)?;
 
-        Ok(NativeSourceParams {
-            capture_backend: self.capture.backend.clone(),
+        Ok(Some(NativeSourceParams {
+            capture_backend: capture.backend.clone(),
             capture_device,
-            width: self.capture.width,
-            height: self.capture.height,
-            fps: self.capture.fps,
-            capture_pixel_format: pixel_format_to_u32(&self.capture.pixel_format)?,
-            encoder_backend: self.encoder.backend.clone(),
-            codec: codec_to_u32(&self.encoder.codec)?,
-            bitrate: self.encoder.bitrate,
+            width: capture.width,
+            height: capture.height,
+            fps: capture.fps,
+            capture_pixel_format: pixel_format_to_u32(&capture.pixel_format)?,
+            encoder_backend: encoder.backend.clone(),
+            codec: codec_to_u32(&encoder.codec)?,
+            bitrate: encoder.bitrate,
             profile: profile_string.clone(),
-            gop: self.encoder.gop,
-            bitrate_mode: match &self.encoder.bitrate_mode {
+            gop: encoder.gop,
+            bitrate_mode: match &encoder.bitrate_mode {
                 Some(mode) => bitrate_mode_to_u32(mode)?,
                 None => 0,
             },
             payload_type: self.output.payload_type as u32,
             clock_rate: self.output.clock_rate,
-            capture_prefer_dmabuf: self.capture.prefer_dmabuf as u8,
-            capture_hflip: self.capture.hflip as u8,
-            capture_vflip: self.capture.vflip as u8,
-            encoder_prefer_dmabuf: self.encoder.prefer_dmabuf as u8,
-            codec_name: self.encoder.codec.to_uppercase(),
+            capture_prefer_dmabuf: capture.prefer_dmabuf as u8,
+            capture_hflip: capture.hflip as u8,
+            capture_vflip: capture.vflip as u8,
+            encoder_prefer_dmabuf: encoder.prefer_dmabuf as u8,
+            codec_name: encoder.codec.to_uppercase(),
             default_profile: profile_string,
             profile_idc,
             level_idc,
             tier_flag,
+        }))
+    }
+
+    /// Build livehal audio pipeline params from the audio leg.
+    ///
+    /// Returns `None` when the source has no audio leg.  The mapping is
+    /// infallible because [`SourceSpec::validate`] has already checked
+    /// every field; the wire contract is fixed (Opus 48 kHz, RTP payload
+    /// type 111, clock 48000, RFC 7587).
+    #[cfg(feature = "encoder-opus")]
+    pub fn to_audio_params(&self) -> Option<livehal::AudioSourceParams> {
+        let capture = self.audio_capture.as_ref()?;
+        let encoder = self.audio_encoder.as_ref()?;
+        Some(livehal::AudioSourceParams {
+            capture_backend: capture.backend.clone(),
+            capture_device: capture.device.clone(),
+            sample_rate: capture.sample_rate,
+            channels: capture.channels,
+            bitrate: encoder.bitrate,
+            application: audio_application(&encoder.application)
+                .unwrap_or(livehal::AudioApplication::Audio),
+            frame_ms: encoder.frame_ms,
+            vbr: encoder.vbr,
+            inband_fec: encoder.inband_fec,
+            dtx: encoder.dtx,
+            payload_type: 111,
+            clock_rate: 48_000,
+            complexity: encoder.complexity,
         })
     }
 }
@@ -830,7 +1137,7 @@ mod tests {
     fn v4l2_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "cam1".into(),
-            capture: CaptureSpec {
+            capture: Some(CaptureSpec {
                 backend: "v4l2".into(),
                 device: Some("/dev/video0".into()),
                 width: 640,
@@ -840,8 +1147,8 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
-            },
-            encoder: EncoderSpec {
+            }),
+            encoder: Some(EncoderSpec {
                 backend: "v4l2-m2m".into(),
                 codec: "h264".into(),
                 bitrate: 1_500_000,
@@ -852,7 +1159,9 @@ mod tests {
                 bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
-            },
+            }),
+            audio_capture: None,
+            audio_encoder: None,
             output: OutputSpec::default(),
             tiers: vec![],
         }
@@ -861,7 +1170,7 @@ mod tests {
     fn libcamera_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "pi-cam".into(),
-            capture: CaptureSpec {
+            capture: Some(CaptureSpec {
                 backend: "libcamera".into(),
                 device: Some("0".into()),
                 width: 1920,
@@ -871,8 +1180,8 @@ mod tests {
                 prefer_dmabuf: true,
                 hflip: false,
                 vflip: false,
-            },
-            encoder: EncoderSpec {
+            }),
+            encoder: Some(EncoderSpec {
                 backend: "rdk".into(),
                 codec: "h264".into(),
                 bitrate: 2_000_000,
@@ -883,7 +1192,9 @@ mod tests {
                 bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
-            },
+            }),
+            audio_capture: None,
+            audio_encoder: None,
             output: OutputSpec::default(),
             tiers: vec![],
         }
@@ -892,7 +1203,7 @@ mod tests {
     fn rkmpp_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "rk-cam".into(),
-            capture: CaptureSpec {
+            capture: Some(CaptureSpec {
                 backend: "v4l2".into(),
                 device: Some("/dev/video11".into()),
                 width: 1920,
@@ -902,8 +1213,8 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
-            },
-            encoder: EncoderSpec {
+            }),
+            encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
                 codec: "h264".into(),
                 bitrate: 4_000_000,
@@ -914,7 +1225,9 @@ mod tests {
                 bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
-            },
+            }),
+            audio_capture: None,
+            audio_encoder: None,
             output: OutputSpec::default(),
             tiers: vec![],
         }
@@ -923,7 +1236,7 @@ mod tests {
     fn cedar_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "sunxi-cam".into(),
-            capture: CaptureSpec {
+            capture: Some(CaptureSpec {
                 backend: "v4l2".into(),
                 device: Some("/dev/video0".into()),
                 width: 640,
@@ -933,8 +1246,8 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
-            },
-            encoder: EncoderSpec {
+            }),
+            encoder: Some(EncoderSpec {
                 backend: "cedar".into(),
                 codec: "h264".into(),
                 bitrate: 2_000_000,
@@ -947,7 +1260,9 @@ mod tests {
                 bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
-            },
+            }),
+            audio_capture: None,
+            audio_encoder: None,
             output: OutputSpec::default(),
             tiers: vec![],
         }
@@ -956,7 +1271,7 @@ mod tests {
     fn rkmpp_h265_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "rk-h265".into(),
-            capture: CaptureSpec {
+            capture: Some(CaptureSpec {
                 backend: "v4l2".into(),
                 device: Some("/dev/video11".into()),
                 width: 1920,
@@ -966,8 +1281,8 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
-            },
-            encoder: EncoderSpec {
+            }),
+            encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
                 codec: "h265".into(),
                 bitrate: 4_000_000,
@@ -978,7 +1293,36 @@ mod tests {
                 bitrate_mode: None,
                 prefer_dmabuf: false,
                 adaptive: None,
-            },
+            }),
+            audio_capture: None,
+            audio_encoder: None,
+            output: OutputSpec::default(),
+            tiers: vec![],
+        }
+    }
+
+    fn audio_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "mic1".into(),
+            capture: None,
+            encoder: None,
+            audio_capture: Some(AudioCaptureSpec {
+                backend: "sine".into(),
+                device: "default".into(),
+                sample_rate: 48_000,
+                channels: 2,
+            }),
+            audio_encoder: Some(AudioEncoderSpec {
+                codec: "opus".into(),
+                bitrate: 64_000,
+                application: "audio".into(),
+                frame_ms: 20,
+                vbr: true,
+                inband_fec: false,
+                dtx: false,
+                complexity: 9,
+                adaptive: None,
+            }),
             output: OutputSpec::default(),
             tiers: vec![],
         }
@@ -1004,7 +1348,7 @@ mod tests {
     #[test]
     fn test_source_spec_validate_unknown_encoder_backend_rejected() {
         let mut spec = cedar_spec();
-        spec.encoder.backend = "nonexistent".into();
+        spec.encoder.as_mut().unwrap().backend = "nonexistent".into();
         assert!(spec.validate().is_err());
     }
 
@@ -1018,29 +1362,29 @@ mod tests {
     #[test]
     fn test_source_spec_validate_missing_v4l2_device() {
         let mut spec = v4l2_spec();
-        spec.capture.device = None;
+        spec.capture.as_mut().unwrap().device = None;
         assert!(spec.validate().is_err());
     }
 
     #[test]
     fn test_source_spec_validate_missing_libcamera_device() {
         let mut spec = libcamera_spec();
-        spec.capture.device = None;
+        spec.capture.as_mut().unwrap().device = None;
         assert!(spec.validate().is_err());
     }
 
     #[test]
     fn test_source_spec_validate_zero_size() {
         let mut spec = v4l2_spec();
-        spec.capture.width = 0;
-        spec.capture.height = 0;
+        spec.capture.as_mut().unwrap().width = 0;
+        spec.capture.as_mut().unwrap().height = 0;
         assert!(spec.validate().is_err());
     }
 
     #[test]
     fn test_source_spec_rejects_mjpeg() {
         let mut spec = v4l2_spec();
-        spec.capture.pixel_format = "mjpeg".into();
+        spec.capture.as_mut().unwrap().pixel_format = "mjpeg".into();
         assert!(spec.validate().is_err());
     }
 
@@ -1049,19 +1393,19 @@ mod tests {
     #[test]
     fn test_source_spec_validate_libcamera_flip_ok() {
         let mut spec = libcamera_spec();
-        spec.capture.hflip = true;
+        spec.capture.as_mut().unwrap().hflip = true;
         assert!(spec.validate().is_ok());
-        spec.capture.vflip = true;
+        spec.capture.as_mut().unwrap().vflip = true;
         assert!(spec.validate().is_ok()); // both = 180° rotation
     }
 
     #[test]
     fn test_source_spec_validate_v4l2_flip_rejected() {
         let mut spec = v4l2_spec();
-        spec.capture.hflip = true;
+        spec.capture.as_mut().unwrap().hflip = true;
         assert!(spec.validate().is_err());
-        spec.capture.hflip = false;
-        spec.capture.vflip = true;
+        spec.capture.as_mut().unwrap().hflip = false;
+        spec.capture.as_mut().unwrap().vflip = true;
         assert!(spec.validate().is_err());
     }
 
@@ -1223,15 +1567,15 @@ mod tests {
     fn test_adaptive_key_forms() {
         let mut spec = rkmpp_spec(); // encoder.bitrate = 4 Mbps
         // Off is valid.
-        spec.encoder.adaptive = Some(AdaptiveConfig::Switch(false));
+        spec.encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Switch(false));
         assert!(spec.validate().is_ok());
         // A floor above the ceiling is rejected.
-        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+        spec.encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Knobs {
             min_bitrate: Some(5_000_000),
         });
         assert!(spec.validate().is_err());
         // A sane custom floor is fine.
-        spec.encoder.adaptive = Some(AdaptiveConfig::Knobs {
+        spec.encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Knobs {
             min_bitrate: Some(300_000),
         });
         assert!(spec.validate().is_ok());
@@ -1344,9 +1688,9 @@ mod tests {
     #[test]
     fn test_bitrate_mode_validation() {
         let mut spec = v4l2_spec();
-        spec.encoder.bitrate_mode = Some("vbr".into());
+        spec.encoder.as_mut().unwrap().bitrate_mode = Some("vbr".into());
         assert!(spec.validate().is_ok());
-        spec.encoder.bitrate_mode = Some("auto".into());
+        spec.encoder.as_mut().unwrap().bitrate_mode = Some("auto".into());
         assert!(spec.validate().is_err());
     }
 
@@ -1354,11 +1698,11 @@ mod tests {
     fn test_gop_zero_only_v4l2_m2m() {
         // gop = 0 (IDR only on request) is a v4l2-m2m capability.
         let mut spec = v4l2_spec();
-        spec.encoder.gop = 0;
+        spec.encoder.as_mut().unwrap().gop = 0;
         assert!(spec.validate().is_ok());
 
         let mut spec = rkmpp_spec();
-        spec.encoder.gop = 0;
+        spec.encoder.as_mut().unwrap().gop = 0;
         assert!(spec.validate().is_err());
     }
 
@@ -1566,14 +1910,14 @@ mod tests {
     #[test]
     fn test_rkmpp_invalid_codec_av1() {
         let mut spec = rkmpp_h265_spec();
-        spec.encoder.codec = "av1".into();
+        spec.encoder.as_mut().unwrap().codec = "av1".into();
         assert!(spec.validate().is_err());
     }
 
     #[test]
     fn test_rkmpp_invalid_codec_vp8() {
         let mut spec = rkmpp_h265_spec();
-        spec.encoder.codec = "vp8".into();
+        spec.encoder.as_mut().unwrap().codec = "vp8".into();
         assert!(spec.validate().is_err());
     }
 
@@ -1586,9 +1930,9 @@ mod tests {
         // H.265 profile names do not require a separate level; validate()
         // must accept what to_native_params() accepts.
         let mut spec = v4l2_spec();
-        spec.encoder.codec = "h265".into();
-        spec.encoder.profile = "main".into();
-        spec.encoder.level = None;
+        spec.encoder.as_mut().unwrap().codec = "h265".into();
+        spec.encoder.as_mut().unwrap().profile = "main".into();
+        spec.encoder.as_mut().unwrap().level = None;
         assert!(spec.validate().is_ok());
     }
 
@@ -1597,9 +1941,9 @@ mod tests {
         // H.264-style hex profile-level-id is invalid for H.265 on every
         // backend — to_native_params() rejects it, so validate() must too.
         let mut spec = v4l2_spec();
-        spec.encoder.codec = "h265".into();
-        spec.encoder.profile = "42001f".into();
-        spec.encoder.level = None;
+        spec.encoder.as_mut().unwrap().codec = "h265".into();
+        spec.encoder.as_mut().unwrap().profile = "42001f".into();
+        spec.encoder.as_mut().unwrap().level = None;
         assert!(spec.validate().is_err());
     }
 
@@ -1607,9 +1951,9 @@ mod tests {
     fn test_validate_v4l2_h265_h264_profile_name_rejected() {
         // 'high' is an H.264 profile name; it must not pass H.265 validation.
         let mut spec = v4l2_spec();
-        spec.encoder.codec = "h265".into();
-        spec.encoder.profile = "high".into();
-        spec.encoder.level = Some("4.0".into());
+        spec.encoder.as_mut().unwrap().codec = "h265".into();
+        spec.encoder.as_mut().unwrap().profile = "high".into();
+        spec.encoder.as_mut().unwrap().level = Some("4.0".into());
         assert!(spec.validate().is_err());
     }
 
@@ -1618,7 +1962,7 @@ mod tests {
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_v4l2() {
-        let params = v4l2_spec().to_native_params().unwrap();
+        let params = v4l2_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_backend, "v4l2");
         assert_eq!(params.capture_device, "/dev/video0");
         assert_eq!(params.width, 640);
@@ -1632,7 +1976,7 @@ mod tests {
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_cedar() {
-        let params = cedar_spec().to_native_params().unwrap();
+        let params = cedar_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_backend, "v4l2");
         assert_eq!(params.capture_device, "/dev/video0");
         assert_eq!(params.capture_pixel_format, 1); // nv12
@@ -1650,10 +1994,10 @@ mod tests {
     fn test_cedar_h264_rejects_non_high_profile() {
         // The cedar VE only produces a valid H.264 stream in High profile.
         let mut spec = cedar_spec();
-        spec.encoder.profile = "42001f".into(); // Baseline
+        spec.encoder.as_mut().unwrap().profile = "42001f".into(); // Baseline
         assert!(spec.validate().is_err());
         let mut spec = cedar_spec();
-        spec.encoder.profile = "4d0028".into(); // Main
+        spec.encoder.as_mut().unwrap().profile = "4d0028".into(); // Main
         assert!(spec.validate().is_err());
     }
 
@@ -1661,10 +2005,10 @@ mod tests {
     #[cfg(feature = "native-source")]
     fn test_to_native_params_cedar_h265() {
         let mut spec = cedar_spec();
-        spec.encoder.codec = "h265".into();
-        spec.encoder.profile = "main".into();
-        spec.encoder.level = Some("4.0".into());
-        let params = spec.to_native_params().unwrap();
+        spec.encoder.as_mut().unwrap().codec = "h265".into();
+        spec.encoder.as_mut().unwrap().profile = "main".into();
+        spec.encoder.as_mut().unwrap().level = Some("4.0".into());
+        let params = spec.to_native_params().unwrap().unwrap();
         assert_eq!(params.encoder_backend, "cedar");
         assert_eq!(params.codec, 101); // h265
         // H.265 numerics feed both the cedar encoder and the SDP fmtp line.
@@ -1678,14 +2022,14 @@ mod tests {
     #[cfg(feature = "native-source")]
     fn test_cedar_rejects_unsupported_codec() {
         let mut spec = cedar_spec();
-        spec.encoder.codec = "vp9".into();
+        spec.encoder.as_mut().unwrap().codec = "vp9".into();
         assert!(spec.validate().is_err());
     }
 
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_libcamera() {
-        let params = libcamera_spec().to_native_params().unwrap();
+        let params = libcamera_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_backend, "libcamera");
         assert_eq!(params.capture_device, "0");
         assert_eq!(params.encoder_backend, "rdk");
@@ -1696,13 +2040,13 @@ mod tests {
     #[cfg(feature = "native-source")]
     fn test_to_native_params_capture_flip() {
         let mut spec = libcamera_spec();
-        spec.capture.hflip = true;
-        spec.capture.vflip = true;
-        let params = spec.to_native_params().unwrap();
+        spec.capture.as_mut().unwrap().hflip = true;
+        spec.capture.as_mut().unwrap().vflip = true;
+        let params = spec.to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_hflip, 1);
         assert_eq!(params.capture_vflip, 1);
 
-        let params = v4l2_spec().to_native_params().unwrap();
+        let params = v4l2_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_hflip, 0);
         assert_eq!(params.capture_vflip, 0);
     }
@@ -1710,7 +2054,7 @@ mod tests {
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_rkmpp_h264() {
-        let params = rkmpp_spec().to_native_params().unwrap();
+        let params = rkmpp_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_backend, "v4l2");
         assert_eq!(params.encoder_backend, "rkmpp");
         assert_eq!(params.capture_pixel_format, 1); // nv12
@@ -1724,7 +2068,7 @@ mod tests {
     #[test]
     #[cfg(feature = "native-source")]
     fn test_to_native_params_rkmpp_h265() {
-        let params = rkmpp_h265_spec().to_native_params().unwrap();
+        let params = rkmpp_h265_spec().to_native_params().unwrap().unwrap();
         assert_eq!(params.capture_backend, "v4l2");
         assert_eq!(params.encoder_backend, "rkmpp");
         assert_eq!(params.capture_pixel_format, 1); // nv12
@@ -1740,9 +2084,9 @@ mod tests {
         // H.265 without an explicit level must pass validate() AND
         // to_native_params(), defaulting to Level 4.0 (120).
         let mut spec = rkmpp_h265_spec();
-        spec.encoder.level = None;
+        spec.encoder.as_mut().unwrap().level = None;
         spec.validate().unwrap();
-        let params = spec.to_native_params().unwrap();
+        let params = spec.to_native_params().unwrap().unwrap();
         assert_eq!(params.profile_idc, 1);
         assert_eq!(params.level_idc, 120);
         assert_eq!(params.tier_flag, 0);
@@ -1756,10 +2100,10 @@ mod tests {
         // Non-rkmpp backends also need resolved H.265 numerics for the SDP
         // fmtp line — they must not fall back to 0/0/0.
         let mut spec = v4l2_spec();
-        spec.encoder.codec = "h265".into();
-        spec.encoder.profile = "main".into();
-        spec.encoder.level = None;
-        let params = spec.to_native_params().unwrap();
+        spec.encoder.as_mut().unwrap().codec = "h265".into();
+        spec.encoder.as_mut().unwrap().profile = "main".into();
+        spec.encoder.as_mut().unwrap().level = None;
+        let params = spec.to_native_params().unwrap().unwrap();
         assert_eq!(params.codec, 101); // h265
         assert_eq!(params.profile_idc, 1);
         assert_eq!(params.level_idc, 120);
@@ -1770,7 +2114,7 @@ mod tests {
     #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_pixel_format() {
         let mut spec = v4l2_spec();
-        spec.capture.pixel_format = "bad_format".into();
+        spec.capture.as_mut().unwrap().pixel_format = "bad_format".into();
         assert!(spec.to_native_params().is_err());
     }
 
@@ -1778,7 +2122,197 @@ mod tests {
     #[cfg(feature = "native-source")]
     fn test_to_native_params_invalid_codec() {
         let mut spec = v4l2_spec();
-        spec.encoder.codec = "h266".into();
+        spec.encoder.as_mut().unwrap().codec = "h266".into();
         assert!(spec.to_native_params().is_err());
+    }
+
+    // --- audio leg tests ---
+
+    #[test]
+    fn test_source_spec_no_legs_rejected() {
+        // Neither a video leg nor an audio leg: nothing to publish.
+        let mut spec = v4l2_spec();
+        spec.capture = None;
+        spec.encoder = None;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_half_legs_rejected() {
+        // Video half-legs.
+        let mut spec = v4l2_spec();
+        spec.encoder = None;
+        assert!(spec.validate().is_err());
+        let mut spec = v4l2_spec();
+        spec.capture = None;
+        assert!(spec.validate().is_err());
+        // Audio half-legs (checked before the encoder-opus feature gate).
+        let mut spec = audio_spec();
+        spec.audio_encoder = None;
+        assert!(spec.validate().is_err());
+        let mut spec = audio_spec();
+        spec.audio_capture = None;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "encoder-opus"))]
+    fn test_audio_leg_requires_encoder_opus_feature() {
+        let err = audio_spec().validate().unwrap_err();
+        assert!(
+            err.to_string().contains("encoder-opus"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_audio_only_spec_validate_ok() {
+        assert!(audio_spec().validate().is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_video_audio_spec_validate_ok() {
+        let mut spec = v4l2_spec();
+        let audio = audio_spec();
+        spec.audio_capture = audio.audio_capture;
+        spec.audio_encoder = audio.audio_encoder;
+        assert!(spec.validate().is_ok());
+        assert!(spec.to_native_params().unwrap().is_some());
+        assert!(spec.to_audio_params().is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_audio_bad_params_rejected() {
+        let bad = |f: fn(&mut SourceSpec)| {
+            let mut spec = audio_spec();
+            f(&mut spec);
+            spec.validate().is_err()
+        };
+        assert!(bad(
+            |s| s.audio_capture.as_mut().unwrap().sample_rate = 44_100
+        ));
+        assert!(bad(|s| s.audio_capture.as_mut().unwrap().channels = 3));
+        assert!(bad(|s| s.audio_encoder.as_mut().unwrap().frame_ms = 15));
+        assert!(bad(|s| s.audio_encoder.as_mut().unwrap().bitrate = 5_000));
+        assert!(bad(|s| s.audio_encoder.as_mut().unwrap().bitrate = 510_001));
+        assert!(bad(|s| s.audio_encoder.as_mut().unwrap().complexity = 11));
+        assert!(bad(
+            |s| s.audio_encoder.as_mut().unwrap().codec = "aac".into()
+        ));
+        assert!(bad(
+            |s| s.audio_capture.as_mut().unwrap().backend = "pulse".into()
+        ));
+        assert!(bad(
+            |s| s.audio_encoder.as_mut().unwrap().application = "music".into()
+        ));
+        assert!(bad(
+            |s| s.audio_capture.as_mut().unwrap().device = "  ".into()
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_audio_adaptive_min_bitrate_check() {
+        let mut spec = audio_spec();
+        spec.audio_encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(100_000),
+        });
+        assert!(spec.validate().is_err());
+        spec.audio_encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Knobs {
+            min_bitrate: Some(16_000),
+        });
+        assert!(spec.validate().is_ok());
+        spec.audio_encoder.as_mut().unwrap().adaptive = Some(AdaptiveConfig::Switch(false));
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_audio_only_tier_geometry_rejected() {
+        // Geometry rungs are video-only; an audio-only source rejects them.
+        let mut spec = audio_spec();
+        let mut t = tier("low", 32_000);
+        t.capture.width = Some(640);
+        t.capture.height = Some(480);
+        spec.tiers = vec![t];
+        assert!(spec.validate().is_err());
+        // Bitrate-only rungs target the audio encoder and are fine.
+        spec.tiers = vec![tier("low", 32_000)];
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_to_audio_params_mapping() {
+        let params = audio_spec().to_audio_params().unwrap();
+        assert_eq!(params.capture_backend, "sine");
+        assert_eq!(params.capture_device, "default");
+        assert_eq!(params.sample_rate, 48_000);
+        assert_eq!(params.channels, 2);
+        assert_eq!(params.bitrate, 64_000);
+        assert!(matches!(
+            params.application,
+            livehal::AudioApplication::Audio
+        ));
+        assert_eq!(params.frame_ms, 20);
+        assert!(params.vbr);
+        assert!(!params.inband_fec);
+        assert!(!params.dtx);
+        assert_eq!(params.payload_type, 111);
+        assert_eq!(params.clock_rate, 48_000);
+        assert_eq!(params.complexity, 9);
+
+        // Application string mapping.
+        for (s, expected) in [
+            ("audio", livehal::AudioApplication::Audio),
+            ("voip", livehal::AudioApplication::Voip),
+            ("lowdelay", livehal::AudioApplication::LowDelay),
+            ("LOWDELAY", livehal::AudioApplication::LowDelay),
+        ] {
+            let mut spec = audio_spec();
+            spec.audio_encoder.as_mut().unwrap().application = s.into();
+            let params = spec.to_audio_params().unwrap();
+            assert!(
+                params.application == expected,
+                "application '{s}' mapped wrongly"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_audio_minimal_toml_form() {
+        // The minimal audio encoder form is `codec = "opus"` alone; every
+        // other field falls back to its serde default.
+        #[derive(Deserialize)]
+        struct W {
+            audio_capture: AudioCaptureSpec,
+            audio_encoder: AudioEncoderSpec,
+        }
+        let w: W = toml::from_str(
+            r#"
+            [audio_capture]
+            backend = "alsa"
+            [audio_encoder]
+            codec = "opus"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(w.audio_capture.backend, "alsa");
+        assert_eq!(w.audio_capture.device, "default");
+        assert_eq!(w.audio_capture.sample_rate, 48_000);
+        assert_eq!(w.audio_capture.channels, 2);
+        assert_eq!(w.audio_encoder.codec, "opus");
+        assert_eq!(w.audio_encoder.bitrate, 64_000);
+        assert_eq!(w.audio_encoder.application, "audio");
+        assert_eq!(w.audio_encoder.frame_ms, 20);
+        assert!(w.audio_encoder.vbr);
+        assert!(!w.audio_encoder.inband_fec);
+        assert!(!w.audio_encoder.dtx);
+        assert_eq!(w.audio_encoder.complexity, 9);
+        assert!(w.audio_encoder.adaptive.is_none());
     }
 }

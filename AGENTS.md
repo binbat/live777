@@ -59,7 +59,9 @@ libs/version         # build-time version info (shadow-rs; compile-time
 liveion              # core SFU library
 liveman              # cluster manager / controller
 livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library
-livehal              # native capture/encoder backend (C++ pipeline)
+livehal              # native capture/encoder backend (C++ pipeline), plus a
+                     # pure-Rust audio path: `encoder-opus` (opus-rs) with
+                     # `sine`/`capture-alsa` capture backends
 ```
 
 ### Binaries Produced
@@ -172,6 +174,11 @@ Key feature groups defined in the root `Cargo.toml`:
   IOVA mapping cached per capture buffer — the SDK's `nShareBufFd` shortcut
   is not used because it assumes one contiguous dma-buf while VIN exports
   the two NV12M planes as separate dma-bufs).
+- `encoder-opus`    — pure-Rust Opus audio encoder (opus-rs in livehal; no
+  C++ pipeline involvement), paired with the `sine` 440 Hz test-tone
+  capture backend (no sound card — the test/CI path).
+- `capture-alsa`    — ALSA microphone audio capture (Linux); implies
+  `encoder-opus`.
 - Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
   `native-rkmpp`, `native-cedar`.
 - `whepwright`     — Playwright-based browser WHEP test harness.
@@ -457,6 +464,14 @@ clients via Link headers).
   becomes the AIMD's rung ceiling and resume seed without suspending
   it, and an external-change generation counter guarantees the
   controller re-seeds even for applies shorter than its 1 s tick.
+  Native sources may be audio-only or video+audio: the audio leg is
+  `sine`/ALSA capture → opus-rs encode (`livehal::AudioPipeline`) → the
+  `NativeEncodedSource` audio packetize task → `MediaPacket::AudioRtpPacket`
+  → `PeerForward::inject_audio_rtp_packet` (fixed wire contract: Opus
+  PT 111, 48 kHz, fmtp `minptime=10;useinbandfec=1`). Tiers and the
+  adaptive controller target the video encoder when both legs exist (the
+  audio leg's own `adaptive` key is ignored); on an audio-only source they
+  drive the Opus encoder.
 - `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
   `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
   Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
@@ -648,6 +663,11 @@ Integration test binaries live in `tests/`:
   sudo; all other CI jobs and default local runs leave them ignored. They also
   set `LIVE777_WEBRTC_DISABLE_MDNS=1` to skip mDNS candidate resolution in the
   livetwo client peers (`utils::webrtc::setting_engine`).
+- `tests/native_audio.rs` — native audio (Opus) source end-to-end: a
+  provisioned `sine`+opus stream WHEP-subscribed by a real peer, asserting
+  PT 111 and opus-rs-decoding every received packet. Gated on
+  `native-source,encoder-opus` — excluded from the default CI feature set,
+  where it compiles to an empty binary.
 
 Tests that create local WebRTC peers set
 `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in

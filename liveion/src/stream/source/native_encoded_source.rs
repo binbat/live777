@@ -5,6 +5,10 @@
 //!   C++ SourcePipeline → livehal FFI → EncodedPacket channel →
 //!   codec-specific RTP packetize (webrtc crate) → RTP broadcast
 //!
+//! A source runs a video leg (the C++ pipeline above), an audio leg
+//! (`livehal::AudioPipeline` — pure-Rust capture → Opus encode), or both;
+//! the audio leg packetizes into `MediaPacket::AudioRtpPacket`.
+//!
 //! livehal handles all C++ FFI — this module only sees `EncodedPacket`
 //! through an mpsc channel.
 
@@ -15,6 +19,8 @@ use anyhow::Result;
 use rtc_rtp::codec::av1::Av1Payloader;
 use rtc_rtp::codec::h264::H264Payloader;
 use rtc_rtp::codec::h265::HevcPayloader;
+#[cfg(feature = "encoder-opus")]
+use rtc_rtp::codec::opus::OpusPayloader;
 use rtc_rtp::codec::vp8::Vp8Payloader;
 use rtc_rtp::codec::vp9::Vp9Payloader;
 use rtc_rtp::packetizer::{Packetizer as _, Payloader, new_packetizer};
@@ -79,7 +85,11 @@ impl WireLatencyStats {
 
 pub struct NativeEncodedSource {
     stream_id: String,
-    params: livehal::NativeSourceParams,
+    /// Video leg params; `None` on an audio-only source.
+    params: Option<livehal::NativeSourceParams>,
+    /// Audio leg params; `None` on a video-only source.
+    #[cfg(feature = "encoder-opus")]
+    audio_params: Option<livehal::AudioSourceParams>,
     adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
     tiers: Vec<super::tier::QualityTier>,
     /// The tier last applied through the admin API (`None` = the
@@ -90,9 +100,15 @@ pub struct NativeEncodedSource {
     state_tx: broadcast::Sender<StateChangeEvent>,
     shutdown_tx: Option<broadcast::Sender<()>>,
     pipeline: Option<livehal::NativePipeline>,
+    #[cfg(feature = "encoder-opus")]
+    audio_pipeline: Option<livehal::AudioPipeline>,
     keyframe_handle: Option<livehal::KeyframeHandle>,
     bitrate_handle: Option<livehal::BitrateHandle>,
+    #[cfg(feature = "encoder-opus")]
+    audio_bitrate_handle: Option<livehal::AudioBitrateHandle>,
     packetize_handle: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(feature = "encoder-opus")]
+    audio_packetize_handle: Option<tokio::task::JoinHandle<()>>,
     rtcp_sender: Option<mpsc::UnboundedSender<Vec<u8>>>,
     rtcp_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "source")]
@@ -106,7 +122,8 @@ pub struct NativeEncodedSource {
 impl NativeEncodedSource {
     pub fn new(
         stream_id: String,
-        params: livehal::NativeSourceParams,
+        params: Option<livehal::NativeSourceParams>,
+        #[cfg(feature = "encoder-opus")] audio_params: Option<livehal::AudioSourceParams>,
         adaptive: Option<super::adaptive_bitrate::AdaptiveBitrateConfig>,
         tiers: Vec<super::tier::QualityTier>,
     ) -> Self {
@@ -116,6 +133,8 @@ impl NativeEncodedSource {
         Self {
             stream_id,
             params,
+            #[cfg(feature = "encoder-opus")]
+            audio_params,
             adaptive,
             tiers,
             active_tier: None,
@@ -124,9 +143,15 @@ impl NativeEncodedSource {
             state_tx,
             shutdown_tx: None,
             pipeline: None,
+            #[cfg(feature = "encoder-opus")]
+            audio_pipeline: None,
             keyframe_handle: None,
             bitrate_handle: None,
+            #[cfg(feature = "encoder-opus")]
+            audio_bitrate_handle: None,
             packetize_handle: None,
+            #[cfg(feature = "encoder-opus")]
+            audio_packetize_handle: None,
             rtcp_sender: None,
             rtcp_handle: None,
             #[cfg(feature = "source")]
@@ -179,108 +204,238 @@ impl NativeEncodedSource {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        if self.pipeline.is_some() {
+        if self.shutdown_tx.is_some() {
             anyhow::bail!("Already started");
         }
 
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-        self.shutdown_tx = Some(shutdown_tx);
+        self.shutdown_tx = Some(shutdown_tx.clone());
 
-        let mut pipeline = livehal::NativePipeline::new(&self.params)?;
-        let keyframe_handle = pipeline.keyframe_handle();
-        self.bitrate_handle = Some(pipeline.bitrate_handle());
-        let mut rx = pipeline.start()?;
+        // Video leg: capture+encode pipeline, RTCP keyframe relay and the
+        // RTP packetize task.
+        if let Some(params) = self.params.clone() {
+            let mut pipeline = livehal::NativePipeline::new(&params)?;
+            let keyframe_handle = pipeline.keyframe_handle();
+            self.bitrate_handle = Some(pipeline.bitrate_handle());
+            let mut rx = pipeline.start()?;
 
-        // Start a single RTCP task for this source.  It will exit when the
-        // sender is dropped in stop().
-        let (rtcp_tx, mut rtcp_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let kh = keyframe_handle.clone();
-        let rtcp_task = tokio::spawn(async move {
-            while let Some(data) = rtcp_rx.recv().await {
-                if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
-                    for packet in packets {
-                        let any = packet.as_any();
-                        if any
-                            .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
-                            .is_some()
-                            || any
-                                .downcast_ref::<rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+            // Start a single RTCP task for this source.  It will exit when the
+            // sender is dropped in stop().
+            let (rtcp_tx, mut rtcp_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let kh = keyframe_handle.clone();
+            let rtcp_task = tokio::spawn(async move {
+                while let Some(data) = rtcp_rx.recv().await {
+                    if let Ok(packets) = rtc_rtcp::packet::unmarshal(&mut &data[..]) {
+                        for packet in packets {
+                            let any = packet.as_any();
+                            if any
+                                .downcast_ref::<rtc_rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                                 .is_some()
-                        {
-                            kh.request_keyframe();
+                                || any
+                                    .downcast_ref::<rtc_rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
+                                    .is_some()
+                            {
+                                kh.request_keyframe();
+                            }
                         }
                     }
                 }
-            }
-        });
-        self.rtcp_sender = Some(rtcp_tx);
-        self.rtcp_handle = Some(rtcp_task);
+            });
+            self.rtcp_sender = Some(rtcp_tx);
+            self.rtcp_handle = Some(rtcp_task);
+
+            let rtp_tx = self.rtp_tx.clone();
+            let payload_type = params.payload_type as u8;
+            let clock_rate = params.clock_rate;
+            let codec = params.codec;
+            let fallback_delta = clock_rate / params.fps.max(1);
+            let stream_id = self.stream_id.clone();
+            #[cfg(feature = "source")]
+            let dynamic_profile = self.dynamic_profile.clone();
+
+            let handle = tokio::spawn(async move {
+                let codec_typed =
+                    SourceVideoCodec::try_from(codec).unwrap_or(SourceVideoCodec::H264);
+                let payloader: Box<dyn Payloader> = match codec_typed {
+                    SourceVideoCodec::H265 => Box::new(HevcPayloader),
+                    SourceVideoCodec::Av1 => Box::new(Av1Payloader::default()),
+                    SourceVideoCodec::Vp8 => Box::new(Vp8Payloader::default()),
+                    SourceVideoCodec::Vp9 => Box::new(Vp9Payloader::default()),
+                    SourceVideoCodec::H264 => Box::new(H264Payloader::default()),
+                };
+                let sequencer = Box::new(new_random_sequencer());
+                let ssrc: u32 = rand::random();
+                let mut packetizer = new_packetizer(
+                    std::time::Instant::now(),
+                    1400,
+                    payload_type,
+                    ssrc,
+                    payloader,
+                    sequencer,
+                    clock_rate,
+                );
+
+                // Track the previous RTP 90kHz timestamp so we can pass
+                // *increments* to packetizer.packetize().  The webrtc
+                // Packetizer maintains an internal timestamp base and
+                // wrapping-adds the `samples` parameter after each call.
+                let mut last_rtp_ts: Option<u32> = None;
+                let mut wire_stats = WireLatencyStats::new();
+
+                static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
+
+                loop {
+                    tokio::select! {
+                        pkt = rx.recv() => {
+                            let Some(pkt) = pkt else { break };
+
+                            let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                            if n.is_multiple_of(60) {
+                                tracing::trace!(
+                                    "[NativeEncodedSource] packet bytes={} count={}",
+                                    pkt.data.len(), n
+                                );
+                            }
+
+                            // Convert PTS (microseconds) to the RTP clock.
+                            let rtp_ts = if pkt.pts_us > 0 {
+                                pts_us_to_rtp_ts(pkt.pts_us, clock_rate)
+                            } else {
+                                0u32
+                            };
+
+                            // Delta across calls — monotonic, no backward steps.
+                            // `fallback_delta` = clock_rate / fps covers
+                            // timestamp regressions (e.g. encoder PTS reset).
+                            let delta = match last_rtp_ts {
+                                Some(prev) if rtp_ts > prev => rtp_ts - prev,
+                                Some(_prev) => fallback_delta,
+                                None => 0, // first frame: let Packetizer use
+                                           // its internal base timestamp
+                            };
+                            last_rtp_ts = Some(rtp_ts);
+
+                            #[cfg(feature = "source")]
+                            {
+                                // Dynamic profile-level-id detection is H.264-specific.
+                                // Use a read-lock first: the profile rarely changes, so
+                                // the fast path avoids contending with get_video_codec().
+                                if codec_typed == SourceVideoCodec::H264 {
+                                    let needs_update = {
+                                        let guard = dynamic_profile.read().await;
+                                        guard.as_ref().is_none()
+                                    };
+                                    if needs_update
+                                        && let Some(profile) = scan_sps_profile(&pkt.data)
+                                    {
+                                        let mut guard = dynamic_profile.write().await;
+                                        if guard.as_ref() != Some(&profile) {
+                                            *guard = Some(profile);
+                                        }
+                                    }
+                                }
+                            }
+
+                            match packetizer.packetize(std::time::Instant::now(), &pkt.data.into(), delta) {
+                                Ok(packets) => {
+                                    for packet in packets {
+                                        let _ = rtp_tx.send(MediaPacket::RtpPacket(
+                                            std::sync::Arc::new(packet),
+                                        ));
+                                    }
+                                    wire_stats.sample(
+                                        pkt.pts_us,
+                                        livehal::monotonic_us(),
+                                        &stream_id,
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!("RTP packetize error: {}", e);
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            self.pipeline = Some(pipeline);
+            self.keyframe_handle = Some(keyframe_handle);
+            self.packetize_handle = Some(handle);
+        }
+
+        // Audio leg: livehal's pure-Rust capture → Opus pipeline plus its
+        // own packetize task.  No RTCP task — audio has no keyframes.
+        #[cfg(feature = "encoder-opus")]
+        if let Some(audio_params) = self.audio_params.clone()
+            && let Err(e) = self.start_audio_leg(audio_params, &shutdown_tx)
+        {
+            // Roll back a started video leg so a half-started source never
+            // leaks a running pipeline.
+            tracing::error!(
+                "[{}] audio leg failed to start ({}), stopping source",
+                self.stream_id,
+                e
+            );
+            self.stop().await;
+            return Err(e);
+        }
+
+        self.set_state(StreamSourceState::Connected, None).await;
+        Ok(())
+    }
+
+    /// Start the audio leg: create and start the livehal audio pipeline
+    /// and spawn the Opus RTP packetize task draining it.
+    #[cfg(feature = "encoder-opus")]
+    fn start_audio_leg(
+        &mut self,
+        audio_params: livehal::AudioSourceParams,
+        shutdown_tx: &broadcast::Sender<()>,
+    ) -> Result<()> {
+        let mut pipeline = livehal::AudioPipeline::new(&audio_params)?;
+        self.audio_bitrate_handle = Some(pipeline.bitrate_handle());
+        let mut rx = pipeline.start()?;
 
         let rtp_tx = self.rtp_tx.clone();
-        let payload_type = self.params.payload_type as u8;
-        let clock_rate = self.params.clock_rate;
-        let codec = self.params.codec;
-        let fallback_delta = clock_rate / self.params.fps.max(1);
         let stream_id = self.stream_id.clone();
-        #[cfg(feature = "source")]
-        let dynamic_profile = self.dynamic_profile.clone();
+        let mut shutdown_rx = shutdown_tx.subscribe();
 
         let handle = tokio::spawn(async move {
-            let codec_typed = SourceVideoCodec::try_from(codec).unwrap_or(SourceVideoCodec::H264);
-            let payloader: Box<dyn Payloader> = match codec_typed {
-                SourceVideoCodec::H265 => Box::new(HevcPayloader),
-                SourceVideoCodec::Av1 => Box::new(Av1Payloader::default()),
-                SourceVideoCodec::Vp8 => Box::new(Vp8Payloader::default()),
-                SourceVideoCodec::Vp9 => Box::new(Vp9Payloader::default()),
-                SourceVideoCodec::H264 => Box::new(H264Payloader::default()),
-            };
+            let payloader: Box<dyn Payloader> = Box::<OpusPayloader>::default();
             let sequencer = Box::new(new_random_sequencer());
             let ssrc: u32 = rand::random();
             let mut packetizer = new_packetizer(
                 std::time::Instant::now(),
                 1400,
-                payload_type,
+                audio_params.payload_type as u8,
                 ssrc,
                 payloader,
                 sequencer,
-                clock_rate,
+                audio_params.clock_rate,
             );
 
-            // Track the previous RTP 90kHz timestamp so we can pass
-            // *increments* to packetizer.packetize().  The webrtc
-            // Packetizer maintains an internal timestamp base and
-            // wrapping-adds the `samples` parameter after each call.
+            // Samples per Opus frame at the 48 kHz RTP clock — the
+            // fallback delta when a timestamp regresses.
+            let fallback_delta = audio_params.frame_ms * 48;
             let mut last_rtp_ts: Option<u32> = None;
             let mut wire_stats = WireLatencyStats::new();
-
-            static DBG_COUNT: AtomicU64 = AtomicU64::new(0);
 
             loop {
                 tokio::select! {
                     pkt = rx.recv() => {
                         let Some(pkt) = pkt else { break };
 
-                        let n = DBG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                        if n.is_multiple_of(60) {
-                            tracing::trace!(
-                                "[NativeEncodedSource] packet bytes={} count={}",
-                                pkt.data.len(), n
-                            );
-                        }
-
-                        // Convert PTS (microseconds) to RTP 90 kHz clock.
-                        // Use u128 for the intermediate product so that very
-                        // large PTS values cannot overflow before we wrap to
-                        // the 32-bit RTP timestamp.
+                        // Convert PTS (microseconds) to the RTP clock.
                         let rtp_ts = if pkt.pts_us > 0 {
-                            ((pkt.pts_us as u128 * 9) / 100) as u32
+                            pts_us_to_rtp_ts(pkt.pts_us, audio_params.clock_rate)
                         } else {
                             0u32
                         };
 
                         // Delta across calls — monotonic, no backward steps.
-                        // `fallback_delta` = clock_rate / fps covers
-                        // timestamp regressions (e.g. encoder PTS reset).
                         let delta = match last_rtp_ts {
                             Some(prev) if rtp_ts > prev => rtp_ts - prev,
                             Some(_prev) => fallback_delta,
@@ -289,31 +444,10 @@ impl NativeEncodedSource {
                         };
                         last_rtp_ts = Some(rtp_ts);
 
-                        #[cfg(feature = "source")]
-                        {
-                            // Dynamic profile-level-id detection is H.264-specific.
-                            // Use a read-lock first: the profile rarely changes, so
-                            // the fast path avoids contending with get_video_codec().
-                            if codec_typed == SourceVideoCodec::H264 {
-                                let needs_update = {
-                                    let guard = dynamic_profile.read().await;
-                                    guard.as_ref().is_none()
-                                };
-                                if needs_update
-                                    && let Some(profile) = scan_sps_profile(&pkt.data)
-                                {
-                                    let mut guard = dynamic_profile.write().await;
-                                    if guard.as_ref() != Some(&profile) {
-                                        *guard = Some(profile);
-                                    }
-                                }
-                            }
-                        }
-
                         match packetizer.packetize(std::time::Instant::now(), &pkt.data.into(), delta) {
                             Ok(packets) => {
                                 for packet in packets {
-                                    let _ = rtp_tx.send(MediaPacket::RtpPacket(
+                                    let _ = rtp_tx.send(MediaPacket::AudioRtpPacket(
                                         std::sync::Arc::new(packet),
                                     ));
                                 }
@@ -335,11 +469,8 @@ impl NativeEncodedSource {
             }
         });
 
-        self.pipeline = Some(pipeline);
-        self.keyframe_handle = Some(keyframe_handle);
-        self.packetize_handle = Some(handle);
-
-        self.set_state(StreamSourceState::Connected, None).await;
+        self.audio_pipeline = Some(pipeline);
+        self.audio_packetize_handle = Some(handle);
         Ok(())
     }
 
@@ -357,12 +488,23 @@ impl NativeEncodedSource {
             handle.abort();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
+        #[cfg(feature = "encoder-opus")]
+        if let Some(handle) = self.audio_packetize_handle.take() {
+            handle.abort();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        }
         if let Some(handle) = self.rtcp_handle.take() {
             handle.abort();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
 
         self.pipeline = None;
+        // Dropping the audio pipeline stops and joins its capture/encode
+        // threads (AudioPipeline::drop calls stop()).
+        #[cfg(feature = "encoder-opus")]
+        {
+            self.audio_pipeline = None;
+        }
         self.keyframe_handle = None;
         self.set_state(StreamSourceState::Disconnected, None).await;
     }
@@ -373,10 +515,11 @@ impl NativeEncodedSource {
     ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
         use rtc::rtp_transceiver::rtp_sender::{RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters};
 
-        let mime_type = format!("video/{}", self.params.codec_name.to_uppercase());
+        let params = self.params.as_ref()?;
+        let mime_type = format!("video/{}", params.codec_name.to_uppercase());
 
         // Build codec-specific SDP fmtp line.
-        let codec = SourceVideoCodec::try_from(self.params.codec).unwrap_or(SourceVideoCodec::H264);
+        let codec = SourceVideoCodec::try_from(params.codec).unwrap_or(SourceVideoCodec::H264);
         let sdp_fmtp_line = match codec {
             SourceVideoCodec::H264 => {
                 // H.264: use dynamically detected profile-level-id if available.
@@ -385,7 +528,7 @@ impl NativeEncodedSource {
                     .read()
                     .await
                     .clone()
-                    .unwrap_or_else(|| self.params.default_profile.clone());
+                    .unwrap_or_else(|| params.default_profile.clone());
                 format!(
                     "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={}",
                     profile
@@ -396,7 +539,7 @@ impl NativeEncodedSource {
                 // source_config.rs — the same values the C++ encoder receives.
                 format!(
                     "profile-id={};tier-flag={};level-id={}",
-                    self.params.profile_idc, self.params.tier_flag, self.params.level_idc,
+                    params.profile_idc, params.tier_flag, params.level_idc,
                 )
             }
             // AV1, VP8, VP9: no fmtp required for basic negotiation.
@@ -406,7 +549,7 @@ impl NativeEncodedSource {
         Some(RTCRtpCodecParameters {
             rtp_codec: RTCRtpCodec {
                 mime_type,
-                clock_rate: self.params.clock_rate,
+                clock_rate: params.clock_rate,
                 channels: 0,
                 sdp_fmtp_line,
                 rtcp_feedback: vec![
@@ -424,7 +567,7 @@ impl NativeEncodedSource {
                     },
                 ],
             },
-            payload_type: self.params.payload_type as u8,
+            payload_type: params.payload_type as u8,
         })
     }
 
@@ -432,6 +575,25 @@ impl NativeEncodedSource {
     pub async fn get_audio_codec(
         &self,
     ) -> Option<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
+        #[cfg(feature = "encoder-opus")]
+        if let Some(params) = &self.audio_params {
+            use rtc::peer_connection::configuration::media_engine::MIME_TYPE_OPUS;
+            use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
+
+            // Fixed wire contract (RFC 7587), mirroring the Opus codec
+            // literal in livetwo's whipsynth packetizer: Opus 48 kHz,
+            // payload type 111, stereo SDP channel count.
+            return Some(RTCRtpCodecParameters {
+                rtp_codec: RTCRtpCodec {
+                    mime_type: MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: params.clock_rate,
+                    channels: 2,
+                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: params.payload_type as u8,
+            });
+        }
         None
     }
 
@@ -448,9 +610,18 @@ impl NativeEncodedSource {
     }
 
     /// The bitrate the pipeline is currently configured with (the boot
-    /// `encoder.bitrate` until a tier moves it).
+    /// `encoder.bitrate` until a tier moves it).  The video leg's bitrate
+    /// when present, else the audio leg's (mirroring the tier rule).
     pub fn configured_bitrate(&self) -> u32 {
-        self.params.bitrate
+        if let Some(params) = &self.params {
+            return params.bitrate;
+        }
+        #[cfg(feature = "encoder-opus")]
+        if let Some(audio_params) = &self.audio_params {
+            return audio_params.bitrate;
+        }
+        // Unreachable: validate() guarantees at least one complete leg.
+        0
     }
 
     /// Named quality tiers from the source config.
@@ -469,24 +640,38 @@ impl NativeEncodedSource {
 
     /// The state the pipeline is actually running with: the last applied
     /// tier's name plus the current params (post-rollback these are the
-    /// restored previous params).
+    /// restored previous params).  On an audio-only source the geometry
+    /// fields are zeroed (there is no capture geometry) and the bitrate
+    /// is the audio leg's.
     #[cfg(feature = "source")]
     pub fn active_tier_state(&self) -> super::tier::ActiveTierState {
         super::tier::ActiveTierState {
             name: self.active_tier.clone(),
-            width: self.params.width,
-            height: self.params.height,
-            fps: self.params.fps,
-            bitrate: self.params.bitrate,
+            width: self.params.as_ref().map(|p| p.width).unwrap_or(0),
+            height: self.params.as_ref().map(|p| p.height).unwrap_or(0),
+            fps: self.params.as_ref().map(|p| p.fps).unwrap_or(0),
+            bitrate: self.configured_bitrate(),
         }
     }
 
     /// Retune the running encoder (adaptive bitrate control, issue #409).
     /// False when the pipeline is not running or the backend cannot retune.
+    /// With both legs present the video encoder wins, mirroring the tier
+    /// rule; on an audio-only source the Opus encoder is retuned.
     pub fn set_bitrate(&self, bps: u32) -> bool {
-        self.bitrate_handle
+        if self.params.is_some() {
+            return self
+                .bitrate_handle
+                .as_ref()
+                .is_some_and(|h| h.set_bitrate(bps));
+        }
+        #[cfg(feature = "encoder-opus")]
+        return self
+            .audio_bitrate_handle
             .as_ref()
-            .is_some_and(|h| h.set_bitrate(bps))
+            .is_some_and(|h| h.set_bitrate(bps));
+        #[cfg(not(feature = "encoder-opus"))]
+        return false;
     }
 
     /// Rebuild the capture+encoder pipeline with new params (quality-tier
@@ -495,13 +680,19 @@ impl NativeEncodedSource {
     /// they only observe a short frame gap and an in-band SPS/PPS change.
     /// On start failure the previous params are restored (best effort) so
     /// the stream is not left dead.
+    ///
+    /// Video-leg only: an audio-only source has no pipeline to rebuild
+    /// (validated tiers never carry geometry there, so this is
+    /// unreachable through the admin API).
     pub async fn reconfigure(&mut self, params: livehal::NativeSourceParams) -> Result<()> {
         if self.pipeline.is_none() {
             anyhow::bail!("source is not running");
         }
-        let old_params = self.params.clone();
+        let Some(old_params) = self.params.clone() else {
+            anyhow::bail!("source is not running");
+        };
         self.stop().await;
-        self.params = params;
+        self.params = Some(params);
         // The new stream's SPS may carry a different profile-level-id —
         // let it be re-derived instead of serving the stale value.
         #[cfg(feature = "source")]
@@ -512,7 +703,7 @@ impl NativeEncodedSource {
                 self.stream_id,
                 e
             );
-            self.params = old_params;
+            self.params = Some(old_params);
             let _ = self.start().await;
             return Err(e);
         }
@@ -524,6 +715,14 @@ impl NativeEncodedSource {
 // Minimal H.264 Annex-B SPS scanner — only used for H.264 dynamic
 // profile-level-id detection in get_video_codec().
 // ---------------------------------------------------------------------------
+
+/// Convert a microsecond PTS to an RTP timestamp at `clock_rate`.
+/// Use u128 for the intermediate product so that very large PTS values
+/// cannot overflow before we wrap to the 32-bit RTP timestamp.
+/// (At the 90 kHz video clock this is exactly `pts_us * 9 / 100`.)
+fn pts_us_to_rtp_ts(pts_us: u64, clock_rate: u32) -> u32 {
+    ((pts_us as u128 * clock_rate as u128) / 1_000_000) as u32
+}
 
 fn scan_sps_profile(data: &[u8]) -> Option<String> {
     let mut pos = 0;
@@ -579,4 +778,161 @@ fn scan_sps_profile(data: &[u8]) -> Option<String> {
         pos += start_len;
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "encoder-opus"))]
+mod tests {
+    use super::*;
+
+    fn sine_audio_params() -> livehal::AudioSourceParams {
+        livehal::AudioSourceParams {
+            capture_backend: "sine".into(),
+            capture_device: "default".into(),
+            sample_rate: 48_000,
+            channels: 2,
+            bitrate: 64_000,
+            application: livehal::AudioApplication::Audio,
+            frame_ms: 20,
+            vbr: true,
+            inband_fec: false,
+            dtx: false,
+            payload_type: 111,
+            clock_rate: 48_000,
+            complexity: 9,
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_leg_emits_opus_rtp() {
+        let mut source = NativeEncodedSource::new(
+            "mic".to_string(),
+            None,
+            Some(sine_audio_params()),
+            None,
+            vec![],
+        );
+        let mut rx = source.subscribe_rtp();
+        source.start().await.expect("start audio-only source");
+
+        // The sine pipeline paces 20 ms frames in real time; the first
+        // Opus RTP packet must arrive quickly with the fixed wire contract.
+        let packet = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(MediaPacket::AudioRtpPacket(packet)) = rx.recv().await {
+                    break packet;
+                }
+            }
+        })
+        .await
+        .expect("audio RTP packet within 2s");
+        assert_eq!(packet.header.payload_type, 111);
+        assert!(!packet.payload.is_empty());
+
+        source.stop().await;
+        assert_eq!(source.state(), StreamSourceState::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn audio_only_codec_and_bitrate_surface() {
+        let source = NativeEncodedSource::new(
+            "mic".to_string(),
+            None,
+            Some(sine_audio_params()),
+            None,
+            vec![],
+        );
+        assert!(source.get_video_codec().await.is_none());
+        let audio = source.get_audio_codec().await.expect("audio codec");
+        assert_eq!(audio.rtp_codec.mime_type, "audio/opus");
+        assert_eq!(audio.rtp_codec.clock_rate, 48_000);
+        assert_eq!(audio.rtp_codec.channels, 2);
+        assert_eq!(audio.rtp_codec.sdp_fmtp_line, "minptime=10;useinbandfec=1");
+        assert!(audio.rtp_codec.rtcp_feedback.is_empty());
+        assert_eq!(audio.payload_type, 111);
+        assert_eq!(source.configured_bitrate(), 64_000);
+        // Not running: retuning is rejected (fixed-looking rate).
+        assert!(!source.set_bitrate(32_000));
+    }
+
+    #[tokio::test]
+    async fn inject_audio_rtp_packet_routes_to_audio_track() {
+        use crate::forward::PeerForward;
+        use rtc::rtp::header::Header;
+        use rtc::rtp::packet::Packet;
+        use rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+
+        let forward = PeerForward::new(
+            "mic-inject",
+            vec![],
+            vec![],
+            true,
+            std::sync::Arc::new(crate::stream::cable::CableHub::bare()),
+            api::strategy::Strategy::default(),
+            broadcast::channel(4).0,
+        );
+        let codec = NativeEncodedSource::new(
+            "mic".to_string(),
+            None,
+            Some(sine_audio_params()),
+            None,
+            vec![],
+        )
+        .get_audio_codec()
+        .await
+        .expect("audio codec");
+        forward
+            .add_virtual_track(RtpCodecKind::Audio, codec)
+            .await
+            .expect("add audio virtual track");
+
+        let mut track_rx = {
+            let tracks = forward.internal.publish_tracks.read().await;
+            tracks
+                .iter()
+                .find(|t| t.kind() == RtpCodecKind::Audio)
+                .expect("audio track exists")
+                .subscribe()
+        };
+
+        let packet = Packet {
+            header: Header {
+                version: 2,
+                marker: true,
+                payload_type: 111,
+                sequence_number: 1,
+                timestamp: 960,
+                ssrc: 0x1234,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::from_static(&[0xF8, 0x01]),
+        };
+        forward
+            .inject_audio_rtp_packet(std::sync::Arc::new(packet))
+            .await
+            .expect("inject audio RTP");
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), track_rx.recv())
+            .await
+            .expect("packet on audio track")
+            .expect("track open");
+        assert_eq!(received.header.payload_type, 111);
+        assert_eq!(received.payload.to_vec(), vec![0xF8, 0x01]);
+
+        // No video track: video injection must report the missing leg.
+        let video_packet = Packet {
+            header: Header {
+                payload_type: 96,
+                ..Default::default()
+            },
+            payload: bytes::Bytes::new(),
+        };
+        forward
+            .inject_video_rtp_packet(std::sync::Arc::new(video_packet))
+            .await
+            .expect_err("no video track");
+    }
 }

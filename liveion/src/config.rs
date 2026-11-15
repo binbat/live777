@@ -482,7 +482,53 @@ mod tests {
         let spec = source.to_spec("cam").unwrap();
         assert!(spec.validate().is_ok());
         assert_eq!(spec.tiers.len(), 2);
-        assert!(spec.encoder.adaptive.is_some());
+        assert!(spec.encoder.as_ref().unwrap().adaptive.is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "encoder-opus")]
+    fn test_stream_entry_audio_only_source() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.audio_capture]
+            backend = "sine"
+            [sources.audio_encoder]
+            codec = "opus"
+            bitrate = 48000
+            "#,
+        )
+        .unwrap();
+
+        let source = entry.sources.first().unwrap();
+        assert!(source.capture.is_none());
+        assert!(source.audio_capture.is_some());
+        assert!(source.validate().is_ok());
+
+        // An audio-only config must produce a spec that validates.
+        let spec = source.to_spec("mic").unwrap();
+        assert!(spec.capture.is_none());
+        assert!(spec.audio_encoder.is_some());
+        assert!(spec.validate().is_ok());
+        assert!(spec.to_native_params().unwrap().is_none());
+        assert!(spec.to_audio_params().is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_source_config_half_audio_leg_rejected() {
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.audio_capture]
+            backend = "sine"
+            "#,
+        )
+        .unwrap();
+        let source = entry.sources.first().unwrap();
+        assert!(source.validate().is_err());
+        // A half-leg never produces a spec either.
+        assert!(source.to_spec("mic").is_none());
     }
 
     fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
@@ -494,6 +540,10 @@ mod tests {
             capture: None,
             #[cfg(feature = "native-source")]
             encoder: None,
+            #[cfg(feature = "native-source")]
+            audio_capture: None,
+            #[cfg(feature = "native-source")]
+            audio_encoder: None,
             #[cfg(feature = "native-source")]
             output: Default::default(),
             #[cfg(feature = "native-source")]
@@ -1152,15 +1202,29 @@ pub struct SourceConfig {
     #[serde(default)]
     pub multicast_interface: Option<String>,
 
-    /// Capture config (required for structured native sources).
+    /// Capture config (required for the video leg of structured native
+    /// sources).
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub capture: Option<crate::stream::source::source_config::CaptureSpec>,
 
-    /// Encoder config (required for structured native sources).
+    /// Encoder config (required for the video leg of structured native
+    /// sources).
     #[cfg(feature = "native-source")]
     #[serde(default)]
     pub encoder: Option<crate::stream::source::source_config::EncoderSpec>,
+
+    /// Audio capture config (required for the audio leg of structured
+    /// native sources; needs the `encoder-opus` feature).
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub audio_capture: Option<crate::stream::source::source_config::AudioCaptureSpec>,
+
+    /// Audio encoder config (required for the audio leg of structured
+    /// native sources; needs the `encoder-opus` feature).
+    #[cfg(feature = "native-source")]
+    #[serde(default)]
+    pub audio_encoder: Option<crate::stream::source::source_config::AudioEncoderSpec>,
 
     /// RTP output params (optional, defaults apply).
     #[cfg(feature = "native-source")]
@@ -1188,37 +1252,89 @@ fn is_plausible_interface_name(s: &str) -> bool {
 impl SourceConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         #[cfg(feature = "native-source")]
-        if self.capture.is_some() {
-            let capture = self
-                .capture
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("capture is required for native sources"))?;
-            if capture.device.as_deref().unwrap_or("").trim().is_empty() {
-                anyhow::bail!("capture.device cannot be empty");
+        {
+            // A structured native source is video-only (capture + encoder),
+            // audio-only (audio_capture + audio_encoder), or video+audio.
+            // Each leg must be complete or absent entirely.
+            let video_present = self.capture.is_some() || self.encoder.is_some();
+            let audio_present = self.audio_capture.is_some() || self.audio_encoder.is_some();
+            if video_present || audio_present {
+                if video_present {
+                    let capture = self
+                        .capture
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("capture is required for native sources"))?;
+                    if capture.device.as_deref().unwrap_or("").trim().is_empty() {
+                        anyhow::bail!("capture.device cannot be empty");
+                    }
+                    let backend = capture.backend.to_lowercase();
+                    if backend != "libcamera" && backend != "v4l2" {
+                        anyhow::bail!(
+                            "capture.backend must be 'libcamera' or 'v4l2', got '{}'",
+                            backend
+                        );
+                    }
+                    if capture.width == 0 || capture.height == 0 {
+                        anyhow::bail!("capture width/height must be non-zero");
+                    }
+                    let encoder = self
+                        .encoder
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("encoder is required for native sources"))?;
+                    if encoder.bitrate == 0 {
+                        anyhow::bail!("encoder.bitrate must be non-zero");
+                    }
+                }
+                if audio_present {
+                    let audio_capture = self.audio_capture.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("audio_capture is required for native audio sources")
+                    })?;
+                    let audio_encoder = self.audio_encoder.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("audio_encoder is required for native audio sources")
+                    })?;
+                    #[cfg(not(feature = "encoder-opus"))]
+                    {
+                        let _ = (audio_capture, audio_encoder);
+                        anyhow::bail!(
+                            "audio sources (audio_capture/audio_encoder) require the 'encoder-opus' feature"
+                        );
+                    }
+                    #[cfg(feature = "encoder-opus")]
+                    {
+                        let backend = audio_capture.backend.to_lowercase();
+                        if backend != "alsa" && backend != "sine" {
+                            anyhow::bail!(
+                                "audio_capture.backend must be 'alsa' or 'sine', got '{}'",
+                                backend
+                            );
+                        }
+                        if audio_capture.sample_rate != 48_000 {
+                            anyhow::bail!(
+                                "audio_capture.sample_rate must be 48000 (v1 has no resampling), got {}",
+                                audio_capture.sample_rate
+                            );
+                        }
+                        if audio_capture.channels != 1 && audio_capture.channels != 2 {
+                            anyhow::bail!(
+                                "audio_capture.channels must be 1 or 2, got {}",
+                                audio_capture.channels
+                            );
+                        }
+                        if !audio_encoder.codec.eq_ignore_ascii_case("opus") {
+                            anyhow::bail!(
+                                "audio_encoder.codec must be 'opus', got '{}'",
+                                audio_encoder.codec
+                            );
+                        }
+                    }
+                }
+                if self.multicast_interface.is_some() {
+                    tracing::warn!(
+                        "multicast_interface is only used by SDP file sources; it is ignored for this source"
+                    );
+                }
+                return Ok(());
             }
-            let backend = capture.backend.to_lowercase();
-            if backend != "libcamera" && backend != "v4l2" {
-                anyhow::bail!(
-                    "capture.backend must be 'libcamera' or 'v4l2', got '{}'",
-                    backend
-                );
-            }
-            if capture.width == 0 || capture.height == 0 {
-                anyhow::bail!("capture width/height must be non-zero");
-            }
-            let encoder = self
-                .encoder
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("encoder is required for native sources"))?;
-            if encoder.bitrate == 0 {
-                anyhow::bail!("encoder.bitrate must be non-zero");
-            }
-            if self.multicast_interface.is_some() {
-                tracing::warn!(
-                    "multicast_interface is only used by SDP file sources; it is ignored for this source"
-                );
-            }
-            return Ok(());
         }
 
         let url = self.url.as_deref().unwrap_or("");
@@ -1238,7 +1354,7 @@ impl SourceConfig {
         }
 
         if url.is_empty() {
-            anyhow::bail!("either url or capture must be set");
+            anyhow::bail!("either url, capture, or audio_capture must be set");
         }
 
         let url_lower = url.to_lowercase();
@@ -1279,17 +1395,28 @@ impl SourceConfig {
     }
 
     /// Build a `SourceSpec` from structured fields (for native sources).
+    ///
+    /// Returns `Some` when at least one complete media leg exists (video:
+    /// capture + encoder; audio: audio_capture + audio_encoder); `None`
+    /// when no structured fields are set at all (a URL source).  Half-legs
+    /// are rejected by [`SourceConfig::validate`], so they never reach the
+    /// `Some` branch.
     #[cfg(feature = "native-source")]
     pub fn to_spec(
         &self,
         stream_id: &str,
     ) -> Option<crate::stream::source::source_config::SourceSpec> {
-        let capture = self.capture.clone()?;
-        let encoder = self.encoder.clone()?;
+        let video_complete = self.capture.is_some() && self.encoder.is_some();
+        let audio_complete = self.audio_capture.is_some() && self.audio_encoder.is_some();
+        if !video_complete && !audio_complete {
+            return None;
+        }
         Some(crate::stream::source::source_config::SourceSpec {
             stream_id: stream_id.to_string(),
-            capture,
-            encoder,
+            capture: self.capture.clone(),
+            encoder: self.encoder.clone(),
+            audio_capture: self.audio_capture.clone(),
+            audio_encoder: self.audio_encoder.clone(),
             output: self.output.clone(),
             tiers: self.tiers.clone(),
         })

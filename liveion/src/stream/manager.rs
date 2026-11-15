@@ -1588,9 +1588,16 @@ impl Manager {
             #[cfg(feature = "native-source")]
             if let Some(spec) = source_cfg.to_spec(stream_id) {
                 tracing::info!(
-                    "Starting native source: {} (backend={})",
+                    "Starting native source: {} (video_backend={}, audio_backend={})",
                     spec.stream_id,
-                    spec.capture.backend
+                    spec.capture
+                        .as_ref()
+                        .map(|c| c.backend.as_str())
+                        .unwrap_or("none"),
+                    spec.audio_capture
+                        .as_ref()
+                        .map(|c| c.backend.as_str())
+                        .unwrap_or("none"),
                 );
                 let source = match create_source_from_spec(&spec).await {
                     Ok(s) => s,
@@ -2021,6 +2028,10 @@ mod tests {
             #[cfg(feature = "native-source")]
             encoder: None,
             #[cfg(feature = "native-source")]
+            audio_capture: None,
+            #[cfg(feature = "native-source")]
+            audio_encoder: None,
+            #[cfg(feature = "native-source")]
             output: Default::default(),
             #[cfg(feature = "native-source")]
             tiers: vec![],
@@ -2295,6 +2306,10 @@ mod tests {
                         capture: None,
                         #[cfg(feature = "native-source")]
                         encoder: None,
+                        #[cfg(feature = "native-source")]
+                        audio_capture: None,
+                        #[cfg(feature = "native-source")]
+                        audio_encoder: None,
                         #[cfg(feature = "native-source")]
                         output: Default::default(),
                         #[cfg(feature = "native-source")]
@@ -2588,6 +2603,10 @@ mod tests {
                         capture: None,
                         #[cfg(feature = "native-source")]
                         encoder: None,
+                        #[cfg(feature = "native-source")]
+                        audio_capture: None,
+                        #[cfg(feature = "native-source")]
+                        audio_encoder: None,
                         #[cfg(feature = "native-source")]
                         output: Default::default(),
                         #[cfg(feature = "native-source")]

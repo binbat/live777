@@ -71,6 +71,9 @@ pub enum MediaPacket {
     Rtp { channel: u8, data: Bytes },
     #[cfg(feature = "native-source")]
     RtpPacket(Arc<Packet>),
+    /// Packetized audio (Opus) from a native source's audio leg.
+    #[cfg(feature = "native-source")]
+    AudioRtpPacket(Arc<Packet>),
     // Placeholder when no concrete source implementation is enabled.
     // The `source` feature alone has no active source types, so this
     // variant keeps the enum non-empty without exposing real data.

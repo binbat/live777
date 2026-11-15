@@ -12,9 +12,14 @@ crate-type = ["lib"]
 [dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true, optional = true }
+opus-rs = { version = "=0.1.42", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = { version = "0.12", optional = true }
 
 [build-dependencies]
 cc = "1.0"
@@ -33,6 +38,10 @@ encoder-v4l2-m2m = []
 encoder-rdk = []
 encoder-rkmpp = []
 encoder-cedar = []
+
+# --- audio (pure Rust) ---
+encoder-opus = ["dep:opus-rs", "dep:tracing"]
+capture-alsa = ["encoder-opus", "dep:alsa"]
 
 # future
 # encoded-source-waybeam-venc = []
