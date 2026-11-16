@@ -34,6 +34,8 @@ fn enabled_features() -> Vec<String> {
         "source-rtsp".to_string(),
         #[cfg(feature = "source-whep")]
         "source-whep".to_string(),
+        #[cfg(all(feature = "source-wayland", target_os = "linux"))]
+        "source-wayland".to_string(),
         #[cfg(feature = "source-all")]
         "source-all".to_string(),
     ]

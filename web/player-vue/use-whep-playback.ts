@@ -17,6 +17,7 @@ export type UseWhepPlaybackOptions = {
     token?: MaybeRefOrGetter<string>;
     reconnectMs?: MaybeRefOrGetter<number | undefined>;
     createDataChannel?: boolean;
+    input?: boolean;
     lowLatency?: MaybeRefOrGetter<boolean>;
     log?: (message: string) => void;
 };
@@ -25,6 +26,7 @@ export type UseWhepPlayback = {
     stream: ShallowRef<MediaStream | null>;
     peerConnection: ShallowRef<RTCPeerConnection | null>;
     datachannel: ShallowRef<RTCDataChannel | null>;
+    inputChannel: ShallowRef<RTCDataChannel | null>;
     status: ShallowRef<WhepPlaybackStatus>;
     error: ShallowRef<Error | null>;
     audioTrackCount: ShallowRef<number>;
@@ -51,12 +53,14 @@ export function useWhepPlayback(
         token: getter(options.token),
         reconnectMs: getter(options.reconnectMs),
         createDataChannel: options.createDataChannel,
+        input: options.input,
         log: options.log,
     });
 
     const stream = shallowRef<MediaStream | null>(null);
     const peerConnection = shallowRef<RTCPeerConnection | null>(null);
     const datachannel = shallowRef<RTCDataChannel | null>(null);
+    const inputChannel = shallowRef<RTCDataChannel | null>(null);
     const status = shallowRef<WhepPlaybackStatus>("idle");
     const error = shallowRef<Error | null>(null);
     const audioTrackCount = shallowRef(0);
@@ -66,6 +70,7 @@ export function useWhepPlayback(
         stream.value = state.stream;
         peerConnection.value = state.peerConnection;
         datachannel.value = state.datachannel;
+        inputChannel.value = state.inputChannel;
         status.value = state.status;
         error.value = state.error;
         audioTrackCount.value = state.audioTrackCount;
@@ -92,6 +97,7 @@ export function useWhepPlayback(
         stream,
         peerConnection,
         datachannel,
+        inputChannel,
         status,
         error,
         audioTrackCount,

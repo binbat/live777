@@ -61,6 +61,7 @@ pub struct AdaptiveBitrateConfig {
 impl AdaptiveBitrateConfig {
     /// `min` defaults to `max(target / 8, 300 kbps)` and never exceeds the
     /// target.
+    #[cfg(any(feature = "native-source", test))]
     pub fn new(target: u32, min: Option<u32>) -> Self {
         let min = min.unwrap_or_else(|| (target / 8).max(300_000)).min(target);
         Self { target, min }
