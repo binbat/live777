@@ -11,6 +11,13 @@ type StatsNerds = {
     framesPerSecond?: number;
     muted?: boolean;
     audioLevel?: number;
+    audioJitter?: number;
+    audioPacketsLost?: number;
+    audioPacketsReceived?: number;
+    audioEnergy?: number;
+    audioSamplesReceived?: number;
+    audioConcealedSamples?: number;
+    audioConcealmentEvents?: number;
 };
 
 export type { StatsNerds };

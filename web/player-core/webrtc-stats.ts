@@ -166,6 +166,13 @@ export async function collectWebRtcStats(
 
         if (report.type === "inbound-rtp" && report.kind === "audio") {
             statsNerds.audioLevel = report.audioLevel;
+            statsNerds.audioJitter = report.jitter;
+            statsNerds.audioPacketsLost = report.packetsLost;
+            statsNerds.audioPacketsReceived = report.packetsReceived;
+            statsNerds.audioEnergy = report.totalAudioEnergy;
+            statsNerds.audioSamplesReceived = report.totalSamplesReceived;
+            statsNerds.audioConcealedSamples = report.concealedSamples;
+            statsNerds.audioConcealmentEvents = report.concealmentEvents;
         }
     });
 

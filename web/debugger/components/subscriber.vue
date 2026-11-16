@@ -9,6 +9,7 @@ import {
 } from "../../shared/qrcode-stream";
 import { useLogger } from "../primitive/logger";
 import { useSearchParams } from "../primitive/search-params";
+import AudioPanel from "./audio-panel.vue";
 import Datachannel from "./datachannel.vue";
 import Player from "./player.vue";
 import {
@@ -241,6 +242,7 @@ const onVideoElement = (video: HTMLVideoElement) => {
                 Audio Track Count: {{ audioTrackCount }}, Video Track Count:
                 {{ videoTrackCount }}
             </h5>
+            <AudioPanel v-if="stream" :stream="stream" />
             <h5>
                 QR Target FPS: {{ expectedQrFrameRate
                 }}<span
