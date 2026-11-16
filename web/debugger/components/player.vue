@@ -30,6 +30,9 @@ const emit = defineEmits<{
 const resolution = ref("");
 const renderFps = ref<number | null>(null);
 const displayWidth = ref("320px");
+// Preview stays muted by default so autoplay works; unmute to audibly check
+// the audio leg (beware feedback when monitoring a local microphone).
+const muted = ref(true);
 
 let videoEl: HTMLVideoElement | null = null;
 let renderFpsCallbackId: number | null = null;
@@ -129,12 +132,16 @@ onUnmounted(() => {
             </option>
         </select>
     </label>
+    <label>
+        <input v-model="muted" type="checkbox" />
+        Mute
+    </label>
     <br />
     <div :style="{ width: displayWidth, margin: '0 auto' }">
         <PlayerSurface
             :stream="stream"
             autoplay
-            muted
+            :muted="muted"
             controls
             :get-peer-connection="getPeerConnection"
             @video-element="onVideoElement"

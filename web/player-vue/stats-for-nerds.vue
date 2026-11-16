@@ -31,6 +31,24 @@ const formatBytesRate = (bytesPerSecond?: number): string => {
 const convertSecondsToMilliseconds = (seconds: number): number => {
     return seconds ? Math.round(seconds * 1000) : 0;
 };
+
+const formatJitter = (jitter?: number): string => {
+    if (jitter === undefined) return "-";
+    return `${(jitter * 1000).toFixed(1)} ms`;
+};
+
+const formatPacketLoss = (lost?: number, received?: number): string => {
+    if (lost === undefined) return "-";
+    const total = (received ?? 0) + lost;
+    const ratio = total > 0 ? ((lost / total) * 100).toFixed(1) : "0.0";
+    return `${lost} / ${total} (${ratio}%)`;
+};
+
+const formatConcealment = (concealed?: number, samples?: number): string => {
+    if (concealed === undefined) return "-";
+    if (!samples) return `${concealed}`;
+    return `${concealed} (${((concealed / samples) * 100).toFixed(1)}%)`;
+};
 </script>
 
 <template>
@@ -70,5 +88,14 @@ const convertSecondsToMilliseconds = (seconds: number): number => {
 
         <dt>Audio volume:</dt>
         <dd>{{ stats.muted ? "muted" : stats.audioLevel?.toFixed(2) }}</dd>
+
+        <dt>Audio Jitter:</dt>
+        <dd>{{ formatJitter(stats.audioJitter) }}</dd>
+
+        <dt>Audio Packets Lost:</dt>
+        <dd>{{ formatPacketLoss(stats.audioPacketsLost, stats.audioPacketsReceived) }}</dd>
+
+        <dt>Audio Concealed:</dt>
+        <dd>{{ formatConcealment(stats.audioConcealedSamples, stats.audioSamplesReceived) }}</dd>
     </dl>
 </template>

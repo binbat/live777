@@ -1,3 +1,4 @@
+export { AudioMonitor } from "./audio-monitor";
 export {
     attachInputCapture,
     type InputCaptureOptions,

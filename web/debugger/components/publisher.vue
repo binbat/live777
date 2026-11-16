@@ -15,6 +15,7 @@ import {
 } from "../../shared/qrcode-stream";
 import { useLogger } from "../primitive/logger";
 import { useSearchParams } from "../primitive/search-params";
+import AudioPanel from "./audio-panel.vue";
 import Datachannel from "./datachannel.vue";
 import Device from "./device.vue";
 import Player from "./player.vue";
@@ -553,6 +554,7 @@ const onQrFrameRateChange = (event: Event) => {
             <h5 v-if="sourceMode === 'qrtime'">
                 QR Target FPS: {{ selectQrFrameRate }}
             </h5>
+            <AudioPanel v-if="stream" :stream="stream" />
             <Player
                 v-if="stream"
                 :stream="stream"
