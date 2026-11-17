@@ -726,6 +726,20 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
+    // The frame rate must be programmed BEFORE S_FMT: Allwinner VIN picks the
+    // sensor mode inside its video-node S_FMT (vin_pipeline_try_format ->
+    // sensor_find_frame_size) by matching fps_fixed against the S_PARM
+    // timeperframe. Drivers with a single sensor mode are unaffected either
+    // way, but for multi-mode sensors a late S_PARM silently keeps the sensor
+    // in its default (lowest-fps) mode.
+    v4l2_streamparm parm{};
+    parm.type = buffer_type;
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = fps;
+    if (fps != 0 && ioctl(fd, VIDIOC_S_PARM, &parm) < 0) {
+        fprintf(stderr, "[V4L2Capture] S_PARM failed: %s\n", strerror(errno));
+    }
+
     v4l2_format fmt{};
     fmt.type = buffer_type;
     if (is_mplane_type(buffer_type)) {
@@ -803,20 +817,13 @@ bool V4L2CaptureImpl::init(const CaptureConfig& cfg, std::string* err) {
         return false;
     }
 
-    v4l2_streamparm parm{};
-    parm.type = buffer_type;
-    parm.parm.capture.timeperframe.numerator = 1;
-    parm.parm.capture.timeperframe.denominator = fps;
-    if (fps != 0 && ioctl(fd, VIDIOC_S_PARM, &parm) < 0) {
-        fprintf(stderr, "[V4L2Capture] S_PARM failed: %s\n", strerror(errno));
-    }
-    parm = {};
-    parm.type = buffer_type;
+    v4l2_streamparm gparm{};
+    gparm.type = buffer_type;
     uint32_t driver_fps = 0;
-    if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0
-        && parm.parm.capture.timeperframe.numerator != 0) {
-        driver_fps = parm.parm.capture.timeperframe.denominator
-              / parm.parm.capture.timeperframe.numerator;
+    if (ioctl(fd, VIDIOC_G_PARM, &gparm) == 0
+        && gparm.parm.capture.timeperframe.numerator != 0) {
+        driver_fps = gparm.parm.capture.timeperframe.denominator
+              / gparm.parm.capture.timeperframe.numerator;
     }
 #if defined(ENABLE_BACKEND_SUNXI)
     // Allwinner VIN's G_PARM does not reflect the real sensor rate (it reads
