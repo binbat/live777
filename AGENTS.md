@@ -4,6 +4,14 @@ This document is a concise orientation for AI coding agents working on the
 Live777 repository. It is derived from the actual project files; if something
 conflicts with the code, the code wins.
 
+Scope policy: this root file carries only repo-wide conventions, commands and
+pointers. Module behavior details live in the nearest `AGENTS.md` —
+[liveion/AGENTS.md](liveion/AGENTS.md) (SFU core: forwarding, streams,
+sources, targets, hooks), [livetwo/AGENTS.md](livetwo/AGENTS.md) (WHIP/WHEP
+conversion), [livehal/AGENTS.md](livehal/AGENTS.md) (native backends,
+cross-compilation). Check them when working in those subtrees, and update the
+nearest file when you change documented behavior.
+
 ## Project Overview
 
 Live777 is a low-latency WebRTC platform for audio, video and data: a
@@ -23,11 +31,9 @@ provides the embedded WebUIs.
 
 ## Technology Stack
 
-- **Rust** — edition 2024, workspace version `0.9.0`.
-- **Async runtime** — Tokio.
+- **Rust** — edition 2024, workspace version `0.9.0`; Tokio async runtime.
 - **HTTP/API layer** — Axum, `tower-http` (CORS, tracing).
-- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.21.1` from
-  crates.io.
+- **WebRTC stack** — `webrtc`/`rtc-*` crates, release `0.21.1` from crates.io.
 - **Web UI** — Vite, Vue 3, Tailwind CSS, DaisyUI, TypeScript.
 - **Package manager** — pnpm 12.16.1 (workspace covers `web/*`).
 - **Storage** — OpenDAL for object/FS storage; Sea-ORM + SQLite (or Postgres)
@@ -52,16 +58,12 @@ libs/playwright-whep # Rust-callable Playwright WHEP test harness
 libs/rtsp            # RTSP client/server helpers
 libs/signal          # OS signal handling
 libs/storage         # OpenDAL-backed storage abstraction
-libs/version         # build-time version info (shadow-rs; compile-time
-                     # LIVE777_VERSION env overrides git-derived values, which
-                     # fall back to the Cargo.toml version when .git is absent,
-                     # e.g. in Docker build contexts)
-liveion              # core SFU library
+libs/version         # build-time version info (shadow-rs; LIVE777_VERSION env
+                     # overrides git-derived values, then Cargo.toml version)
+liveion              # core SFU library (see liveion/AGENTS.md)
 liveman              # cluster manager / controller
-livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library
-livehal              # native capture/encoder backend (C++ pipeline), plus a
-                     # pure-Rust audio path: `encoder-opus` (opus-rs) with
-                     # `sine`/`capture-alsa` capture backends
+livetwo              # WHIP/WHEP <-> RTP/RTSP conversion library (see livetwo/AGENTS.md)
+livehal              # native capture/encoder backends (see livehal/AGENTS.md)
 ```
 
 ### Binaries Produced
@@ -70,131 +72,81 @@ Built from `src/bin/` or `src/<name>.rs` in the root crate:
 
 - `live777`      — main SFU server (uses `liveion`).
 - `liveman`      — cluster manager for multiple `live777` nodes.
-- `livetwo`      — provided as a library; command tools below use it.
-- `whipinto`     — push RTP/RTSP into a WHIP endpoint; with the `rsmpeg`
-  feature it also accepts a `synth://<vcodec>?...` input that publishes
-  in-process generated test frames (no external encoder needed).
+- `whipinto`     — push RTP/RTSP into a WHIP endpoint; with `rsmpeg` also
+  accepts `synth://<vcodec>?...` in-process generated test frames.
 - `whepfrom`     — pull a WHEP stream and output RTP/RTSP.
-- `whipsynth`    — synthetic WHIP publisher: generates test frames in-process
-  (requires `rsmpeg`).
-- `whepprobe`    — WHEP probe: subscribes, decodes for a bounded time and
-  reports a human/JSON result (requires `rsmpeg`).
+- `whipsynth`    — synthetic WHIP publisher: in-process test frames (`rsmpeg`).
+- `whepprobe`    — WHEP probe: subscribe, decode for a bounded time, report
+  human/JSON result (`rsmpeg`).
 - `whepwright`   — browser-based WHEP playback tester (feature gated).
 - `net4mqtt`     — net-over-MQTT proxy binary.
 - `livenil`      — cluster nil/bare runner for local multi-node tests.
 - `datachannel_loadtest` — load-test binary (feature gated).
-- `livewrk`       — load-testing tool (named after `wrk`) with `whip`
-  (requires `rsmpeg`), `whep` subcommands.
+- `livewrk`      — load-testing tool (named after `wrk`) with `whip`
+  (`rsmpeg`) and `whep` subcommands.
 
 ### WebUI Packages (`web/*`)
 
-- `player-core`  — WHEP player core: framework-agnostic playback engine
+- `player-core`  — framework-agnostic WHEP playback engine
   (`WhepPlaybackCore` in `whep-core.ts`) plus WebRTC stats helpers.
 - `player-vue`   — Vue WHEP player component library
-  (`@binbat/whep-player-vue`): `useWhepPlayback` composable, `WhepPlayer`,
-  `PlayerSurface`, `StatsForNerds`, `StandaloneWhepPlayer` (full-page,
-  query-param driven; serves `/tools/player.html` in both admin apps).
+  (`@binbat/whep-player-vue`): `useWhepPlayback`, `WhepPlayer`,
+  `PlayerSurface`, `StatsForNerds`, `StandaloneWhepPlayer` (serves
+  `/tools/player.html` in both admin apps).
 - `debugger`     — debugging UI widget.
 - `shared`       — shared Vue components/composables for the two admin apps
-  (streams table, dialogs, SSE/refresh composables; consumed via the `@`
-  alias, no package.json).
-- `liveion`      — WebUI embedded by the `live777` binary.
-- `liveman`      — WebUI embedded by the `liveman` binary.
+  (consumed via the `@` alias, no package.json).
+- `liveion` / `liveman` — the WebUIs embedded by the respective binaries.
 
-Built assets are placed under `assets/<crate>/` and embedded at compile time via
-`rust_embed::RustEmbed` when the `webui` feature is enabled.
+Built assets are placed under `assets/<crate>/` and embedded at compile time
+via `rust_embed::RustEmbed` when the `webui` feature is enabled.
 
 ## Build System
 
 ### Prerequisites
 
 - Rust toolchain (stable; targets vary by platform).
-- `pnpm` 12.16.1 or compatible.
-- Node.js (CI uses `latest`).
+- `pnpm` 12.16.1 or compatible; Node.js (CI uses `latest`).
 - For WebUI builds: `pnpm install`.
 - For native source features on Linux: `libcamera-dev`, `libv4l-dev`.
-- For the Wayland compositor source (`source-wayland`, Linux-only): the
-  `libxkbcommon` shared library to link against (`libxkbcommon.so`, e.g. the
-  `libxkbcommon-dev` package on Debian/Ubuntu; pulled in by smithay's seat
-  keyboard handling — no headers needed, the crate carries its own FFI
-  bindings), plus `libpipewire-0.3-dev` and `libopus-dev` for the desktop
-  audio capture. Runtime: an `Xwayland` binary for X11 clients, and a
-  PipeWire daemon (+ session manager) for audio.
+- For `source-wayland` (Linux-only): `libxkbcommon.so`, `libpipewire-0.3-dev`,
+  `libopus-dev`; runtime needs an `Xwayland` binary and a PipeWire daemon —
+  details in [liveion/AGENTS.md](liveion/AGENTS.md).
 - For GStreamer-based tests: `gstreamer`, `gstreamer-rtsp-server`.
 - For cross-compilation: `cross` from <https://github.com/cross-rs/cross>.
 
 ### Common Commands
 
 ```bash
-# Install web dependencies
-pnpm install
-
-# Build the web UIs
-pnpm -r build
-
-# Build all Rust targets with all features (Linux; needs native deps)
-cargo build --release --all-targets --all-features
-
-# Run the main server with the embedded WebUI
-cargo run --features=webui
-
-# Run a local multi-node cluster
-just run-cluster
-
-# Build everything (web + Rust release)
-just build
-
-# Run the server with default config
-cargo run --features=webui
+pnpm install                                   # web dependencies
+pnpm -r build                                  # build the web UIs
+cargo build --release --all-targets --all-features   # all Rust targets (Linux; needs native deps)
+cargo run --features=webui                     # main server with embedded WebUI
+just run-cluster                               # local multi-node cluster
+just build                                     # web + Rust release
 ```
 
 ### Feature Flags (Root Crate)
 
-Key feature groups defined in the root `Cargo.toml`:
-
-- `webui`          — embed static WebUI assets.
-- `cascade`        — cluster cascading via `libwish`.
-- `net4mqtt`       — enable MQTT-based tunneling.
-- `recorder`       — stream recording to storage (FS/S3).
-- `source`         — auto-start configured media sources.
-- `source-sdp`     — SDP-file sources.
-- `source-rtsp`    — RTSP sources.
-- `source-whep`    — WHEP pull sources (static cascade-pull, built on livetwo).
-- `source-all`     — enables all source types (except the Linux-only
-  `source-wayland`).
-- `source-wayland` — Wayland compositor source: live777 acts as a headless
-  Wayland display server and streams the composited desktop as H.264
-  (smithay + openh264), with X11 applications supported through a built-in
-  XWayland server and desktop audio captured from PipeWire as Opus.
-  Linux-only; deliberately not part of `source-all`.
-- `target`         — base feature shared by all `target-*` kinds (the
-  `targets` stream config, supervisor dispatch, virtual-subscriber ids);
-  enables no target kind on its own, mirroring how `source` relates to the
-  `source-*` kinds.
-- `target-whip`    — WHIP push targets (static cascade-push).
-- `target-rtp`     — RTP/UDP output targets: send a stream out as plain RTP
-  to a multicast group or unicast address (the sender counterpart of the
-  SDP-file source; multicast socket builders live in
-  `livetwo::transport::multicast`).
-- `target-rtsp`    — RTSP client-push output targets: push a stream to an
-  RTSP server with ANNOUNCE/SETUP/RECORD (the counterpart of `source-rtsp`;
-  built on the `libs/rtsp` client shared with whepfrom).
-- `native-source`  — required base for capture/encoder features.
-- `capture-libcamera`, `capture-v4l2` — video capture backends.
-- `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar` — encoder
-  backends (cedar = Allwinner VE, e.g. A733/sun60iw2; H.264 + H.265; supports
-  DMA-BUF zero-copy from the V4L2 NV12M capture via per-plane dma-buf → VE
-  IOVA mapping cached per capture buffer — the SDK's `nShareBufFd` shortcut
-  is not used because it assumes one contiguous dma-buf while VIN exports
-  the two NV12M planes as separate dma-bufs).
-- `encoder-opus`    — pure-Rust Opus audio encoder (opus-rs in livehal; no
-  C++ pipeline involvement), paired with the `sine` 440 Hz test-tone
-  capture backend (no sound card — the test/CI path).
-- `capture-alsa`    — ALSA microphone audio capture (Linux); implies
-  `encoder-opus`.
-- Platform presets: `native-rpi`, `native-generic-v4l2`, `native-rdk`,
-  `native-rkmpp`, `native-cedar`.
-- `whepwright`     — Playwright-based browser WHEP test harness.
+| Feature | Purpose |
+|---|---|
+| `webui` | embed static WebUI assets |
+| `cascade` | cluster cascading via `libwish` |
+| `net4mqtt` | MQTT-based tunneling |
+| `recorder` | stream recording to storage (FS/S3) |
+| `source` | auto-start configured media sources (base feature) |
+| `source-sdp` / `source-rtsp` / `source-whep` | SDP-file / RTSP / WHEP-pull (static cascade-pull) sources |
+| `source-all` | all source types except the Linux-only `source-wayland` |
+| `source-wayland` | headless Wayland compositor desktop source (smithay + openh264, X11 via XWayland, PipeWire audio); see liveion/AGENTS.md |
+| `target` | base for all `target-*` kinds (config, supervisor dispatch, virtual-subscriber ids); enables no kind on its own |
+| `target-whip` / `target-rtp` / `target-rtsp` | static WHIP-push / RTP-UDP (multicast) / RTSP-push output targets; see liveion/AGENTS.md |
+| `native-source` | required base for capture/encoder features |
+| `capture-libcamera`, `capture-v4l2` | video capture backends |
+| `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar` | encoder backends (cedar = Allwinner VE); see livehal/AGENTS.md |
+| `encoder-opus` | pure-Rust Opus encoder (opus-rs in livehal) + `sine` test-tone capture |
+| `capture-alsa` | ALSA microphone capture (Linux); implies `encoder-opus` |
+| `native-rpi`, `native-generic-v4l2`, `native-rdk`, `native-rkmpp`, `native-cedar` | platform presets |
+| `whepwright` | Playwright-based browser WHEP test harness |
 
 Native capture/encoder features require Linux. On macOS/Windows CI the project
 builds with `source-all,webui,net4mqtt,recorder,cascade,whepwright,target-whip,target-rtp,target-rtsp`
@@ -202,47 +154,16 @@ instead of `--all-features`.
 
 ### Cross-Compilation
 
-`Cross.toml` configures `cross` images for `aarch64-unknown-linux-gnu` and
-`armv7-unknown-linux-gnueabihf`. Per-platform cross images are published to
-ghcr with the sysroot baked in; `*_SYSROOT` env vars override them with a
-device-pulled sysroot when developing locally:
-
-- Rockchip RKMPP (RK3588, RV1126B): `ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest`
-  (sysroot at `/opt/rkmpp-sysroot`), or set `RKMPP_SYSROOT`.
-- Raspberry Pi: `ghcr.io/binbat/crossbuilder-aarch64-rpi:latest`, or set
-  `RPI_SYSROOT`. The image includes `libasound2-dev:arm64` for `capture-alsa`;
-  use a device-pulled sysroot when the target requires a different camera ABI.
-- RDK X5: set `RDK_SYSROOT` (no published image; see the licensing note in
-  `AGENTS.md` "Security Considerations").
-- Allwinner A733 / sun60iw2 (Orange Pi Zero 3W): no published image (the cedar
-  SDK is device-only); set `SUNXI_SYSROOT` to a device-extracted sysroot, build
-  the `docker/Dockerfile.cross-aarch64-sunxi` image from it, or build natively
-  on the device (the system-installed SDK is auto-detected via
-  `/usr/include/vencoder.h`). Recipe: `just cedar-cross-build`.
-
-Example:
-
-```bash
-CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rpi:latest \
-  cross build --target aarch64-unknown-linux-gnu \
-  --bin live777 --release \
-  --no-default-features --features native-rpi,webui
-
-# Rockchip RKMPP (RK3588, RV1126B), using the published cross image
-CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_IMAGE=ghcr.io/binbat/crossbuilder-aarch64-rkmpp:latest \
-  cross build --target aarch64-unknown-linux-gnu \
-  --bin live777 --release \
-  --no-default-features --features native-rkmpp,webui
-```
-
-`livehal/build.rs` reads `RPI_SYSROOT`/`RDK_SYSROOT`/`RKMPP_SYSROOT`/
-`SUNXI_SYSROOT` to configure `pkg-config` and linker paths.
+Native backends cross-compile with `cross`, using per-platform ghcr images or
+`*_SYSROOT` env overrides consumed by `livehal/build.rs` — images, env vars
+and examples: [livehal/AGENTS.md](livehal/AGENTS.md). Size-optimized cross
+builds: `just cross-pack-size <target> <features>` (see Deployment).
 
 ### Static musl diagnostics
 
-Fully static diagnostics bundles for `x86_64-unknown-linux-musl` and
-`aarch64-unknown-linux-musl` are built in Alpine-based musl containers, not the
-GNU cross images:
+Fully static diagnostics bundles (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl`) are built in Alpine-based musl containers, not
+the GNU cross images:
 
 ```bash
 docker buildx build -f docker/Dockerfile.diagnostics-musl --target export \
@@ -250,56 +171,33 @@ docker buildx build -f docker/Dockerfile.diagnostics-musl --target export \
   --build-arg TARGET=<target> --build-arg VERSION=<version> .
 ```
 
-The export writes `live777-diagnostics-<version>-<target>.tar.gz` and
-`live777-diagnostics-sources-<version>-<target>.tar.gz` directly into
-`dist/diagnostics/`, without an additional leading directory. The binaries
-statically link FFmpeg and the codecs; the dynamically linked GNU diagnostics
-bundles and their launcher/shared-library layout remain separate. The source
-archive includes the corresponding Alpine aports `APKBUILD` recipes and patches
-plus the upstream source downloads for the static dependency set.
-
-The `build-diagnostics` / `build-diagnostics-musl` jobs live in their own
-Diagnostics workflow (`.github/workflows/diagnostics.yml`), which performs
-real builds when diagnostics packaging inputs change on pull requests — this
-keeps the Release workflow off pull requests entirely, so its matrix job
-names never render as raw `${{ matrix.* }}` placeholders in the PR checks
-list (a skipped matrix job is decided before matrix expansion). GitHub
-Release uploads are tag-only. Musl package validation must cover static linkage, relocation and real media rather than just
-archive creation: check that the exported tools have no dynamic FFmpeg/codec
-requirements, move the extracted directory and run the relocated tools, and run
-an actual synthetic WHIP publish to WHEP decode smoke. Include `livewrk
---verify-window` with `whepprobe` beside it to exercise worker discovery;
-`--version` checks alone do not validate codecs, media flow or relocation.
+The export writes `live777-diagnostics(-sources)-<version>-<target>.tar.gz`
+into `dist/diagnostics/`; binaries statically link FFmpeg/codecs, and the
+source archive carries the Alpine aports `APKBUILD` recipes/patches plus the
+upstream source downloads. The `build-diagnostics` / `build-diagnostics-musl` jobs
+live in `.github/workflows/diagnostics.yml`, which builds on PRs touching
+diagnostics packaging inputs (keeping Release off PRs so matrix job names
+never render as raw `${{ matrix.* }}` placeholders); GitHub Release uploads
+are tag-only. Validation must cover static linkage, relocation and real
+media — not archive creation or `--version`: verify no dynamic FFmpeg/codec
+deps, run the tools after moving the extracted directory, run a real
+synthetic WHIP publish → WHEP decode smoke, and include `livewrk
+--verify-window` with `whepprobe` beside it to exercise worker discovery.
 
 ## Runtime Architecture
 
-- `live777` (`liveion`) is the edge SFU. It exposes WHIP publish endpoints,
-  WHEP subscribe endpoints, admin/session APIs, Prometheus metrics, and an
-  optional embedded WebUI.
+- `live777` (`liveion`) is the edge SFU: WHIP publish + WHEP subscribe
+  endpoints, admin/session APIs, Prometheus metrics, optional embedded WebUI.
 - `liveman` sits in front of multiple `live777` nodes, proxies requests,
   manages cascade state, records via cluster policy, and stores recording
   indexes in a database.
 - `livetwo` is the protocol-conversion engine used by `whipinto`/`whepfrom`
-  and the `cascade` feature. `livetwo/src/whip/core.rs` is the single WHIP
-  publish core (peer construction, connection waits, ICE diagnostics) shared
-  by the RTP/RTSP bridge and the synthetic `whipsynth` publisher. FFmpeg
-  decoding for `whepprobe` and livewrk's rotating verifier runs in isolated
-  `whepprobe --decode-worker` processes (`livetwo/src/probe/worker.rs`), so a
-  stuck decoder can be killed and reaped without leaking threads. Termination
-  and reaping are bounded (`REAP_TIMEOUT`, 5 s): a child that somehow survives
-  `SIGKILL` is abandoned and left to tokio's orphan queue instead of pinning
-  the probe or the single reaper thread. `livewrk` finds the helper beside its
-  executable (or via `LIVE777_WHEPPROBE_BIN`); diagnostics bundles ship both
-  binaries together.
+  and the `cascade` feature — see [livetwo/AGENTS.md](livetwo/AGENTS.md).
 - `net4mqtt` exposes a local SOCKS proxy and tunnels traffic over MQTT for
   NAT/remote agents.
 
-Configuration files:
-
-- `conf/live777.toml` / `live777.toml` — main SFU config.
-- `conf/liveman.toml` — cluster manager config.
-- `conf/livenil/` — cluster nil config samples.
-
+Configuration files: `conf/live777.toml` / `live777.toml` (main SFU),
+`conf/liveman.toml` (cluster manager), `conf/livenil/` (cluster nil samples).
 Important config sections: `http`, `stream`, `webrtc`, `ice_servers`, `auth`,
 `recorder.storage`, `strategy`, `net4mqtt`.
 
@@ -308,406 +206,34 @@ liveman's `extra_ice` are empty unless configured, so an out-of-the-box
 deployment is LAN-only (host candidates only, no STUN/TURN advertised to
 clients via Link headers).
 
-## Code Organization Conventions
+## Code Organization
 
 - Rust crate source lives in `src/` or `<crate>/src/`.
 - `liveion/src/route/` — Axum route handlers (whip, whep, session, admin,
   stream, source, recorder, info, sdp).
-- `liveion/src/forward/` — SFU forwarding core (publish, subscribe, channel,
-  track, bridge, media, RTCP). Media statistics (issue #252): per-track and
-  per-session counters live in `forward/stats.rs` (`MediaStats`); hot paths
-  only `inc()` them (publish read loop in `track.rs`, subscriber write loop
-  in `subscribe.rs`), and the manager's `stats_tick` (2 s) `sample()`s them
-  into bitrates plus monotonic stream totals. Removal paths
-  (`do_remove_publish_cleanup`, `do_remove_subscribe_cleanup`,
-  `remove_virtual_tracks`) fold each departing flow's un-sampled tail into
-  the totals, so counters stay exact across churn; `info()` adds each live
-  flow's `unsampled()` tail to the folded totals so stream-level counters
-  line up with the per-session ones between ticks; removal also refreshes
-  the aggregate bitrate immediately so closed directions do not keep a stale
-  rate until the next tick. Direct-tap consumers (output targets, RTSP pull
-  clients) count too (live777#474): `Manager::add_virtual_subscriber` hands
-  the consumer a `MediaStats` its send loop `inc()`s, each send epoch
-  registers it on the forward's tap list (`PeerForward::add_tap_stats`,
-  re-registered per epoch because a stream reset recreates the forward),
-  the tick samples taps into the outbound totals, and detach or stream
-  close folds the tail exactly once. Stats surface as the `stats` field on
-  the stream/session API types and as the
-  `live777_rtp_bytes_total{direction="in|out"}` Prometheus counter. RTCP is
-  counted separately as
-  `live777_rtcp_packets_total{direction="to_publisher|from_subscriber", kind="pli|fir|nack|rr|sr|twcc|remb|other"}`:
-  `to_publisher` comes from the publish chain's outermost interceptor
-  (`rtcp_egress_probe` in `forward/internal.rs`, which sees both
-  interceptor-generated and application-written packets, e.g. relayed
-  PLI/FIR), `from_subscriber` from the subscribe-quality tap
-  (`forward/subscribe_quality.rs`, compiled only with the `source` feature).
-  Per-stream series: `live777_stream_rtp_bytes_total{stream, direction}`
-  shares the RTP accounting points (tick deltas plus final folds), and
-  `live777_stream_sessions{stream, kind="publish|subscribe"}` is *set* from
-  the live session counts in the same stats tick — poll-model gauges that
-  cannot drift, unlike inc/dec counters. A stream's series are removed from
-  the vecs at teardown (`emit_stream_deleted`): the prometheus client never
-  drops vec children on its own, so without the removal deleted streams
-  would stay in /metrics forever (registry growth on churn, and Prometheus
-  would never mark them stale). The `stream` label is still unbounded on
-  auto-create deployments while the streams are *live*; the removal keeps
-  the registry bounded to live streams. The
-  stream API includes `statsScope`: `node` for liveion snapshots and
-  `clusterNodeWork` for liveman's merged sum of per-node work, where cascade
-  hops are counted on each relay node.
-  Snapshot freshness is cadence-driven: `stats_tick` unconditionally bumps
-  a `watch` version that both SSE and the net4mqtt xdata notifier
-  subscribe to, and both dedup on the exact serialized payload (which
-  covers stats) — live rates push every tick while media flows, a silent
-  stream's zero rate flushes exactly once, and an idle server sends
-  nothing.
-  DataChannel lifecycle: every stream owns a stream-level **cable hub**
-  (`stream/cable.rs`, held by `Manager::cable_hubs`) — an anonymous default
-  bus pair plus one bus pair per declared cable — so a provisioned-stream
-  reset (which recreates the forward) never churns the buses or the cable
-  UDP bridges' listen ports; bridges die with the hub (stream delete), via
-  `Drop` cancelling a hub token. A peer channel joins the cable matching its
-  label (`CableHub::route`), else the default pair. Every channel gets a
-  read and a write task
-  (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to
-  its cable's buses; a bus send failure (no active receivers) drops the
-  message with a warn log instead of killing the loop. The webrtc driver
-  never delivers `OnClose` for a server-side `PeerConnection::close` (it
-  aborts first), so each session carries a `CancellationToken` (`dc_cancel`
-  on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
-  `Drop`) that both loops `select!` on. `on_data_channel` only wires a
-  channel whose peer still owns a live session (a late announce from a
-  replaced/torn-down session is dropped), and both sides gate sends on
-  `Connected` (`wait_for_peer_connected`, 15 s). Cables with `create = true`
-  get a server-created channel per session —
-  created on the session's first inbound channel OPEN (an inbound OPEN
-  proves the SCTP association is Established and the DTLS role resolved;
-  creating at `Connected` drops the OPEN write as non-Established and can
-  collide stream-id parity with the client's channels) — and a client-created
-  channel matching such a cable's label is closed (the server-created
-  channel wins). DC UDP endpoints are declared as `udp://` URLs on the
-  stream's `sources` (broadcast seat: inbound packets go to all subscribers,
-  replies go to the endpoint's `?host`/`?port` target) and `targets`
-  (subscriber seat: publisher messages go to the target, inbound packets go
-  to the publisher), each a `cables` entry carrying the cable `label` it
-  joins plus a `udp://` URL, attached once via
-  `CableHub::attach_static_endpoints` (idempotent across a provisioned-stream
-  reset; `attach_source`/`attach_target`/`detach` are the runtime foundation
-  for a future dynamic API). The `udp://` authority (listen) and the
-  `host`/`port` query pair (target) are independently optional (one-way
-  endpoints; an omitted target means reply-to-sender). The client side
-  mirrors this:
-  whepfrom's and whipinto's channel bridges (the shared
-  `livetwo::datachannel` module — UDP bridge, channel poll loop,
-  `CancelOnDrop`) run on a session-scoped token that `whep::from` /
-  `whip::into` cancels and awaits before returning; both accept
-  server-created cable channels (a `CableRouter` retargets the outbound
-  queue to the currently open channel). On the
-  WHIP leg the "control" DataChannel is opt-in (`whipinto --cable-url`) because
-  it adds an `m=application` section to the offer; the WHEP leg creates it
-  unless `WhepPeerOptions::control_channel` is disabled. Both loops feed the
-  DataChannel Prometheus metrics directly (no stats tick — messages are
-  low-volume discrete events, the same pattern as the RTCP probe):
-  `live777_datachannel_messages_total{direction="in|out"}` and
-  `live777_datachannel_bytes_total{direction}` count at receipt
-  (`dc_read_loop`) resp. after a successful channel write (`dc_write_loop`,
-  so bus fan-out is counted per attached peer), bus-lag drops land in
-  `live777_datachannel_dropped_total{direction="out"}`, and the per-stream
-  `live777_stream_datachannel_bytes_total{stream, direction}` series are
-  removed at stream teardown (`emit_stream_deleted`) like the RTP ones.
-- `liveion/src/stream/` — stream manager + source adapters. Every
-  `[stream.<name>]` config entry is *provisioned*: pre-registered at startup
-  (`Manager::provision_streams`), always listed in the API/Dashboard, exempt
-  from orphan/auto-delete reapers, and rejected (409) on admin API
-  create/delete. Internal teardowns (`Manager::teardown_stream`, used by RTSP
-  re-ANNOUNCE and session cascades) reset a provisioned stream to standby
-  with a `StreamDeleted`+`StreamCreated` pair instead of removing it. With
-  `on_demand = true` the stream's sources start on the first subscriber
-  (WHEP/cascade push/RTSP pull) and stop `on_demand_close_after_ms` after the
-  last one leaves; source start/stop emits `PublishStarted`/`PublishStopped`
-  with the synthesized `virtual-source` session id. On-demand readiness is
-  judged by the source *bridge* (`SourceManager::has_bridge`), not source
-  existence, and starts/stops serialize on a per-stream lock
-  (`on_demand_locks`). The idle check (`on_demand_stream_idle`) counts real
-  subscriber sessions (WHEP/cascade) and registered *virtual subscribers*
-  (`Manager::virtual_subscribers`): internal consumers that tap the forward
-  track broadcast directly instead of holding a subscribe session — static
-  targets and RTSP pull clients. This is the subscribe-side counterpart of
-  the `virtual-source` publisher: attach/detach
-  (`add_virtual_subscriber`/`remove_virtual_subscriber`) emits
-  `SubscribeStarted`/`SubscribeStopped`, `Manager::info`/`do_snapshot`
-  synthesize always-Connected sessions with reserved `virtual-…` ids
-  (e.g. `virtual-target-rtp-230.1.1.2:1720`, so dashboards show why an
-  on-demand stream is running), the per-stream
-  `live777_stream_sessions{kind="subscribe"}` gauge and the global
-  `live777_subscribe` gauge include them, and the session-delete API
-  rejects their ids (400 — they are owned by their consumer's supervisor).
-  Without the registration the idle check stopped an on-demand stream's
-  sources every `on_demand_close_after_ms` underneath its targets
-  (live777#481). The recorder is intentionally not registered: it must not
-  keep an on-demand source alive by itself. A WHIP publish onto a stream with an active source
-  bridge is rejected (409) to avoid mixing two publishers' tracks. A second
-  WHIP publish on an already-published stream instead *displaces* the
-  incumbent (mediamtx-style override): the old session is torn down with
-  `PublishStopped`/`SessionStopReason::Replaced`, and same-codec takeovers
-  are seamless to subscribers via the media-generation machinery. Streams
-  opt out with `strategy.override_publisher = false` (global or per-stream),
-  restoring the 409 — except a plain-WHIP incumbent that is already
-  `Disconnected`/`Failed`/`Closed` is displaced even then, so a fast
-  reconnect does not bounce off the zombie session with a 409 while the
-  disconnected-watchdog is still reaping it. Cascade-pull publishers are
-  never displaced and always conflict (409), since their supervisor would
-  reconnect and fight.
-  Source encoder bitrate control (issue #409): adaptive bitrate is on by
-  default for native encoder sources (`adaptive = false` opts out,
-  `adaptive = { min_bitrate = … }` sets a custom floor; the default floor
-  is the lowest tier's bitrate when tiers are declared, else
-  `max(bitrate / 8, 300k)`).  The AIMD controller
-  (`stream/source/adaptive_bitrate.rs`) retunes the running encoder from
-  WHEP subscriber RTCP feedback (sampled by
-  `forward/subscribe_quality.rs`); runtime retuning needs encoder-backend
-  support (`EncoderBackend::setBitrate` in livehal — rkmpp, v4l2-m2m and
-  cedar today). Two admin surfaces sit on top, deliberately separate:
-  `GET /api/sources/{stream}/bitrate` is read-only encoder telemetry
-  (drive mode `adaptive`/`fixed` plus the current rate), while
-  `GET`/`POST /api/sources/{stream}/tier` is the control surface — a
-  source-level ladder (`stream/source/tier.rs`): bitrate-only tiers
-  retune in place, and a tier carrying `width`/`height`/`fps` switches
-  the whole rung by rebuilding the video capture+encoder pipeline
-  (`NativeEncodedSource::reconfigure` — the RTP broadcast channels
-  survive, so subscribers stay attached across the sub-second gap; a
-  failed rebuild rolls back to the previous video params). An audio leg,
-  when configured, keeps its pipeline and RTP packetizer running across
-  video rebuilds and rollbacks, preserving its SSRC and timestamp base.
-  A per-stream `BitrateControl` (created for every native source in
-  `create_bridge`) coordinates tier applies with the controller: the tier's
-  bitrate becomes the AIMD's rung ceiling and resume seed without suspending
-  it, and an external-change generation counter guarantees the
-  controller re-seeds even for applies shorter than its 1 s tick.
-  Native sources may be audio-only or video+audio: the audio leg is
-  `sine`/ALSA capture → opus-rs encode (`livehal::AudioPipeline`) → the
-  `NativeEncodedSource` audio packetize task → `MediaPacket::AudioRtpPacket`
-  → `PeerForward::inject_audio_rtp_packet` (fixed wire contract: Opus
-  PT 111, 48 kHz, fmtp `minptime=10;useinbandfec=1`). Initial ALSA open
-  attempts fail synchronously and are retried by the source manager. Configured
-  sources retry independently in the background without delaying HTTP;
-  on-demand starts use their configured timeout, and shutdown cancels retries.
-  Subscriptions to a configured stream whose source bridge is pending wait for
-  a bounded startup period and fail as not ready if it is still unavailable,
-  rather than creating a trackless session. Cable-only configurations do not
-  wait for a media bridge. A pending
-  source start rejects competing WHIP publishers and has its own cancellation
-  token, so removal and `stop_all` interrupt its retry wait; bridge creation
-  also rejects a live publisher rather than mixing real and virtual tracks.
-  After a successful start, capture retries recovery/reopen with bounded waits. Opus
-  RTP timestamps advance by the
-  encoded frame's sample count, not capture-read wall-clock deltas. Tiers
-  and the adaptive controller target the video encoder when both legs exist
-  (the audio leg's own `adaptive` key is ignored); on an audio-only source
-  they drive the Opus encoder.
-  The Wayland compositor source (`wayland://<socket>?width=&height=&fps=&bitrate=`;
-  `source-wayland` feature, Linux-only) lives in
-  `liveion/src/stream/source/wayland/{mod,compositor,encoder,convert,pattern,gl}.rs`.
-  A smithay headless compositor runs on a dedicated calloop thread
-  (no GPU output; wl_compositor/wl_shm/xdg-shell/wl_output/wl_seat/
-  data-device globals, plus `zwp_linux_dmabuf_v1` when GL is up) and
-  composites visible xdg toplevels onto a fixed-size canvas, emitting
-  frames only when a commit made the canvas dirty (plus PLI-repaint and a
-  2 s keepalive so late-joining subscribers always get an IDR).
-  Compositing has two paths (`gl.rs` vs the CPU blit): when a GPU/EGL
-  renderer initializes (GBM device on `/dev/dri/renderD128` → `card0`,
-  `LIVE777_WAYLAND_DRM_DEVICE` overrides; EGL + `GlesRenderer`; a probe
-  render+readback must succeed), every toplevel buffer — dmabuf via
-  `ImportDma`, SHM via `ImportMemWl` — is imported as a texture and drawn
-  into one persistent offscreen target, then read back through
-  `ExportMem::copy_framebuffer` (rendered `Flipped180` so the bottom-up
-  readback lands top-down, BGRA so the byte order matches the canvas);
-  without a renderer the CPU alpha-over SHM blit handles everything and no
-  dmabuf global is advertised. GL state is `!Send` and lives on the
-  event-loop thread inside the frame timer; `dmabuf_imported` can only
-  sanity-check against the advertised format set (protocol dispatch never
-  touches the renderer), and the real import happens per frame.
-  Frames cross into the encode pipeline as
-  `ArgbFrame` over an mpsc channel — the seam between frame producer and
-  encoder: a synthetic pattern generator feeds it until the compositor's
-  first contentful frame, then a `frame_mux` task permanently switches over
-  (an all-clients-disconnected desktop keeps streaming the background
-  canvas; the pattern never resumes). The pipeline converts XRGB8888→I420
-  (`yuvutils-rs`, BT.601 limited) and encodes with `openh264`
-  (`UsageType::ScreenContentRealTime`, in-band SPS/PPS ahead of every IDR
-  via `SpsPpsStrategy::IncreasingId`, periodic IDR ≈ every 2 s). PLI/FIR
-  from subscribers forces an IDR (`force_intra_frame`) and nudges a
-  repaint; the crate has no runtime bitrate API, so `set_bitrate` recreates
-  the encoder (sub-ms, the fresh encoder starts with an IDR). The source
-  deliberately does not opt into the AIMD adaptive controller. The
-  compositor socket is created under `$XDG_RUNTIME_DIR` — the source fails
-  to start without it.
-  X11 clients are supported via XWayland (`xwayland=1` default, `xdisplay=N`
-  pins `DISPLAY`, needs an `Xwayland` binary on PATH — skipped with a
-  warning without one): the compositor spawns the server, and a minimal
-  built-in XWM (`XwmHandler` in `compositor.rs`) grants configure requests
-  as-is, maps fullscreen/maximize to the canvas, keeps last-mapped on top,
-  and activates only the top window (no input injection yet). The canvas
-  stack is xdg toplevels, then managed X11 windows, then X11
-  override-redirects on top; X11 windows draw 1:1 at their root-relative
-  position (no CSD offsets), xdg windows stay centered
-  (`canvas_window_pos`). X11 buffers ride the same SHM/dmabuf paths
-  (`canvas_windows()` unifies the two kinds), and
-  `CompositorHandler::client_compositor_state` must special-case the
-  XWayland client's `XWaylandClientData`. Shutdown caution: calloop source
-  closures capturing a `LoopHandle` Rc-cycle the registry (smithay's
-  X11Source does this internally), so `run()` explicitly removes every
-  source it inserted at exit — dropping the listener frees the socket file,
-  dropping the XWayland handle kills the server — while one registry
-  skeleton (epoll fd + X11 channel) still leaks per compositor lifetime
-  (smithay-0.7 limitation; bounded because restarts are rare). X11 clients
-  that paint before Xwayland realizes their window lose that early damage —
-  they must repaint on Expose (well-behaved toolkits do).
-  `LIVE777_WAYLAND_XWAYLAND_LOG=1` inherits the Xwayland stderr for
-  debugging.
-  Desktop audio (`audio=1` default, `audio_bitrate=`, `audio_sink=` name
-  filter) is PipeWire capture (`wayland/audio.rs`): one thread runs a
-  PipeWire main loop, handshakes synchronously at `start()` (daemon
-  unreachable → video-only with a warning), taps the monitor of an
-  `Audio/Sink` node (session manager such as wireplumber must be running to
-  link it), encodes 20 ms Opus frames and broadcasts
-  `MediaPacket::AudioRtpPacket` — the pre-packetized audio variant shared
-  with the native source's audio leg, which the bridge injects into the
-  audio track via `PeerForward::inject_audio_rtp_packet` (`RtpPacket` stays
-  video). `get_audio_codec` is gated on the video codec
-  being known because the bridge adds tracks in a single pass once any
-  codec is ready.
-  Remote input (`input=1`, off by default — every subscriber can then drive
-  the desktop): browser-side JSON events (`web/player-core/input-capture.ts`,
-  `WhepPlayer`'s `input` prop, standalone player `&input`) ride the stream's
-  `input` datachannel cable; the bridge pumps `cables.route("input").to_publisher`
-  into the source's `StreamSource::input_sink()` (a raw-bytes closure so the
-  trait stays format-agnostic), `wayland/input.rs` parses them, and a calloop
-  channel crosses into the compositor thread where `handle_input` injects
-  into the seat: hit-tested pointer focus over the unified window stack,
-  focus-follows-click keyboard focus, X11 windows raise+activate on click.
-  DomCode→evdev translation is a static table in `input.rs` (xkb keycodes are
-  evdev+8 at the smithay boundary).
-- `liveion/src/event.rs` — typed stream-lifecycle events (`stream_created` …
-  `subscribe_stopped` with reasons) on a single manager-wide broadcast bus.
-  Consumers must tolerate `broadcast::RecvError::Lagged` by continuing the
-  loop (and re-snapshotting where applicable).
-- `liveion/src/recorder/` — recording pipeline (fmp4, segmenter, uploader,
-  codec-specific writers).
-- `liveion/src/hook.rs` — stream-lifecycle hook scripts (`[hooks]` global +
-  `[stream.<name>.hooks]` per stream) run by a single FIFO executor:
-  dispatcher forwards `StreamCreated`/`StreamDeleted`/`PublishStarted`/
-  `PublishStopped` into an internal queue, then scripts run sequentially
-  (global first, per-stream after, configured order) with per-script timeout
-  and `on_error` policy.  One hook deliberately bypasses the queue:
-  `on_source_changed` scripts run **synchronously inside** a source's
-  parameter-set change (the admin tier API, `apply_source_tier`) before
-  the capture+encoder re-provisioning — for hardware that must be
-  reconfigured ahead of the pipeline rebuild (e.g. camera sensor mode
-  gears on Rockchip-style V4L2 pipelines, where framerate is a
-  sensor-mode property).  A hook failure aborts the apply when
-  `on_error = "stop"` (`ApplyTierOutcome::HookFailed` → 500).  When the
-  apply does not reach the target state (aborted, or the rebuild failed
-  and rolled back), the scripts run again with the source's *current*
-  state (`StreamSource::active_tier_state`, best effort) so hardware
-  they switched is switched back.  Scripts see argv `<stream> <tier>`
-  and `LIVE777_SOURCE_TIER` plus the source geometry/bitrate
-  (`LIVE777_SOURCE_WIDTH`/`_HEIGHT`/`_FPS`/`_BITRATE`) — declared tier
-  values on the pre-apply run, the pipeline's actual current values on
-  the compensation run.
-- `liveion/src/target.rs` — static WHIP push targets
-  (`[[stream.<name>.targets]]`, declarative cascade-push; `target-whip`
-  feature). One supervisor task per target keeps the push media-driven:
-  established on `PublishStarted`, torn down on `PublishStopped` (the push
-  negotiates per media epoch, so its codecs always match the current
-  publisher), retried with source-style backoff (5 s doubling, 60 s cap),
-  reconciled against the manager on event-bus lag; a target on an
-  `on_demand` stream is standing demand: the supervisor registers as a
-  virtual subscriber (`Manager::add_virtual_subscriber`, id
-  `virtual-target-…`) for its whole lifetime so the sources are never
-  idle-stopped underneath it, and (re)starts them whenever the stream has
-  neither a publisher nor a push session, paced by the same backoff.
-  `target::init` dispatches per target by URL scheme, so `whip://`,
-  `rtp://` and `rtsp://` targets mix freely on one stream.
-- `liveion/src/target_rtp.rs` — static RTP/UDP output targets
-  (`rtp://group-or-host:port`; `target-rtp` feature), the sender
-  counterpart of the SDP-file source: live777 acts as the multicast sender,
-  keeping Unitree-style video-link receivers working unmodified. The
-  supervisor mirrors the WHIP one (media-driven, same backoff/reconcile/
-  standing-demand semantics) plus per-track send tasks that tap the forward
-  track broadcast directly (the recorder / RTSP-server pattern, no
-  subscribe session): first video track to the URL port, first audio track
-  to port + 2 (RTP/AVP convention). Like the RTSP target, the epoch waits
-  for the *negotiated* publish track counts (`PeerForward::wait_for_publish_tracks`,
-  shared by both media targets, on top of
-  `PeerForwardInternal::negotiated_publish_track_counts`) instead of the
-  first non-empty snapshot — tracks arrive one `on_track` each after
-  `PublishStarted`, so a snapshot would race an AV publisher into a
-  video-only send and SDP. Send tasks report their exit tagged
-  with the epoch's generation, and the supervisor ignores tags that are not
-  the live epoch — a belated exit from an already torn-down epoch must
-  never cancel the fresh one, or every teardown self-sustains a restart
-  storm. A live epoch's spontaneous exit (and a reconcile after event lag)
-  is paced like the WHIP supervisor's dead-session path: tear down, wait
-  `reconnect_delay(1)` while media is still up, re-check, then rebuild — a
-  flapping track set cannot rebind the socket, rewrite the SDP file and
-  PLI the publisher at the churn rate (live777#477). While media flows,
-  each send task also emits a periodic RTCP sender report to its RTP port
-  + 1 (packet/octet counters and the NTP ↔ RTP timestamp mapping are
-  maintained at the marshal point, live777#471); inbound receiver reports
-  are not consumed. Video is re-packetized through livetwo's `RePayloadCodec`
-  (SPS/PPS inlined ahead of every IDR, seeded from the codec fmtp via
-  `with_sprop_params`), a PLI nudges the publisher on attach, and the video
-  payload type can be pinned (`payload_type`, e.g. 96 for Unitree
-  receivers); `sdp_file` writes a receiver-side SDP on send start that
-  live777's own SDP-file source can ingest (live777 → live777 multicast
-  cascade). Multicast sender/receiver socket builders, interface
-  resolution (v4 address vs v6 index/name via `if_nametoindex`) and the
-  dual-stack RTCP socket are shared in `livetwo::transport::multicast`
-  (`multicast` feature), used by `target-rtp`, `source-sdp` and whepfrom's
-  `rtp://group:port` output (the root crate enables the feature for
-  livetwo, so whepfrom always has it: video rides the URL port, audio port
-  + 2, `?ttl=`/`?interface=` tune the group send; the legacy
-  `?video=`/`?audio=` query-port form and `sdp://` are unchanged).
-- `liveion/src/target_rtsp.rs` — static RTSP client-push output targets
-  (`rtsp://[user:pass@]host:port/path[?transport=tcp|udp]`; `target-rtsp`
-  feature), the counterpart of the RTSP source: live777 ANNOUNCE/SETUP/
-  RECORDs the stream to an RTSP server (mediamtx, another live777's RTSP
-  server, gst-rtsp-server) with the `libs/rtsp` client whepfrom also uses.
-  The supervisor mirrors the RTP one (media-driven, same backoff/reconcile/
-  standing-demand semantics, generation-tagged epochs) and the media plane
-  is the same track-broadcast tap + `RePayloadCodec` + payload-type
-  re-stamp; the ANNOUNCE SDP is built from the forward's track codecs in
-  the shape of the RTSP server's DESCRIBE (`a=control:` per media, which
-  the client session derives the SETUP URLs from). `PublishStarted` fires
-  at negotiation time while tracks arrive one `on_track` each, so the
-  epoch waits for the *negotiated* track counts
-  (`PeerForward::wait_for_publish_tracks`, shared with the RTP target)
-  instead of the first non-empty snapshot — an AV publisher whose audio
-  track lands first would otherwise announce audio-only. UDP is the default
-  transport
-  (`?transport=tcp` selects interleaved, mirroring whepfrom); UDP senders
-  bind the SETUP-announced local port because strict servers (mediamtx)
-  drop RTP from any other source port. Teardown cancels the epoch token
-  threaded into `rtsp::setup_rtsp_session`: TCP closes the connection,
-  UDP sends TEARDOWN from the keep-alive loop, so the server releases the
-  published path immediately and a re-push cannot collide with a zombie
-  publisher. Server-side keyframe requests (a puller's PLI/FIR relayed by
-  mediamtx or another live777) arrive on the interleaved RTCP channel /
-  UDP RTCP port and are forwarded to the publisher via
-  `send_rtcp_to_publish`.
-- `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's
-  streams table is SSE-pushed like liveion's: `GET /api/sse/streams`
+- `liveion/src/forward/` — SFU forwarding core (media stats, RTCP metrics,
+  DataChannel cables).
+- `liveion/src/stream/` — stream manager + source adapters (provisioned
+  streams, on-demand lifecycle, bitrate tiers, Wayland compositor).
+- `liveion/src/target*.rs` — static WHIP/RTP/RTSP output targets.
+- `liveion/src/event.rs`, `src/recorder/`, `src/hook.rs` — lifecycle event
+  bus, recording pipeline, hook scripts.
+
+  → Deep-dives for all of the above: [liveion/AGENTS.md](liveion/AGENTS.md).
+
+- `livetwo` — WHIP publish core, isolated FFmpeg decode workers, multicast
+  transport, client DataChannel bridges →
+  [livetwo/AGENTS.md](livetwo/AGENTS.md).
+- `liveman/src/route/` — proxy/cascade/admin routes. The dashboard's streams
+  table is SSE-pushed like liveion's: `GET /api/sse/streams`
   (`route/stream.rs::sse`, same `?nodes=` filter as `GET /api/streams/`)
   sends the merged cluster view on connect and re-sends it whenever
-  `Storage`'s `watch` change-version bumps (snapshot applies, eager
-  stream-index writes) and on a 3 s idle cadence that doubles as the
-  driver for the throttled lazy poll of poll-mode nodes. Identical
-  consecutive payloads are suppressed, and the loop selects on the
-  server's `CancellationToken` so a streaming response cannot hold
-  graceful shutdown open.
-- `liveman/src/service/` — business logic (database, recordings index).
-- `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
+  `Storage`'s watch version bumps and on a 3 s idle cadence that drives the
+  throttled lazy poll of poll-mode nodes; identical consecutive payloads are
+  suppressed, and the loop selects on the server's `CancellationToken` so a
+  streaming response cannot hold graceful shutdown open.
+- `liveman/src/service/` — business logic (database, recordings index);
+  `liveman/src/entity/` + `migration/` — Sea-ORM entities and migrations.
 - `libs/api/src/` — shared REST/WebRTC API types (`request`, `response`,
   `webrtc`, `recorder`, `path`, `strategy`).
 
@@ -728,14 +254,10 @@ clients via Link headers).
 
 ## Testing
 
-The project uses `cargo nextest` with configuration in `.config/nextest.toml`.
-
-- Default profile: retries up to 4 times with exponential backoff.
-- `ci` profile: 1 retry, 120 s slow-timeout, `fail-fast = false`.
-- Integration tests that use FFmpeg, sockets, or browsers are forced serial
-  (`serial-integration` test group) to avoid port/resource collisions.
-
-Run tests:
+The project uses `cargo nextest` (`.config/nextest.toml`): the default
+profile retries up to 4 times with exponential backoff; the `ci` profile has
+1 retry, 120 s slow-timeout, `fail-fast = false`. Integration tests that use
+FFmpeg, sockets, or browsers are forced serial (`serial-integration` group).
 
 ```bash
 # full workspace with coverage, matching the CI feature set
@@ -747,85 +269,55 @@ cargo llvm-cov nextest --profile ci --workspace \
 cargo nextest run --workspace
 ```
 
-Integration test binaries live in `tests/`:
+Integration test binaries in `tests/`:
 
-- `tests/matrix/` — the end-to-end source × media-profile × player matrix
-  harness (test binary `matrix`). Codec combinations are declared once in
-  `tests/matrix/profile.rs`; sources live in `tests/matrix/source/`, players
-  (livetwo+ffprobe, rsmpeg, Playwright) in `tests/matrix/player/`, and the
-  shared liveion/port/wait/ffprobe infrastructure in
-  `tests/matrix/runner.rs` and `tests/matrix/probe.rs`. The liveion RTSP
-  server push→pull round-trip (former `tests/rtsp.rs`) and the full
-  RTSP→WHIP→WHEP→RTSP conversion cycle (former `tests/rtsp2.rs`) live here
-  as the `rtsp_roundtrip_*` and `rtsp_cycle_*` matrices.
-- `tests/channel.rs`
-- `tests/tests.rs` — liveion API smoke tests
-- `tests/recorder.rs`
-- `tests/livewrk_e2e.rs` — livewrk CLI end-to-end: real `livewrk` whip/whep
-  subprocesses against in-process liveion, including the rotating decode
-  verification (needs the `rsmpeg` feature)
-- `tests/diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end: real
-  synthetic publish and WHEP decode probes against in-process liveion,
-  including JSON/exit-code success and failure contracts (needs `rsmpeg`)
-- `tests/whepwright_e2e.rs` — real browser CLI output and failure-artifact
-  contracts (needs `whepwright` for the browser and `rsmpeg` for the controlled
-  whipsynth publisher)
-- `tests/network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests
-  in private Linux namespaces; ignored by default and requiring
-  `LIVE777_NETWORK_E2E=1`, root/CAP_NET_ADMIN, iproute2 and coturn. The Linux
-  `build` job in `.github/workflows/rust.yml` installs these dependencies and
-  runs the ignored tests as root against its release/all-features build,
-  preserving the Cargo/rustup and FFmpeg dynamic-library environment through
-  sudo; all other CI jobs and default local runs leave them ignored. They also
-  set `LIVE777_WEBRTC_DISABLE_MDNS=1` to skip mDNS candidate resolution in the
+- `matrix/` — end-to-end source × media-profile × player matrix (binary
+  `matrix`): codec combos declared in `profile.rs`, sources in `source/`,
+  players (livetwo+ffprobe, rsmpeg, Playwright) in `player/`, shared infra in
+  `runner.rs`/`probe.rs`; includes the RTSP server push→pull round-trip
+  (`rtsp_roundtrip_*`) and the RTSP→WHIP→WHEP→RTSP cycle (`rtsp_cycle_*`).
+- `tests.rs` — liveion API smoke tests; `channel.rs`; `recorder.rs`.
+- `livewrk_e2e.rs` — livewrk whip/whep subprocesses against in-process
+  liveion, incl. rotating decode verification (needs `rsmpeg`).
+- `diagnostics_e2e.rs` — whipsynth/whepprobe CLI end-to-end, incl. JSON and
+  exit-code success/failure contracts (needs `rsmpeg`).
+- `whepwright_e2e.rs` — real browser CLI output and failure-artifact
+  contracts (needs `whepwright` + `rsmpeg`).
+- `network_e2e.rs` — opt-in privileged STUN/TURN, netem and outage tests in
+  private Linux namespaces: ignored by default, need `LIVE777_NETWORK_E2E=1`,
+  root/CAP_NET_ADMIN, iproute2 and coturn; the Linux `build` job in
+  `.github/workflows/rust.yml` installs these dependencies and runs them as
+  root against its release/all-features build, preserving the
+  Cargo/rustup/FFmpeg dynamic-library environment through sudo. They set
+  `LIVE777_WEBRTC_DISABLE_MDNS=1` to skip mDNS candidate resolution in the
   livetwo client peers (`utils::webrtc::setting_engine`).
-- `tests/native_audio.rs` — native audio (Opus) source end-to-end: a
-  provisioned `sine`+opus stream WHEP-subscribed by a real peer, asserting
-  PT 111, sample-continuous RTP timestamps and opus-rs-decoding every
-  received packet. With `capture-alsa` on Linux, another test proves a
-  permanently unavailable microphone does not block HTTP or an independent
-  source, and that graceful shutdown cancels the pending retry. Unit tests cover
-  retry budgets/cancellation and an injected read failure followed by ALSA
-  reopen and bounded stop. An additional ignored test in
-  `liveion/src/stream/source/native_encoded_source.rs` checks video
-  reconfigure/rollback while preserving the sine audio SSRC. The integration
-  test is gated on `native-source,encoder-opus` — excluded from the default CI
-  feature set, where it compiles to an empty binary.
-- `tests/wayland_source.rs` — Wayland compositor source end-to-end (Linux
-  only, needs `source-wayland`; the pattern-flow WHEP test needs nothing
-  else). The client-content test additionally needs `rsmpeg`: a real
-  Wayland client paints a solid-color toplevel, and the WHEP subscriber
-  depacketizes + decodes (FFmpeg) the pattern→client switch and the
-  background after the client disconnects. rsmpeg 0.18 only compiles
-  against FFmpeg ≤ 8 headers (FFmpeg 9 privatized the AVCodec/
-  AVFormatContext fields it touches), so on newer distros build a minimal
-  n8.0 locally — all 7 av libs, `--disable-everything
+- `native_audio.rs` — native Opus audio source end-to-end (PT 111,
+  sample-continuous RTP timestamps, opus-rs decode of every packet; ALSA
+  unavailability/shutdown behavior with `capture-alsa`); gated on
+  `native-source,encoder-opus`, compiles to an empty binary in the default CI
+  feature set. Module-level test notes: liveion/AGENTS.md.
+- `wayland_source.rs` — Wayland compositor source end-to-end (Linux,
+  `source-wayland`; the client-content test also needs `rsmpeg`).
+
+Notes:
+
+- Tests that create local WebRTC peers set
+  `LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates.
+- Playwright browser tests: `pnpm exec playwright install --with-deps
+  chromium` and `export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright`.
+- mediamtx interop tests (`whep_mediamtx_pull_*`, `rtsp_push_mediamtx_*`,
+  `rtsp_target_mediamtx_*` in the matrix binary, live777#212) need a mediamtx
+  binary: `just mediamtx` downloads the pinned release into `target/`, or
+  install it into `PATH`; `MEDIAMTX_BIN` overrides. The tests skip when no
+  binary is found, and skip on Windows CI (GitHub-hosted Windows runners
+  encode at ~0.03x realtime; same for the `whep_source_livetwo_*` relay
+  matrix; the shared `runner::windows_ci()` helper carries the check).
+- rsmpeg 0.18 only compiles against FFmpeg ≤ 8 headers (FFmpeg 9 privatized
+  the AVCodec/AVFormatContext fields it touches); on newer distros build a
+  minimal n8.0 — all 7 av libs, `--disable-everything
   --enable-decoder=h264 --enable-parser=h264` — into `target/ffmpeg8/install`
   and export `FFMPEG_PKG_CONFIG_PATH`/`PKG_CONFIG_PATH` to its
   `lib/pkgconfig` and `LD_LIBRARY_PATH` to its `lib`.
-
-Tests that create local WebRTC peers set
-`LIVE777_WEBRTC_ICE_UDP_ADDRS=127.0.0.1:0` to force loopback ICE candidates in
-CI.
-
-Playwright browser tests need:
-
-```bash
-pnpm exec playwright install --with-deps chromium
-export PLAYWRIGHT_BROWSERS_PATH=$PWD/.playwright
-```
-
-mediamtx interop tests (`whep_mediamtx_pull_*`, `rtsp_push_mediamtx_*` and
-`rtsp_target_mediamtx_*` in
-the matrix binary, live777#212) need a mediamtx binary: `just mediamtx`
-downloads the pinned release into `target/`, or install mediamtx into `PATH`;
-`MEDIAMTX_BIN` overrides the lookup. The tests skip when no binary is found.
-They also run on Windows hosts, but skip on Windows CI: GitHub-hosted
-Windows runners encode video at ~0.03x realtime, so media-heavy cases time
-out downstream (the same flake class as a390dc7). The WHEP-source relay
-matrix (`whep_source_livetwo_*`, two liveion instances per case) skips on
-Windows CI for the same reason; the shared `runner::windows_ci()` helper
-carries the check.
 
 ## Security Considerations
 
@@ -842,78 +334,59 @@ carries the check.
 
 ## Deployment & Packaging
 
-- **Docker**: multi-stage Dockerfiles in `docker/` for `live777-server`
-  (live777 + liveman), `live777-client` (self-contained FFmpeg + whipinto +
-  whepfrom; its FFmpeg build mirrors `Dockerfile.ffmpeg`), `live777-all`
-  (all-in-one quickstart/AI-deploy image, see below), `liveion`
-  (live777 only), `liveman` (liveman only), `whipinto`, `whepfrom`,
-  `net4mqtt`, `ffmpeg`, and `gstreamer` variants. Images are published to
-  `ghcr.io/binbat/<app>`. All images share one app × architecture build matrix.
-  Each matrix job builds once on a native amd64 or arm64 runner, exporting a
-  Docker tar for `docker load` and `scripts/docker-smoke.sh` and, only on
-  version tags, pushing that same build by digest. Pull requests that change
-  Docker build/test inputs and pushes to the `docker` branch build and smoke
-  every image without pushing to GHCR. After all image smoke tests pass, one
-  tag-only job creates every multi-architecture manifest from the tested
-  digests, without architecture-suffixed tags.
-- **`live777-all` vs the slim `live777-server`/`live777-client` split**:
-  `live777-all` ships live777 + liveman + ffmpeg/ffprobe + whipinto +
-  whepfrom + whipsynth + whepprobe + a `smoke-test` closed-loop media check
-  in one image (`CMD ["live777"]`), trading image size for a zero-setup
-  first-run experience — run the container, then `smoke-test --standalone`
-  (or `smoke-test` against an already-running server; `SMOKE_SERVER_URL` /
-  `SMOKE_TOKEN` env tune it) publishes a synthetic WHIP stream and decodes it
-  back over WHEP. Standalone mode uses a temporary isolated config with
-  loopback ICE; `SMOKE_PORT` selects its HTTP port. Because
-  whepprobe/whipsynth need rsmpeg 0.18 — which cannot
-  compile against Debian's field-privatized libav*-dev — the image builds
-  upstream FFmpeg 8.1 *shared* (codec set mirrors `Dockerfile.live777-client`,
-  installed to `/opt/ffmpeg`), points the rust builder at its
-  headers/pkg-config (`FFMPEG_PKG_CONFIG_PATH`) with trixie's libclang for
-  bindgen, and registers `/opt/ffmpeg/lib` with ldconfig so the same build
-  serves the ffmpeg/ffprobe CLIs and the rsmpeg tools at runtime. The slim
-  images stay the pick for size-sensitive or production deployments;
-  `live777-all` is the fast path for evaluation and agent-driven deploys.
+- **Docker**: multi-stage Dockerfiles in `docker/` (`live777-server`,
+  `live777-client`, `live777-all`, `liveion`, `liveman`, `whipinto`,
+  `whepfrom`, `net4mqtt`, `ffmpeg`, `gstreamer`), published to
+  `ghcr.io/binbat/<app>`; `live777-client` is the self-contained FFmpeg +
+  whipinto + whepfrom image (its FFmpeg build mirrors `Dockerfile.ffmpeg`).
+  One app × architecture matrix builds each image once on a native
+  amd64/arm64 runner, exporting a Docker tar for `docker load` and
+  `scripts/docker-smoke.sh`, and pushes by digest only on version tags; PRs
+  touching Docker inputs and pushes to the `docker` branch build+smoke
+  without pushing. A single tag-only job then creates every multi-arch
+  manifest from the tested digests (no arch-suffixed tags).
+- **`live777-all`** is the all-in-one evaluation image (live777 + liveman +
+  ffmpeg/ffprobe + whipinto + whepfrom + whipsynth + whepprobe + a
+  `smoke-test` closed-loop WHIP→WHEP media check; `CMD ["live777"]`;
+  `smoke-test --standalone` for a zero-setup first run, tuned by
+  `SMOKE_SERVER_URL`/`SMOKE_TOKEN`/`SMOKE_PORT`). Because
+  whepprobe/whipsynth need rsmpeg 0.18 — which cannot compile against
+  Debian's field-privatized libav*-dev — the image builds upstream FFmpeg 8.1
+  *shared* into `/opt/ffmpeg` (codec set mirrors `Dockerfile.live777-client`)
+  with `FFMPEG_PKG_CONFIG_PATH` for the rust builder and `/opt/ffmpeg/lib`
+  registered with ldconfig, so one build serves both the CLIs and the rsmpeg
+  tools. The slim `live777-server`/`live777-client` images stay the pick for
+  size-sensitive or production deployments.
 - **systemd**: service units in `conf/live777.service` and
   `conf/liveman.service`.
-- **Monitoring**: `compose.monitoring.yml` brings up a Prometheus + Grafana
-  stack scraping the live777 `/metrics` endpoint (always compiled in);
-  scrape config in `conf/monitoring/prometheus.yml`, provisioned datasource
-  and the `live777 overview` dashboard under `conf/monitoring/grafana/`.
-  Just recipes: `just monitoring-up` / `just monitoring-down`. liveman has
-  no Prometheus endpoint — scrape the live777 nodes directly.
+- **Monitoring**: `compose.monitoring.yml` brings up Prometheus + Grafana
+  scraping live777's always-on `/metrics`; scrape config in
+  `conf/monitoring/prometheus.yml`, provisioned datasource and the `live777
+  overview` dashboard under `conf/monitoring/grafana/`; `just monitoring-up`
+  / `monitoring-down`. liveman has no Prometheus endpoint — scrape the
+  live777 nodes directly.
 - **Packages**: nFPM configs in `nfpm/` build `.deb`, `.rpm`, and Arch Linux
   packages; GitHub Actions upload them to releases.
-- **Size-optimized builds are opt-in**: official release binaries use the
-  default `release` profile. For size-sensitive deployments (embedded,
-  containers) use the `release-size` profile (`Cargo.toml`: fat LTO, 1
-  codegen unit, stripped, `panic=abort`, opt-level stays 3) plus
-  `upx --best --lzma` — via `just build-size` / `just pack-size` locally,
-  or `just cross-build-size <target> <features>` /
-  `just cross-pack-size <target> <features>` for cross-compiled embedded
-  targets (cross-rs; UPX packs foreign-arch ELFs from the host).
-  Device-pinned shortcuts cover the supported embedded presets:
-  `just rpi-pack-size` (uses the RPi cross image), `just rdk-pack-size`
-  (needs `RDK_SYSROOT`), and `just v4l2-pack-size [target]`
-  (armv7 by default).
+- **Size-optimized builds are opt-in**: releases use the default `release`
+  profile; for size-sensitive deployments use the `release-size` profile
+  (`Cargo.toml`: fat LTO, 1 codegen unit, stripped, `panic=abort`) plus `upx
+  --best --lzma` — `just build-size` / `pack-size` locally, `just
+  cross-build-size` / `cross-pack-size <target> <features>` for cross builds,
+  and device presets `just rpi-pack-size`, `rdk-pack-size` (needs
+  `RDK_SYSROOT`), `v4l2-pack-size [target]` (armv7 default).
 - **Releases**: `.github/workflows/release.yml` (tag pushes and the `test`
-  branch) builds for many targets including x86_64, aarch64, armv7, i686,
-  riscv64, Android, Windows, and macOS. Mainstream Linux/macOS/Windows targets
-  also get a diagnostics bundle with whipsynth, whepprobe, livewrk and their
-  codec runtime, built by `.github/workflows/diagnostics.yml` (which also runs
-  on pull requests touching diagnostics packaging inputs). Each bundle carries
-  third-party license notices plus copied-library provenance, and a matching
-  source archive publishes the exact FFmpeg/dependency sources and a manifest
-  bound to the binary archive's SHA-256. The live777-all Docker workflow runs
-  `smoke-test --standalone` on each final architecture image before publishing
-  the multi-arch manifest.
-- **Docs**: VitePress site in `docs/`; run `pnpm run docs:dev` / `docs:build`.
+  branch) builds x86_64, aarch64, armv7, i686, riscv64, Android, Windows and
+  macOS targets. Mainstream Linux/macOS/Windows targets also get a
+  diagnostics bundle (whipsynth, whepprobe, livewrk + codec runtime, license
+  notices, SHA-256-bound source archive) built by
+  `.github/workflows/diagnostics.yml`. The live777-all Docker workflow runs
+  `smoke-test --standalone` on each final arch image before publishing the
+  multi-arch manifest.
+- **Docs**: VitePress site in `docs/` (`pnpm run docs:dev` / `docs:build`);
   `docs:build` also emits `llms.txt`, `llms-full.txt` and per-page `.md`
-  (English only, the `zh` locale is excluded) via `vitepress-plugin-llms`.
-  Pushes to `test` and version tags run `.github/workflows/docs.yml`, which
-  checks `llms.txt` and key pages on `https://live777.pages.dev` with
-  `docs/scripts/llms-txt-check.sh`; the check polls until the deployment is
-  ready.
+  (English only) via `vitepress-plugin-llms`. `.github/workflows/docs.yml`
+  checks the deployed `https://live777.pages.dev` with
+  `docs/scripts/llms-txt-check.sh`.
 
 ## Useful Local Recipes (justfile)
 
@@ -944,7 +417,6 @@ cycle tests; they are the fastest way to exercise a local `live777` instance.
    ffprobe decode. Both build the required debug binaries with `rsmpeg`, use
    isolated temporary configuration and loopback ICE, and clean up their own
    processes; `CARGO_TARGET_DIR` is respected. The non-media safeguards are
-   covered by `tests/smoke_port_conflict.sh` and `tests/smoke_audio_required.sh`
-   (occupied HTTP/RTP endpoints and rejecting a video-only probe).
+   covered by `tests/smoke_port_conflict.sh` and `tests/smoke_audio_required.sh`.
 7. Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --workspace --
    -D warnings`, and `cargo nextest run --workspace` before finishing.
