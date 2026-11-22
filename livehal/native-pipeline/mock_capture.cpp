@@ -6,13 +6,23 @@
 //! exactly as with a real capture backend, so encoder bring-up on a new SoC
 //! can be validated with no camera attached.
 //!
-//! The pattern is designed for verification from the decoded output:
-//!   * static 75% SMPTE color bars — validates color/matrix handling,
+//! The background pattern is selectable (cfg.pattern), mirroring the names
+//! of gst videotestsrc / ffmpeg testsrc:
+//!   * "smpte75" (default) — static 75% SMPTE color bars (BT.601 limited
+//!     range): validates color/matrix handling,
+//!   * "snow"   — full-range luma white noise, new every frame: worst-case
+//!     encoder stress,
+//!   * "black" / "white" — solid frames: idle bitrate and keyframe floor,
+//!   * "checkers" — a checkerboard drifting one pixel per frame: sharpness
+//!     and sub-pixel motion,
+//!   * "gradient" — a horizontal luma ramp: banding/quantization.
+//! Every pattern carries the same verification overlays on top:
 //!   * a white block bouncing around the frame — makes the delivered
 //!     framerate and gaps visible,
 //!   * a 32-bit binary frame counter strip at the bottom — increments by
 //!     one every frame, so dropped/repeated frames are directly observable,
 //!   * the decimal frame number burned into the top-left corner.
+//! Frame numbering is 1-based, matching the V4L2 backend's RawFrame.seq.
 
 #include "include/capture_backend.h"
 
@@ -64,7 +74,7 @@ Yuv rgb_to_ycbcr601(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 // Neutral overlay colours (U = V = 128), so every overlay region carries
-// uniform chroma and never bleeds the colour bars underneath.
+// uniform chroma and never bleeds the pattern underneath.
 constexpr Yuv kOverlayWhite{235, 128, 128};
 constexpr Yuv kOverlayBlack{16, 128, 128};
 
@@ -83,35 +93,96 @@ constexpr uint8_t kDigitFont[10][7] = {
     {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, // 9
 };
 
+// The selectable background patterns.  These names are part of the
+// user-facing configuration surface; liveion's CaptureSpec validation
+// mirrors this table.
+enum class MockPattern { Smpte75, Snow, Black, White, Checkers, Gradient };
+
+// Single table driving both config parsing and the init log line, so the
+// name list exists exactly once and the two can never disagree.
+constexpr std::pair<MockPattern, const char*> kPatterns[] = {
+    {MockPattern::Smpte75, "smpte75"},
+    {MockPattern::Snow, "snow"},
+    {MockPattern::Black, "black"},
+    {MockPattern::White, "white"},
+    {MockPattern::Checkers, "checkers"},
+    {MockPattern::Gradient, "gradient"},
+};
+
+const char* pattern_name(MockPattern pattern) {
+    for (const auto& [p, name] : kPatterns) {
+        if (p == pattern) return name;
+    }
+    return "unknown";
+}
+
+std::string pattern_list() {
+    std::string out;
+    for (const auto& entry : kPatterns) {
+        if (!out.empty()) out += ", ";
+        out += entry.second;
+    }
+    return out;
+}
+
+bool parse_pattern(const std::string& s, MockPattern* out) {
+    if (s.empty()) {
+        *out = MockPattern::Smpte75;  // backend default
+        return true;
+    }
+    for (const auto& [p, name] : kPatterns) {
+        if (s == name) {
+            *out = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+// No real sensor exceeds this; it also keeps the pacing period >= 1 ms so
+// the sleep-based scheduler cannot degenerate into a busy loop.
+constexpr uint32_t kMaxFps = 1000;
+
 } // namespace
 
 struct MockCaptureImpl : public CaptureBackend {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
+    MockPattern pattern = MockPattern::Smpte75;
 
     std::atomic<bool> running{false};
     std::atomic<bool> thread_alive{false};
     CaptureFrameCallback capture_cb_;
     std::thread produce_thread;
 
-    // Static colour-bar background, rendered once in init(); each frame
-    // starts from a copy of it and the moving overlays are drawn on top.
+    // Static background for the non-animated patterns, rendered once in
+    // init(); each frame starts from a copy of it and the verification
+    // overlays are drawn on top.  Unused by the per-frame patterns
+    // (snow, checkers), which render straight into frame_buf.
     std::vector<uint8_t> base_buf;
     std::vector<uint8_t> frame_buf;
     uint64_t seq = 0;
+    uint32_t rng_state = 0x9E3779B9u;
 
     // Bouncing block state (even-aligned so the chroma blocks stay whole).
-    int32_t box_x = 0;
-    int32_t box_y = 0;
-    int32_t box_dx = 4;
-    int32_t box_dy = 2;
+    int32_t block_x = 0;
+    int32_t block_y = 0;
+    int32_t block_dx = 4;
+    int32_t block_dy = 2;
 
     ~MockCaptureImpl() override { stop(); }
 
     bool init(const CaptureConfig& cfg, std::string* err) override {
         if (cfg.width == 0 || cfg.height == 0 || cfg.fps == 0) {
             if (err) *err = "mock capture requires non-zero width/height/fps";
+            return false;
+        }
+        if (cfg.fps > kMaxFps) {
+            if (err) {
+                *err = "mock capture fps must be at most "
+                       + std::to_string(kMaxFps);
+            }
             return false;
         }
         if ((cfg.width & 1U) != 0 || (cfg.height & 1U) != 0) {
@@ -122,6 +193,13 @@ struct MockCaptureImpl : public CaptureBackend {
             if (err) *err = "mock capture generates NV12 only";
             return false;
         }
+        if (!parse_pattern(cfg.pattern, &pattern)) {
+            if (err) {
+                *err = std::string("mock capture: unknown pattern '")
+                       + cfg.pattern + "' (supported: " + pattern_list() + ")";
+            }
+            return false;
+        }
         width = cfg.width;
         height = cfg.height;
         fps = cfg.fps;
@@ -130,8 +208,8 @@ struct MockCaptureImpl : public CaptureBackend {
         base_buf.resize(y_bytes * 3 / 2);
         frame_buf.resize(base_buf.size());
         render_base();
-        fprintf(stderr, "[MockCapture] generating %ux%u NV12 at %u fps\n",
-                width, height, fps);
+        fprintf(stderr, "[MockCapture] generating %ux%u NV12 at %u fps, pattern=%s\n",
+                width, height, fps, pattern_name(pattern));
         return true;
     }
 
@@ -204,6 +282,27 @@ struct MockCaptureImpl : public CaptureBackend {
     // blue, black.  Written once; the per-frame overlays are painted on a
     // copy of this buffer.
     void render_base() {
+        switch (pattern) {
+        case MockPattern::Smpte75:
+            render_bars();
+            return;
+        case MockPattern::Black:
+            render_solid(16);
+            return;
+        case MockPattern::White:
+            render_solid(235);
+            return;
+        case MockPattern::Gradient:
+            render_gradient();
+            return;
+        case MockPattern::Snow:
+        case MockPattern::Checkers:
+            // Animated patterns render per frame straight into frame_buf.
+            return;
+        }
+    }
+
+    void render_bars() {
         static const Yuv bars[8] = {
             rgb_to_ycbcr601(191, 191, 191), // white
             rgb_to_ycbcr601(191, 191, 0),   // yellow
@@ -232,31 +331,92 @@ struct MockCaptureImpl : public CaptureBackend {
         }
     }
 
+    // Solid frame at the given (neutral-chroma) luma level.
+    void render_solid(uint8_t level) {
+        std::memset(base_buf.data(), level, static_cast<size_t>(width) * height);
+        std::memset(base_buf.data() + static_cast<size_t>(width) * height, 128,
+                    static_cast<size_t>(width) * height / 2);
+    }
+
+    // Horizontal limited-range luma ramp, neutral chroma — banding test.
+    void render_gradient() {
+        uint8_t* y = base_buf.data();
+        for (uint32_t x = 0; x < width; ++x) {
+            y[x] = static_cast<uint8_t>(
+                16 + (219 * x) / (width - 1));
+        }
+        for (uint32_t row = 1; row < height; ++row) {
+            std::memcpy(y + static_cast<size_t>(row) * width, y, width);
+        }
+        std::memset(base_buf.data() + static_cast<size_t>(width) * height, 128,
+                    static_cast<size_t>(width) * height / 2);
+    }
+
+    // Full-range luma white noise, new every frame (chroma neutral) — the
+    // worst case for an encoder: nothing is predictable.
+    void render_snow() {
+        uint8_t* y = y_plane();
+        const size_t y_bytes = static_cast<size_t>(width) * height;
+        uint32_t s = rng_state;
+        for (size_t i = 0; i < y_bytes; ++i) {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            y[i] = static_cast<uint8_t>(s & 0xFF);
+        }
+        rng_state = s;
+        std::memset(uv_plane(), 128, y_bytes / 2);
+    }
+
+    // Checkerboard drifting one pixel down-right per frame (chroma
+    // neutral) — sharp edges plus sub-pixel motion.  The shift wraps every
+    // two cells, so the loop is seamless.
+    void render_checkers(uint64_t frame_number) {
+        const uint32_t cell = std::max((width / 16) & ~1U, 2U);
+        const uint32_t off = static_cast<uint32_t>(frame_number % (2 * cell));
+        std::memset(uv_plane(), 128, static_cast<size_t>(width) * height / 2);
+        for (uint32_t row = 0; row < height; ++row) {
+            const uint32_t row_parity = ((row + off) / cell) & 1U;
+            uint8_t* y = y_plane() + static_cast<size_t>(row) * width;
+            uint32_t x = 0;
+            while (x < width) {
+                const uint32_t cell_index = (x + off) / cell;
+                uint32_t end = (cell_index + 1) * cell - off;
+                end = std::min(end, width);
+                const uint8_t v = ((cell_index & 1U) ^ row_parity) != 0 ? 235 : 16;
+                std::memset(y + x, v, end - x);
+                x = end;
+            }
+        }
+    }
+
     // White block bouncing off the frame edges; its motion makes the actual
     // delivered framerate (and any stall) visible by eye.
-    void draw_box() {
-        const int32_t box_w = static_cast<int32_t>(std::max(width / 8, 2U));
-        const int32_t box_h = static_cast<int32_t>(std::max(height / 8, 2U));
-        box_x += box_dx;
-        box_y += box_dy;
-        if (box_x <= 0 || box_x + box_w >= static_cast<int32_t>(width)) {
-            box_dx = -box_dx;
-            box_x = std::clamp(box_x, 0, static_cast<int32_t>(width) - box_w);
+    void draw_block() {
+        const int32_t block_w = static_cast<int32_t>(std::max(width / 8, 2U));
+        const int32_t block_h = static_cast<int32_t>(std::max(height / 8, 2U));
+        block_x += block_dx;
+        block_y += block_dy;
+        if (block_x <= 0 || block_x + block_w >= static_cast<int32_t>(width)) {
+            block_dx = -block_dx;
+            block_x = std::clamp(block_x, 0, static_cast<int32_t>(width) - block_w);
         }
-        if (box_y <= 0 || box_y + box_h >= static_cast<int32_t>(height)) {
-            box_dy = -box_dy;
-            box_y = std::clamp(box_y, 0, static_cast<int32_t>(height) - box_h);
+        if (block_y <= 0 || block_y + block_h >= static_cast<int32_t>(height)) {
+            block_dy = -block_dy;
+            block_y = std::clamp(block_y, 0, static_cast<int32_t>(height) - block_h);
         }
-        fill_rect(box_x, box_y, static_cast<uint32_t>(box_w),
-                  static_cast<uint32_t>(box_h), kOverlayWhite);
+        fill_rect(block_x, block_y, static_cast<uint32_t>(block_w),
+                  static_cast<uint32_t>(block_h), kOverlayWhite);
     }
 
     // 32-bit binary frame counter strip along the bottom: cell i shows bit
     // i of the frame number (LSB leftmost), white when set, black when
     // clear.  Decoded output can be checked frame-by-frame against it to
     // measure the exact delivered rate and spot dropped/repeated frames.
+    // cell_w is kept even so adjacent cells never overlap after fill_rect's
+    // chroma alignment.
     void draw_counter(uint64_t frame_number) {
-        const uint32_t cell_w = std::max(width / 32, 2U);
+        const uint32_t cell_w = std::max((width / 32) & ~1U, 2U);
         const uint32_t cell_h = std::max(height / 24, 2U);
         const int32_t top = static_cast<int32_t>(height - cell_h);
         fill_rect(0, top, width, cell_h, kOverlayBlack);
@@ -298,8 +458,20 @@ struct MockCaptureImpl : public CaptureBackend {
     }
 
     void render(uint64_t frame_number) {
-        std::memcpy(frame_buf.data(), base_buf.data(), frame_buf.size());
-        draw_box();
+        switch (pattern) {
+        case MockPattern::Snow:
+            render_snow();
+            break;
+        case MockPattern::Checkers:
+            render_checkers(frame_number);
+            break;
+        default:
+            std::memcpy(frame_buf.data(), base_buf.data(), frame_buf.size());
+            break;
+        }
+        // Overlays always win over the background pattern, so the
+        // verification elements stay readable on every pattern.
+        draw_block();
         draw_counter(frame_number);
         draw_frame_text(frame_number);
     }
@@ -309,9 +481,14 @@ struct MockCaptureImpl : public CaptureBackend {
         fprintf(stderr, "[MockCapture] produce thread started\n");
         thread_alive.store(true);
 
+        // Rational schedule: frame k is due at base + (k - base_seq) * 1e6 /
+        // fps microseconds — the per-frame rounding (<= 1 us) does not
+        // accumulate, so the long-term average rate is exactly fps.
         const auto period = std::chrono::microseconds(1000000 / fps);
-        auto next = std::chrono::steady_clock::now();
+        auto base = std::chrono::steady_clock::now();
+        uint64_t base_seq = 1;  // `base` is the due time of frame base_seq
         while (running.load()) {
+            ++seq;
             render(seq);
             RawFrame frame{};
             frame.kind = BufferKind::Cpu;
@@ -326,13 +503,17 @@ struct MockCaptureImpl : public CaptureBackend {
             frame.planes[0] = {y_plane(), width, y_bytes, -1, 0};
             frame.planes[1] = {uv_plane(), width, y_bytes / 2, -1, y_bytes};
             if (capture_cb_) capture_cb_(frame);
-            ++seq;
 
-            next += period;
+            auto next = base
+                + std::chrono::microseconds((seq + 1 - base_seq) * 1000000 / fps);
             const auto now = std::chrono::steady_clock::now();
             if (next + period < now) {
-                // The callback (encoder) overran badly: resync instead of
-                // bursting to catch up.
+                // The callback (encoder) overran by more than a full frame
+                // period: resync the schedule on the next frame instead of
+                // bursting a long backlog.  A shorter overrun emits one
+                // immediate catch-up frame and keeps the schedule.
+                base = now;
+                base_seq = seq + 1;
                 next = now;
             }
             std::this_thread::sleep_until(next);

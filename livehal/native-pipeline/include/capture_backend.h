@@ -21,8 +21,8 @@
 // Capture configuration
 // ---------------------------------------------------------------------------
 struct CaptureConfig {
-    std::string backend;   // "libcamera" or "v4l2"
-    std::string device;    // "/dev/video0" or camera_id string
+    std::string backend;   // "libcamera", "v4l2" or "mock"
+    std::string device;    // "/dev/video0" or camera_id string; unused by "mock"
     uint32_t width;
     uint32_t height;
     uint32_t fps;
@@ -34,6 +34,10 @@ struct CaptureConfig {
     // transpose.  Ignored by the V4L2 backends (validation rejects them).
     bool hflip = false;
     bool vflip = false;
+    // Background pattern for the "mock" backend: "smpte75" (default),
+    // "snow", "black", "white", "checkers" or "gradient"; empty = default.
+    // Ignored by the real capture backends (validation rejects it there).
+    std::string pattern;
 };
 
 // ---------------------------------------------------------------------------

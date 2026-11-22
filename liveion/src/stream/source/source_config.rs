@@ -46,6 +46,8 @@
 //! height = 720
 //! fps = 30
 //! pixel_format = "nv12"
+//! # pattern = "smpte75"   # background: smpte75 (default) / snow / black /
+//!                         # white / checkers / gradient
 //!
 //! [stream.encoder-test.sources.encoder]
 //! backend = "rkmpp"
@@ -124,6 +126,13 @@ pub struct CaptureSpec {
     /// Vertical flip (top-bottom, default `false`).  See [`CaptureSpec::hflip`].
     #[serde(default)]
     pub vflip: bool,
+    /// Background pattern for the synthetic `mock` capture backend:
+    /// `"smpte75"` (default), `"snow"`, `"black"`, `"white"`, `"checkers"`,
+    /// `"gradient"` — names mirror gst `videotestsrc`.  The bouncing block,
+    /// frame counter strip and frame-number burn-in stay on top of every
+    /// pattern.  Must be unset for real capture backends.
+    #[serde(default)]
+    pub pattern: Option<String>,
 }
 
 /// Encoder specification.
@@ -648,7 +657,7 @@ impl SourceSpec {
         let backend = capture.backend.to_lowercase();
         if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
             anyhow::bail!(
-                "capture.backend must be 'v4l2', 'libcamera', or 'mock', got '{}'",
+                "capture.backend must be 'libcamera', 'v4l2', or 'mock', got '{}'",
                 capture.backend
             );
         }
@@ -666,6 +675,23 @@ impl SourceSpec {
                 anyhow::bail!(
                     "capture.pixel_format: the mock capture backend generates NV12 only, got '{}'",
                     capture.pixel_format
+                );
+            }
+        }
+        // capture.pattern selects the mock backend's background pattern and
+        // is meaningless for real devices.
+        if let Some(pattern) = &capture.pattern {
+            if backend != "mock" {
+                anyhow::bail!(
+                    "capture.pattern is supported only by the mock capture backend, got '{}'",
+                    capture.backend
+                );
+            }
+            if !MOCK_CAPTURE_PATTERNS.contains(&pattern.to_lowercase().as_str()) {
+                anyhow::bail!(
+                    "capture.pattern: unknown mock pattern '{}'. Supported: {}",
+                    pattern,
+                    MOCK_CAPTURE_PATTERNS.join(", ")
                 );
             }
         }
@@ -896,6 +922,14 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
     }
 }
 
+/// Background patterns of the synthetic `mock` capture backend.
+///
+/// Mirrors the `kPatterns` table in `livehal/native-pipeline/mock_capture.cpp`
+/// (the C++ side validates again at `init()`); the names follow gst
+/// `videotestsrc` conventions. Keep the two lists in sync.
+pub const MOCK_CAPTURE_PATTERNS: &[&str] =
+    &["smpte75", "snow", "black", "white", "checkers", "gradient"];
+
 /// Map a codec string to its `VideoCodec` numeric value.
 ///
 /// Used when converting structured `EncoderSpec` into `NativeSourceParams`.
@@ -1107,14 +1141,24 @@ impl SourceSpec {
         // Profile resolution is shared with validate() — see resolve_profile().
         let (profile_idc, level_idc, tier_flag, profile_string) = Self::resolve_profile(encoder)?;
 
+        // Validation compares backend names case-insensitively while the C++
+        // factory matches them exactly — pass the canonical lowercase form
+        // so e.g. `backend = "Mock"` cannot fail at the FFI boundary.
+        let encoder_backend = encoder.backend.to_lowercase();
+
         Ok(Some(NativeSourceParams {
-            capture_backend: capture.backend.clone(),
+            capture_backend: backend,
             capture_device,
             width: capture.width,
             height: capture.height,
             fps: capture.fps,
             capture_pixel_format: pixel_format_to_u32(&capture.pixel_format)?,
-            encoder_backend: encoder.backend.clone(),
+            capture_pattern: capture
+                .pattern
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase(),
+            encoder_backend,
             codec: codec_to_u32(&encoder.codec)?,
             bitrate: encoder.bitrate,
             profile: profile_string.clone(),
@@ -1187,6 +1231,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "v4l2-m2m".into(),
@@ -1220,6 +1265,7 @@ mod tests {
                 prefer_dmabuf: true,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rdk".into(),
@@ -1253,6 +1299,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
@@ -1286,6 +1333,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "cedar".into(),
@@ -1321,6 +1369,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "v4l2-m2m".into(),
@@ -1354,6 +1403,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
@@ -1512,8 +1562,71 @@ mod tests {
         assert_eq!(params.height, 720);
         assert_eq!(params.fps, 30);
         assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.capture_pattern, ""); // unset: backend default
         assert_eq!(params.encoder_backend, "v4l2-m2m");
         assert_eq!(params.codec, 100); // h264
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_lowercases_backends() {
+        // Validation is case-insensitive; the C++ factory is not.  The
+        // params must carry the canonical lowercase form.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().backend = "Mock".into();
+        spec.encoder.as_mut().unwrap().backend = "V4L2-M2M".into();
+        let params = spec.to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_backend, "mock");
+        assert_eq!(params.encoder_backend, "v4l2-m2m");
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_pattern() {
+        // Unset (backend default) and every listed pattern pass, any case.
+        assert!(mock_spec().validate().is_ok());
+        for pattern in MOCK_CAPTURE_PATTERNS {
+            let mut spec = mock_spec();
+            spec.capture.as_mut().unwrap().pattern = Some(pattern.to_string());
+            assert!(
+                spec.validate().is_ok(),
+                "pattern '{pattern}' must validate for mock"
+            );
+        }
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("SNOW".into());
+        assert!(
+            spec.validate().is_ok(),
+            "pattern matching is case-insensitive"
+        );
+
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("bogus".into());
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mock pattern"),
+            "unknown pattern must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn test_source_spec_validate_pattern_mock_only() {
+        // A pattern on a real capture device is a config error.
+        let mut spec = v4l2_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("snow".into());
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("only by the mock capture backend"),
+            "pattern must be rejected for v4l2: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_mock_pattern() {
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("Snow".into());
+        let params = spec.to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_pattern, "snow");
     }
 
     // --- capture flip (hflip/vflip) tests ---

@@ -286,6 +286,7 @@ static CaptureConfig to_capture_config(const CaptureConfigFFI* ffi) {
     cfg.prefer_dmabuf = (ffi->prefer_dmabuf != 0);
     cfg.hflip = (ffi->hflip != 0);
     cfg.vflip = (ffi->vflip != 0);
+    cfg.pattern = ffi->pattern ? ffi->pattern : "";
     return cfg;
 }
 

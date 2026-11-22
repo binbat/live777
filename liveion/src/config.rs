@@ -545,6 +545,7 @@ mod tests {
             height = 720
             fps = 30
             pixel_format = "nv12"
+            pattern = "snow"
             [sources.encoder]
             backend = "v4l2-m2m"
             codec = "h264"
@@ -556,6 +557,10 @@ mod tests {
         let source = entry.sources.first().unwrap();
         assert_eq!(source.capture.as_ref().unwrap().backend, "mock");
         assert_eq!(source.capture.as_ref().unwrap().device, None);
+        assert_eq!(
+            source.capture.as_ref().unwrap().pattern.as_deref(),
+            Some("snow")
+        );
         assert!(source.validate().is_ok());
         let spec = source.to_spec("encoder-test").unwrap();
         assert!(spec.validate().is_ok());
