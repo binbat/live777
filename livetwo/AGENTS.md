@@ -17,8 +17,10 @@ When you change behavior documented here, update this file.
   (`REAP_TIMEOUT`, 5 s): a child that somehow survives `SIGKILL` is
   abandoned and left to tokio's orphan queue instead of pinning the probe or
   the single reaper thread. `livewrk` finds the helper beside its executable
-  (or via `LIVE777_WHEPPROBE_BIN`); diagnostics bundles ship both binaries
-  together.
+  (or via `LIVE777_WHEPPROBE_BIN`); in test runs the helper is found at the
+  cargo profile root, one level above `deps/` (legacy layout) or above
+  `build/<pkg>/<hash>/out/` (build-dir layout v2, cargo ≥ 1.100);
+  diagnostics bundles ship both binaries together.
 - `src/datachannel/` (`livetwo::datachannel`) — client-side DataChannel
   bridges for whepfrom and whipinto (UDP bridge, channel poll loop,
   `CancelOnDrop`), mirroring the server-side cable hub (see

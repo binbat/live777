@@ -480,6 +480,9 @@ fn resolve_worker_binary_from(
     let current_dir = current_exe
         .parent()
         .context("current executable has no parent directory")?;
+    // Legacy cargo layout (< 1.100): test binaries run from
+    // <target>/<profile>/deps/, the worker binary sits one level up in the
+    // profile directory.
     if current_dir.file_name() == Some(OsStr::new("deps"))
         && let Some(profile_dir) = current_dir.parent()
     {
@@ -488,9 +491,27 @@ fn resolve_worker_binary_from(
             return Ok(candidate);
         }
     }
+    // Build-dir layout v2 (cargo >= 1.100): test binaries run from
+    // <target>/<profile>/build/<pkg>/<run-hash>/out/ while plain binaries
+    // stay at the profile directory root.
+    if current_dir.file_name() == Some(OsStr::new("out"))
+        && let Some(profile_dir) = current_dir
+            .parent() // <run-hash>
+            .and_then(Path::parent) // <pkg>
+            .and_then(Path::parent) // build
+            .filter(|dir| dir.file_name() == Some(OsStr::new("build")))
+            .and_then(Path::parent)
+    // <profile>
+    {
+        let candidate = profile_dir.join(worker_binary_name());
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
 
     bail!(
-        "could not locate whepprobe beside {} or one level above a deps directory; set {WORKER_ENV}",
+        "could not locate whepprobe beside {} or in the cargo profile directory \
+         (deps/ or build/<pkg>/<hash>/out/ layout); set {WORKER_ENV}",
         current_exe.display()
     )
 }
@@ -636,6 +657,24 @@ mod tests {
         assert_eq!(resolve_worker_binary_from(None, &current).unwrap(), sibling);
         std::fs::remove_file(deps.join(worker_binary_name())).unwrap();
         assert_eq!(resolve_worker_binary_from(None, &current).unwrap(), parent);
+    }
+
+    #[test]
+    fn worker_path_supports_cargo_build_dir_layout_v2() {
+        // cargo >= 1.100 runs test binaries from
+        // <target>/<profile>/build/<pkg>/<run-hash>/out/; the worker binary
+        // stays at the profile directory root.
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("debug/build/live777/0123456789abcdef/out");
+        std::fs::create_dir_all(&out).unwrap();
+        let current = out.join(format!(
+            "matrix-0123456789abcdef{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let profile = temp.path().join("debug").join(worker_binary_name());
+        std::fs::write(&profile, b"").unwrap();
+
+        assert_eq!(resolve_worker_binary_from(None, &current).unwrap(), profile);
     }
 
     #[cfg(unix)]
