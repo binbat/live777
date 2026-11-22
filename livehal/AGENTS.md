@@ -24,12 +24,14 @@ you change behavior documented here, update this file.
   supported by rkmpp, v4l2-m2m and cedar — used by liveion's adaptive
   bitrate controller and tier API (see
   [liveion/AGENTS.md](../liveion/AGENTS.md)).
-- `capture-mock` (`mock_capture.cpp`) synthesizes NV12 frames (75% SMPTE
-  color bars, a bouncing block, a 32-bit binary frame counter strip plus a
-  frame-number burn-in) on a pacing thread — camera-free bring-up and
-  regression testing of the hardware encoder backends (live777#519). It
-  opens no device, emits CPU buffers only (`emitsDmabufFrames() == false`),
-  and pairs with any encoder backend.
+- `capture-mock` (`mock_capture.cpp`) synthesizes NV12 frames on a pacing
+  thread — camera-free bring-up and regression testing of the hardware
+  encoder backends (live777#519). It opens no device, emits CPU buffers only
+  (`emitsDmabufFrames() == false`), and pairs with any encoder backend. The
+  background pattern is selectable via `capture.pattern` (`smpte75` default,
+  `snow`, `black`, `white`, `checkers`, `gradient`); every pattern carries a
+  bouncing block, a 32-bit binary frame counter strip and a frame-number
+  burn-in as verification overlays.
 
 ## Cross-Compilation
 
