@@ -162,7 +162,7 @@ own output in a feedback loop; use distinct groups or ports for same-host
 demos.
 :::
 
-### Structured native (libcamera / V4L2 / RDK)
+### Structured native (libcamera / V4L2 / RDK / mock)
 
 ```toml
 [stream.pi-cam]
@@ -195,6 +195,46 @@ clock_rate = 90000
 ```
 
 `pixel_format` and `codec` values are validated at startup (unknown values error early).  `capture` + `encoder` are mutually exclusive with `url`; the source type is derived from `capture.backend` (`device` is a camera ID for libcamera or a path for v4l2).
+
+The `mock` capture backend (`capture-mock` feature) synthesizes NV12 frames
+so the hardware encoder path can be brought up and regression-tested with
+**no camera attached**.  It opens no device (`device` is unused), generates
+NV12 only (`pixel_format` must be `"nv12"`), and pairs with any encoder
+backend.  The background pattern is selectable via `pattern` (names follow
+gst `videotestsrc`): `"smpte75"` (default, 75% SMPTE color bars — color/
+matrix handling), `"snow"` (full-range luma noise, new every frame — worst-
+case encoder stress), `"black"` / `"white"` (solid frames — idle bitrate
+and keyframe floor), `"checkers"` (a checkerboard drifting one pixel per
+frame — sharpness and sub-pixel motion), `"gradient"` (horizontal luma ramp
+— banding), `"zone-plate"` (concentric rings of rising spatial frequency
+around an orbiting centre — the classic encoder chart: the radius where the
+rings start to blur marks the spatial cut-off, and the orbiting centre
+exercises motion estimation; useful for high-fps quality checks).  Every
+pattern carries the same verification overlays: a
+bouncing white block (delivered framerate and stalls visible by eye), a
+32-bit binary frame counter strip along the bottom and a decimal frame
+number burn-in (dropped/repeated frames are directly observable in the
+decoded output):
+
+```toml
+[stream.encoder-test]
+[[stream.encoder-test.sources]]
+
+[stream.encoder-test.sources.capture]
+backend = "mock"         # no device needed
+width = 1280
+height = 720
+fps = 30
+pixel_format = "nv12"
+# pattern = "smpte75"    # smpte75（默认）/ snow / black / white /
+                         # checkers / gradient / zone-plate
+
+[stream.encoder-test.sources.encoder]
+backend = "v4l2-m2m"     # or "rkmpp" / "cedar" / "rdk"
+codec = "h264"
+bitrate = 2_000_000
+profile = "640028"
+```
 
 `capture.hflip` / `capture.vflip` (both default `false`) flip the image —
 mirror left-right and top-bottom respectively; setting both gives a 180°
@@ -404,7 +444,7 @@ internals.
 
 | Layer | Value |
 |-------|-------|
-| `capture.backend` | `"libcamera"`, `"v4l2"` |
+| `capture.backend` | `"libcamera"`, `"v4l2"`, `"mock"` |
 | `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, `"cedar"` |
 
 ### pixel_format values
@@ -439,6 +479,7 @@ presets.  All backend features imply `native-source`, which in turn enables
 |---------|---------|
 | `capture-libcamera` | libcamera (Raspberry Pi CSI cameras) |
 | `capture-v4l2` | V4L2 video capture (USB cameras, generic Linux) |
+| `capture-mock` | Synthetic NV12 frames (selectable pattern, `smpte75` default; frame-counter overlays); opens no device — camera-free encoder bring-up/testing |
 | `capture-alsa` | ALSA audio capture (microphones, Linux only; implies `encoder-opus`) |
 
 ### Encoder backends
@@ -596,6 +637,9 @@ The CMake backend is inferred from the enabled capture/encoder features:
 | `encoder-rkmpp` on aarch64 | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
 | `encoder-cedar` on aarch64 | `sunxi` | `ENABLE_BACKEND_SUNXI`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_CEDAR` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| `capture-mock` (no platform encoder selected) | `generic-v4l2` | `ENABLE_CAPTURE_MOCK` |
+
+`capture-mock` is platform-neutral: it is passed as `ENABLE_CAPTURE_MOCK` to every branch above, so the mock capture pairs with whichever encoder backend is selected.
 
 When no `capture-*` feature is enabled, CMake is skipped entirely. Encoder-only features do **not** trigger a CMake build — the SourcePipeline requires a capture backend.
 

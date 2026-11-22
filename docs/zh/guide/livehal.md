@@ -145,7 +145,7 @@ multicast_interface = "192.168.123.11"
 摄入自己的输出形成反馈回环；同机演示请使用不同的组播组或端口。
 :::
 
-### 结构化原生配置（libcamera / V4L2 / RDK）
+### 结构化原生配置（libcamera / V4L2 / RDK / mock）
 
 ```toml
 [stream.pi-cam]
@@ -178,6 +178,40 @@ clock_rate = 90000
 ```
 
 `pixel_format` 和 `codec` 值在启动时就会被校验（未知值会尽早报错）。`capture` + `encoder` 与 `url` 互斥，源类型由 `capture.backend` 推导（`device` 对 libcamera 是 camera ID，对 v4l2 是设备路径）。
+
+`mock` 采集后端（`capture-mock` 特性）合成 NV12 帧，**无需连接摄像头**即可对硬件编码链路做
+bring-up 和回归测试。它不打开任何设备（`device` 字段无需设置），只生成
+NV12（`pixel_format` 必须是 `"nv12"`），可搭配任意编码后端。背景图案可通过
+`pattern` 选择（命名沿用 gst `videotestsrc`）：`"smpte75"`（默认，75% SMPTE
+彩条 —— 验证颜色/矩阵）、`"snow"`（全幅亮度白噪声，逐帧更新 —— 编码器
+极限压力）、`"black"` / `"white"`（纯色帧 —— 空闲码率与关键帧下限）、
+`"checkers"`（每帧移动一个像素的棋盘格 —— 锐度与亚像素运动）、
+`"gradient"`（水平亮度渐变 —— 色带/量化）、`"zone-plate"`（围绕游动
+中心的同心环，空间频率随半径升高 —— 经典的编码器测试图：环开始模糊的
+半径即编码器的有效空间截止频率，中心移动同时考验运动估计；适合高帧率
+质量检查）。所有图案都叠加同一组验证元素：
+在画面边缘弹跳的白色方块（实际送达帧率肉眼可见）、底部 32 位二进制帧计数条
+和左上角十进制帧号烧录（从解码画面可直接发现丢帧/重复帧）：
+
+```toml
+[stream.encoder-test]
+[[stream.encoder-test.sources]]
+
+[stream.encoder-test.sources.capture]
+backend = "mock"         # 无需设备
+width = 1280
+height = 720
+fps = 30
+pixel_format = "nv12"
+# pattern = "smpte75"    # smpte75（默认）/ snow / black / white /
+                         # checkers / gradient / zone-plate
+
+[stream.encoder-test.sources.encoder]
+backend = "v4l2-m2m"     # 或 "rkmpp" / "cedar" / "rdk"
+codec = "h264"
+bitrate = 2_000_000
+profile = "640028"
+```
 
 `capture.hflip` / `capture.vflip`（默认均为 `false`）用于画面翻转——
 分别是左右镜像和上下翻转；两者同时开启即旋转 180°。**仅 libcamera 后端
@@ -357,7 +391,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 
 | 层级 | 取值 |
 |-------|-------|
-| `capture.backend` | `"libcamera"`, `"v4l2"` |
+| `capture.backend` | `"libcamera"`, `"v4l2"`, `"mock"` |
 | `encoder.backend` | `"v4l2-m2m"`, `"rdk"`, `"rkmpp"`, `"cedar"` |
 
 ### pixel_format 取值
@@ -390,6 +424,7 @@ OV5647 上的 480p60 档 —— 不支持的模式会在应用时被拒绝并回
 |---------|------|
 | `capture-libcamera` | libcamera（树莓派 CSI 摄像头） |
 | `capture-v4l2` | V4L2 视频采集（USB 摄像头、通用 Linux） |
+| `capture-mock` | 合成 NV12 帧（可选图案，默认 `smpte75`；带帧计数验证元素）；不打开设备 —— 无摄像头编码器 bring-up/测试 |
 | `capture-alsa` | ALSA 音频采集（麦克风，仅 Linux；隐含 `encoder-opus`） |
 
 ### 编码后端
@@ -545,6 +580,9 @@ CMake 后端根据启用的采集/编码特性推断：
 | aarch64 上的 `encoder-rkmpp` | `rkmpp` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_RKMPP` |
 | aarch64 上的 `encoder-cedar` | `sunxi` | `ENABLE_BACKEND_SUNXI`, `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_CEDAR` |
 | `capture-v4l2` / `encoder-v4l2-m2m` | `generic-v4l2` | `ENABLE_CAPTURE_V4L2`, `ENABLE_ENCODER_V4L2_M2M` |
+| `capture-mock`（未选定平台编码器时） | `generic-v4l2` | `ENABLE_CAPTURE_MOCK` |
+
+`capture-mock` 与平台无关：它会以 `ENABLE_CAPTURE_MOCK` 传入上述每个分支，因此 mock 采集可与任意被选中的编码后端搭配。
 
 当没有启用任何 `capture-*` 特性时，CMake 会被完全跳过。仅启用编码特性**不会**触发 CMake 构建——SourcePipeline 需要一个采集后端。
 

@@ -344,6 +344,8 @@ fn build_ffi_config(
         .map_err(|e| anyhow::anyhow!("invalid capture backend string: {e}"))?;
     let cap_device = CString::new(params.capture_device.as_str())
         .map_err(|e| anyhow::anyhow!("invalid capture device string: {e}"))?;
+    let cap_pattern = CString::new(params.capture_pattern.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid capture pattern string: {e}"))?;
     let enc_backend = CString::new(params.encoder_backend.as_str())
         .map_err(|e| anyhow::anyhow!("invalid encoder backend string: {e}"))?;
     let profile = CString::new(params.profile.as_str())
@@ -360,6 +362,7 @@ fn build_ffi_config(
             prefer_dmabuf: params.capture_prefer_dmabuf,
             hflip: params.capture_hflip,
             vflip: params.capture_vflip,
+            pattern: cap_pattern.as_ptr(),
         },
         encoder: EncoderConfigFFI {
             backend: enc_backend.as_ptr(),
@@ -382,6 +385,7 @@ fn build_ffi_config(
 
     cstrs.push(cap_backend);
     cstrs.push(cap_device);
+    cstrs.push(cap_pattern);
     cstrs.push(enc_backend);
     cstrs.push(profile);
 

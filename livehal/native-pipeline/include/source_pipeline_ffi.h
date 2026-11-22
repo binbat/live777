@@ -25,8 +25,8 @@ extern "C" {
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    const char* backend;     // "libcamera" or "v4l2"
-    const char* device;      // "/dev/video0" or camera_id
+    const char* backend;     // "libcamera", "v4l2" or "mock"
+    const char* device;      // "/dev/video0" or camera_id; unused by "mock"
     uint32_t width;
     uint32_t height;
     uint32_t fps;
@@ -34,6 +34,8 @@ typedef struct {
     uint8_t prefer_dmabuf;   // 0 = false, 1 = true
     uint8_t hflip;           // mirror left-right (libcamera only; ISP-applied)
     uint8_t vflip;           // flip top-bottom; hflip+vflip = 180° rotation
+    const char* pattern;     // "mock" only: "" (default) or smpte75/snow/
+                             // black/white/checkers/gradient/zone-plate
 } CaptureConfigFFI;
 
 typedef struct {

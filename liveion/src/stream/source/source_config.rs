@@ -31,6 +31,31 @@
 //! clock_rate = 90000
 //! ```
 //!
+//! The camera-free mock capture backend (issue #519) synthesizes NV12
+//! frames — 75% color bars, a bouncing block and a binary frame counter —
+//! so the hardware encoder path can be brought up with no camera attached.
+//! It opens no device:
+//!
+//! ```toml
+//! [stream.encoder-test]
+//! [[stream.encoder-test.sources]]
+//!
+//! [stream.encoder-test.sources.capture]
+//! backend = "mock"
+//! width = 1280
+//! height = 720
+//! fps = 30
+//! pixel_format = "nv12"
+//! # pattern = "smpte75"   # background: smpte75 (default) / snow / black /
+//!                         # white / checkers / gradient / zone-plate
+//!
+//! [stream.encoder-test.sources.encoder]
+//! backend = "rkmpp"
+//! codec = "h264"
+//! bitrate = 2_000_000
+//! profile = "640028"
+//! ```
+//!
 //! An audio leg (microphone → Opus, or the `sine` test-tone generator) —
 //! alone for an audio-only stream, or alongside the video leg.  Requires
 //! the `encoder-opus` feature:
@@ -69,11 +94,14 @@ use livehal::NativeSourceParams;
 /// Capture (input device) specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptureSpec {
-    /// Capture backend: `"libcamera"` or `"v4l2"`.
+    /// Capture backend: `"libcamera"`, `"v4l2"`, or `"mock"` (synthetic
+    /// NV12 test frames; opens no device — for camera-free encoder
+    /// testing, issue #519).
     pub backend: String,
     /// Capture device identifier.
     /// - For `libcamera`: camera ID, e.g. `"0"`.
     /// - For `v4l2`: device path, e.g. `"/dev/video0"`.
+    /// - For `mock`: unused; frames are synthesized.
     #[serde(default)]
     pub device: Option<String>,
     pub width: u32,
@@ -98,6 +126,13 @@ pub struct CaptureSpec {
     /// Vertical flip (top-bottom, default `false`).  See [`CaptureSpec::hflip`].
     #[serde(default)]
     pub vflip: bool,
+    /// Background pattern for the synthetic `mock` capture backend:
+    /// `"smpte75"` (default), `"snow"`, `"black"`, `"white"`, `"checkers"`,
+    /// `"gradient"` — names mirror gst `videotestsrc`.  The bouncing block,
+    /// frame counter strip and frame-number burn-in stay on top of every
+    /// pattern.  Must be unset for real capture backends.
+    #[serde(default)]
+    pub pattern: Option<String>,
 }
 
 /// Encoder specification.
@@ -619,15 +654,46 @@ impl SourceSpec {
     /// Video-leg checks (capture geometry/pixel format, encoder
     /// codec/profile/rate control).
     fn validate_video_leg(capture: &CaptureSpec, encoder: &EncoderSpec) -> anyhow::Result<()> {
-        if capture.device.as_deref().unwrap_or("").trim().is_empty() {
-            anyhow::bail!("capture.device cannot be empty");
-        }
         let backend = capture.backend.to_lowercase();
-        if backend != "libcamera" && backend != "v4l2" {
+        if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
             anyhow::bail!(
-                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
+                "capture.backend must be 'libcamera', 'v4l2', or 'mock', got '{}'",
                 capture.backend
             );
+        }
+        // The mock backend synthesizes frames and opens no device, so the
+        // device field is neither required nor used there.
+        if backend != "mock" && capture.device.as_deref().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("capture.device cannot be empty");
+        }
+        // The mock backend generates NV12 only; reject anything else at
+        // configuration time rather than at source start.
+        if backend == "mock" {
+            let format = pixel_format_from_str(&capture.pixel_format)
+                .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
+            if format != PixelFormat::Nv12 {
+                anyhow::bail!(
+                    "capture.pixel_format: the mock capture backend generates NV12 only, got '{}'",
+                    capture.pixel_format
+                );
+            }
+        }
+        // capture.pattern selects the mock backend's background pattern and
+        // is meaningless for real devices.
+        if let Some(pattern) = &capture.pattern {
+            if backend != "mock" {
+                anyhow::bail!(
+                    "capture.pattern is supported only by the mock capture backend, got '{}'",
+                    capture.backend
+                );
+            }
+            if !MOCK_CAPTURE_PATTERNS.contains(&pattern.to_lowercase().as_str()) {
+                anyhow::bail!(
+                    "capture.pattern: unknown mock pattern '{}'. Supported: {}",
+                    pattern,
+                    MOCK_CAPTURE_PATTERNS.join(", ")
+                );
+            }
         }
         if (capture.hflip || capture.vflip) && backend != "libcamera" {
             anyhow::bail!(
@@ -856,6 +922,21 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
     }
 }
 
+/// Background patterns of the synthetic `mock` capture backend.
+///
+/// Mirrors the `kPatterns` table in `livehal/native-pipeline/mock_capture.cpp`
+/// (the C++ side validates again at `init()`); the names follow gst
+/// `videotestsrc` conventions. Keep the two lists in sync.
+pub const MOCK_CAPTURE_PATTERNS: &[&str] = &[
+    "smpte75",
+    "snow",
+    "black",
+    "white",
+    "checkers",
+    "gradient",
+    "zone-plate",
+];
+
 /// Map a codec string to its `VideoCodec` numeric value.
 ///
 /// Used when converting structured `EncoderSpec` into `NativeSourceParams`.
@@ -1055,7 +1136,7 @@ impl SourceSpec {
         };
 
         let backend = capture.backend.to_lowercase();
-        if backend != "libcamera" && backend != "v4l2" {
+        if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
             anyhow::bail!("unsupported capture backend: {}", capture.backend);
         }
         let capture_device = capture.device.clone().unwrap_or_default();
@@ -1067,14 +1148,24 @@ impl SourceSpec {
         // Profile resolution is shared with validate() — see resolve_profile().
         let (profile_idc, level_idc, tier_flag, profile_string) = Self::resolve_profile(encoder)?;
 
+        // Validation compares backend names case-insensitively while the C++
+        // factory matches them exactly — pass the canonical lowercase form
+        // so e.g. `backend = "Mock"` cannot fail at the FFI boundary.
+        let encoder_backend = encoder.backend.to_lowercase();
+
         Ok(Some(NativeSourceParams {
-            capture_backend: capture.backend.clone(),
+            capture_backend: backend,
             capture_device,
             width: capture.width,
             height: capture.height,
             fps: capture.fps,
             capture_pixel_format: pixel_format_to_u32(&capture.pixel_format)?,
-            encoder_backend: encoder.backend.clone(),
+            capture_pattern: capture
+                .pattern
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase(),
+            encoder_backend,
             codec: codec_to_u32(&encoder.codec)?,
             bitrate: encoder.bitrate,
             profile: profile_string.clone(),
@@ -1147,6 +1238,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "v4l2-m2m".into(),
@@ -1180,6 +1272,7 @@ mod tests {
                 prefer_dmabuf: true,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rdk".into(),
@@ -1213,6 +1306,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
@@ -1246,6 +1340,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "cedar".into(),
@@ -1254,6 +1349,40 @@ mod tests {
                 // The A733 cedar VE only produces a valid H.264 stream in
                 // High profile (see resolve_profile guard); 640028 = High@4.0.
                 profile: "640028".into(),
+                level: None,
+                tier: None,
+                gop: 60,
+                bitrate_mode: None,
+                prefer_dmabuf: false,
+                adaptive: None,
+            }),
+            audio_capture: None,
+            audio_encoder: None,
+            output: OutputSpec::default(),
+            tiers: vec![],
+        }
+    }
+
+    fn mock_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "mock-test".into(),
+            capture: Some(CaptureSpec {
+                backend: "mock".into(),
+                device: None, // synthetic source: no device needed
+                width: 1280,
+                height: 720,
+                fps: 30,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
+                pattern: None,
+            }),
+            encoder: Some(EncoderSpec {
+                backend: "v4l2-m2m".into(),
+                codec: "h264".into(),
+                bitrate: 2_000_000,
+                profile: "42001f".into(),
                 level: None,
                 tier: None,
                 gop: 60,
@@ -1281,6 +1410,7 @@ mod tests {
                 prefer_dmabuf: false,
                 hflip: false,
                 vflip: false,
+                pattern: None,
             }),
             encoder: Some(EncoderSpec {
                 backend: "rkmpp".into(),
@@ -1386,6 +1516,124 @@ mod tests {
         let mut spec = v4l2_spec();
         spec.capture.as_mut().unwrap().pixel_format = "mjpeg".into();
         assert!(spec.validate().is_err());
+    }
+
+    // --- mock capture backend tests (issue #519) ---
+
+    #[test]
+    fn test_source_spec_validate_mock_ok() {
+        // No device required: the mock backend synthesizes its frames.
+        assert!(mock_spec().validate().is_ok());
+        // A device string is accepted but ignored.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().device = Some("ignored".into());
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_nv12_only() {
+        for format in ["yuyv", "yuv420", "rgb888", "uyvy"] {
+            let mut spec = mock_spec();
+            spec.capture.as_mut().unwrap().pixel_format = format.into();
+            let err = spec.validate().unwrap_err();
+            assert!(
+                err.to_string().contains("NV12 only"),
+                "pixel_format '{format}' must be rejected for mock: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_rejects_unknown_backend_change() {
+        // Guard the allowlist itself: an unknown backend must still fail
+        // even when a device is present.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().backend = "synthetic".into();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_zero_fps() {
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().fps = 0;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_mock() {
+        let params = mock_spec().to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_backend, "mock");
+        assert_eq!(params.capture_device, "");
+        assert_eq!(params.width, 1280);
+        assert_eq!(params.height, 720);
+        assert_eq!(params.fps, 30);
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.capture_pattern, ""); // unset: backend default
+        assert_eq!(params.encoder_backend, "v4l2-m2m");
+        assert_eq!(params.codec, 100); // h264
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_lowercases_backends() {
+        // Validation is case-insensitive; the C++ factory is not.  The
+        // params must carry the canonical lowercase form.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().backend = "Mock".into();
+        spec.encoder.as_mut().unwrap().backend = "V4L2-M2M".into();
+        let params = spec.to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_backend, "mock");
+        assert_eq!(params.encoder_backend, "v4l2-m2m");
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_pattern() {
+        // Unset (backend default) and every listed pattern pass, any case.
+        assert!(mock_spec().validate().is_ok());
+        for pattern in MOCK_CAPTURE_PATTERNS {
+            let mut spec = mock_spec();
+            spec.capture.as_mut().unwrap().pattern = Some(pattern.to_string());
+            assert!(
+                spec.validate().is_ok(),
+                "pattern '{pattern}' must validate for mock"
+            );
+        }
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("SNOW".into());
+        assert!(
+            spec.validate().is_ok(),
+            "pattern matching is case-insensitive"
+        );
+
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("bogus".into());
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("unknown mock pattern"),
+            "unknown pattern must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn test_source_spec_validate_pattern_mock_only() {
+        // A pattern on a real capture device is a config error.
+        let mut spec = v4l2_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("snow".into());
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("only by the mock capture backend"),
+            "pattern must be rejected for v4l2: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_mock_pattern() {
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().pattern = Some("Snow".into());
+        let params = spec.to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_pattern, "snow");
     }
 
     // --- capture flip (hflip/vflip) tests ---

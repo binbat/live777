@@ -32,6 +32,8 @@ default = []
 # --- capture backends (C++ native-pipeline) ---
 capture-libcamera = []
 capture-v4l2 = []
+# Synthetic NV12 frame generator (no device) for camera-free encoder testing
+capture-mock = []
 
 # --- encoder backends (C++ native-pipeline) ---
 encoder-v4l2-m2m = []

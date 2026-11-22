@@ -27,6 +27,10 @@ std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureCon
 std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
 #endif
 
+#if ENABLE_CAPTURE_MOCK
+std::shared_ptr<CaptureBackend> create_mock_capture_backend(const CaptureConfig& cfg);
+#endif
+
 #if ENABLE_ENCODER_V4L2_M2M
 std::shared_ptr<EncoderBackend> create_v4l2_m2m_encoder_backend(const EncoderConfig& cfg);
 #endif
@@ -55,6 +59,9 @@ std::shared_ptr<CaptureBackend> create_capture_backend(const CaptureConfig& cfg)
     if (cfg.backend == "v4l2") return create_rdk_v4l2_capture_backend(cfg);
 #elif ENABLE_CAPTURE_V4L2
     if (cfg.backend == "v4l2") return create_v4l2_capture_backend(cfg);
+#endif
+#if ENABLE_CAPTURE_MOCK
+    if (cfg.backend == "mock") return create_mock_capture_backend(cfg);
 #endif
     return nullptr;
 }

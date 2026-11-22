@@ -21,8 +21,8 @@
 // Capture configuration
 // ---------------------------------------------------------------------------
 struct CaptureConfig {
-    std::string backend;   // "libcamera" or "v4l2"
-    std::string device;    // "/dev/video0" or camera_id string
+    std::string backend;   // "libcamera", "v4l2" or "mock"
+    std::string device;    // "/dev/video0" or camera_id string; unused by "mock"
     uint32_t width;
     uint32_t height;
     uint32_t fps;
@@ -34,6 +34,11 @@ struct CaptureConfig {
     // transpose.  Ignored by the V4L2 backends (validation rejects them).
     bool hflip = false;
     bool vflip = false;
+    // Background pattern for the "mock" backend: "smpte75" (default),
+    // "snow", "black", "white", "checkers", "gradient" or "zone-plate";
+    // empty = default.
+    // Ignored by the real capture backends (validation rejects it there).
+    std::string pattern;
 };
 
 // ---------------------------------------------------------------------------
@@ -95,6 +100,7 @@ public:
 std::shared_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
 std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
 std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_mock_capture_backend(const CaptureConfig& cfg);
 
 /// Dispatcher: selects the right backend based on cfg.backend.
 /// Defined exactly once in src/pipeline/backend_factory.cpp.

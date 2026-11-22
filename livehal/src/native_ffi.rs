@@ -24,6 +24,7 @@ pub(crate) struct CaptureConfigFFI {
     pub prefer_dmabuf: u8,
     pub hflip: u8,
     pub vflip: u8,
+    pub pattern: *const c_char,
 }
 
 #[repr(C)]
