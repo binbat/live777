@@ -186,7 +186,10 @@ NV12（`pixel_format` 必须是 `"nv12"`），可搭配任意编码后端。背�
 彩条 —— 验证颜色/矩阵）、`"snow"`（全幅亮度白噪声，逐帧更新 —— 编码器
 极限压力）、`"black"` / `"white"`（纯色帧 —— 空闲码率与关键帧下限）、
 `"checkers"`（每帧移动一个像素的棋盘格 —— 锐度与亚像素运动）、
-`"gradient"`（水平亮度渐变 —— 色带/量化）。所有图案都叠加同一组验证元素：
+`"gradient"`（水平亮度渐变 —— 色带/量化）、`"zone-plate"`（围绕游动
+中心的同心环，空间频率随半径升高 —— 经典的编码器测试图：环开始模糊的
+半径即编码器的有效空间截止频率，中心移动同时考验运动估计；适合高帧率
+质量检查）。所有图案都叠加同一组验证元素：
 在画面边缘弹跳的白色方块（实际送达帧率肉眼可见）、底部 32 位二进制帧计数条
 和左上角十进制帧号烧录（从解码画面可直接发现丢帧/重复帧）：
 
@@ -201,7 +204,7 @@ height = 720
 fps = 30
 pixel_format = "nv12"
 # pattern = "smpte75"    # smpte75（默认）/ snow / black / white /
-                         # checkers / gradient
+                         # checkers / gradient / zone-plate
 
 [stream.encoder-test.sources.encoder]
 backend = "v4l2-m2m"     # 或 "rkmpp" / "cedar" / "rdk"

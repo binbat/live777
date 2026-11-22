@@ -29,7 +29,7 @@ you change behavior documented here, update this file.
   encoder backends (live777#519). It opens no device, emits CPU buffers only
   (`emitsDmabufFrames() == false`), and pairs with any encoder backend. The
   background pattern is selectable via `capture.pattern` (`smpte75` default,
-  `snow`, `black`, `white`, `checkers`, `gradient`); every pattern carries a
+  `snow`, `black`, `white`, `checkers`, `gradient`, `zone-plate`); every pattern carries a
   bouncing block, a 32-bit binary frame counter strip and a frame-number
   burn-in as verification overlays.
 

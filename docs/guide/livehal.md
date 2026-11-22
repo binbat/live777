@@ -206,7 +206,11 @@ matrix handling), `"snow"` (full-range luma noise, new every frame — worst-
 case encoder stress), `"black"` / `"white"` (solid frames — idle bitrate
 and keyframe floor), `"checkers"` (a checkerboard drifting one pixel per
 frame — sharpness and sub-pixel motion), `"gradient"` (horizontal luma ramp
-— banding).  Every pattern carries the same verification overlays: a
+— banding), `"zone-plate"` (concentric rings of rising spatial frequency
+around an orbiting centre — the classic encoder chart: the radius where the
+rings start to blur marks the spatial cut-off, and the orbiting centre
+exercises motion estimation; useful for high-fps quality checks).  Every
+pattern carries the same verification overlays: a
 bouncing white block (delivered framerate and stalls visible by eye), a
 32-bit binary frame counter strip along the bottom and a decimal frame
 number burn-in (dropped/repeated frames are directly observable in the
@@ -222,8 +226,8 @@ width = 1280
 height = 720
 fps = 30
 pixel_format = "nv12"
-# pattern = "smpte75"    # smpte75 (default) / snow / black / white /
-                         # checkers / gradient
+# pattern = "smpte75"    # smpte75（默认）/ snow / black / white /
+                         # checkers / gradient / zone-plate
 
 [stream.encoder-test.sources.encoder]
 backend = "v4l2-m2m"     # or "rkmpp" / "cedar" / "rdk"
