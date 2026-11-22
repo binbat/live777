@@ -31,6 +31,29 @@
 //! clock_rate = 90000
 //! ```
 //!
+//! The camera-free mock capture backend (issue #519) synthesizes NV12
+//! frames — 75% color bars, a bouncing block and a binary frame counter —
+//! so the hardware encoder path can be brought up with no camera attached.
+//! It opens no device:
+//!
+//! ```toml
+//! [stream.encoder-test]
+//! [[stream.encoder-test.sources]]
+//!
+//! [stream.encoder-test.sources.capture]
+//! backend = "mock"
+//! width = 1280
+//! height = 720
+//! fps = 30
+//! pixel_format = "nv12"
+//!
+//! [stream.encoder-test.sources.encoder]
+//! backend = "rkmpp"
+//! codec = "h264"
+//! bitrate = 2_000_000
+//! profile = "640028"
+//! ```
+//!
 //! An audio leg (microphone → Opus, or the `sine` test-tone generator) —
 //! alone for an audio-only stream, or alongside the video leg.  Requires
 //! the `encoder-opus` feature:
@@ -69,11 +92,14 @@ use livehal::NativeSourceParams;
 /// Capture (input device) specification.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptureSpec {
-    /// Capture backend: `"libcamera"` or `"v4l2"`.
+    /// Capture backend: `"libcamera"`, `"v4l2"`, or `"mock"` (synthetic
+    /// NV12 test frames; opens no device — for camera-free encoder
+    /// testing, issue #519).
     pub backend: String,
     /// Capture device identifier.
     /// - For `libcamera`: camera ID, e.g. `"0"`.
     /// - For `v4l2`: device path, e.g. `"/dev/video0"`.
+    /// - For `mock`: unused; frames are synthesized.
     #[serde(default)]
     pub device: Option<String>,
     pub width: u32,
@@ -619,15 +645,29 @@ impl SourceSpec {
     /// Video-leg checks (capture geometry/pixel format, encoder
     /// codec/profile/rate control).
     fn validate_video_leg(capture: &CaptureSpec, encoder: &EncoderSpec) -> anyhow::Result<()> {
-        if capture.device.as_deref().unwrap_or("").trim().is_empty() {
-            anyhow::bail!("capture.device cannot be empty");
-        }
         let backend = capture.backend.to_lowercase();
-        if backend != "libcamera" && backend != "v4l2" {
+        if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
             anyhow::bail!(
-                "capture.backend must be 'v4l2' or 'libcamera', got '{}'",
+                "capture.backend must be 'v4l2', 'libcamera', or 'mock', got '{}'",
                 capture.backend
             );
+        }
+        // The mock backend synthesizes frames and opens no device, so the
+        // device field is neither required nor used there.
+        if backend != "mock" && capture.device.as_deref().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("capture.device cannot be empty");
+        }
+        // The mock backend generates NV12 only; reject anything else at
+        // configuration time rather than at source start.
+        if backend == "mock" {
+            let format = pixel_format_from_str(&capture.pixel_format)
+                .map_err(|e| anyhow::anyhow!("capture.pixel_format: {}", e))?;
+            if format != PixelFormat::Nv12 {
+                anyhow::bail!(
+                    "capture.pixel_format: the mock capture backend generates NV12 only, got '{}'",
+                    capture.pixel_format
+                );
+            }
         }
         if (capture.hflip || capture.vflip) && backend != "libcamera" {
             anyhow::bail!(
@@ -1055,7 +1095,7 @@ impl SourceSpec {
         };
 
         let backend = capture.backend.to_lowercase();
-        if backend != "libcamera" && backend != "v4l2" {
+        if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
             anyhow::bail!("unsupported capture backend: {}", capture.backend);
         }
         let capture_device = capture.device.clone().unwrap_or_default();
@@ -1268,6 +1308,39 @@ mod tests {
         }
     }
 
+    fn mock_spec() -> SourceSpec {
+        SourceSpec {
+            stream_id: "mock-test".into(),
+            capture: Some(CaptureSpec {
+                backend: "mock".into(),
+                device: None, // synthetic source: no device needed
+                width: 1280,
+                height: 720,
+                fps: 30,
+                pixel_format: "nv12".into(),
+                prefer_dmabuf: false,
+                hflip: false,
+                vflip: false,
+            }),
+            encoder: Some(EncoderSpec {
+                backend: "v4l2-m2m".into(),
+                codec: "h264".into(),
+                bitrate: 2_000_000,
+                profile: "42001f".into(),
+                level: None,
+                tier: None,
+                gop: 60,
+                bitrate_mode: None,
+                prefer_dmabuf: false,
+                adaptive: None,
+            }),
+            audio_capture: None,
+            audio_encoder: None,
+            output: OutputSpec::default(),
+            tiers: vec![],
+        }
+    }
+
     fn rkmpp_h265_spec() -> SourceSpec {
         SourceSpec {
             stream_id: "rk-h265".into(),
@@ -1386,6 +1459,61 @@ mod tests {
         let mut spec = v4l2_spec();
         spec.capture.as_mut().unwrap().pixel_format = "mjpeg".into();
         assert!(spec.validate().is_err());
+    }
+
+    // --- mock capture backend tests (issue #519) ---
+
+    #[test]
+    fn test_source_spec_validate_mock_ok() {
+        // No device required: the mock backend synthesizes its frames.
+        assert!(mock_spec().validate().is_ok());
+        // A device string is accepted but ignored.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().device = Some("ignored".into());
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_nv12_only() {
+        for format in ["yuyv", "yuv420", "rgb888", "uyvy"] {
+            let mut spec = mock_spec();
+            spec.capture.as_mut().unwrap().pixel_format = format.into();
+            let err = spec.validate().unwrap_err();
+            assert!(
+                err.to_string().contains("NV12 only"),
+                "pixel_format '{format}' must be rejected for mock: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_rejects_unknown_backend_change() {
+        // Guard the allowlist itself: an unknown backend must still fail
+        // even when a device is present.
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().backend = "synthetic".into();
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_source_spec_validate_mock_zero_fps() {
+        let mut spec = mock_spec();
+        spec.capture.as_mut().unwrap().fps = 0;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_to_native_params_mock() {
+        let params = mock_spec().to_native_params().unwrap().unwrap();
+        assert_eq!(params.capture_backend, "mock");
+        assert_eq!(params.capture_device, "");
+        assert_eq!(params.width, 1280);
+        assert_eq!(params.height, 720);
+        assert_eq!(params.fps, 30);
+        assert_eq!(params.capture_pixel_format, 1); // nv12
+        assert_eq!(params.encoder_backend, "v4l2-m2m");
+        assert_eq!(params.codec, 100); // h264
     }
 
     // --- capture flip (hflip/vflip) tests ---

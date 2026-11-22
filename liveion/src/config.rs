@@ -531,6 +531,58 @@ mod tests {
         assert!(source.to_spec("mic").is_none());
     }
 
+    #[test]
+    #[cfg(feature = "native-source")]
+    fn test_stream_entry_mock_capture_source() {
+        // The mock capture backend (issue #519) opens no device, so a
+        // config without `device` must validate end to end.
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.capture]
+            backend = "mock"
+            width = 1280
+            height = 720
+            fps = 30
+            pixel_format = "nv12"
+            [sources.encoder]
+            backend = "v4l2-m2m"
+            codec = "h264"
+            bitrate = 2000000
+            profile = "42001f"
+            "#,
+        )
+        .unwrap();
+        let source = entry.sources.first().unwrap();
+        assert_eq!(source.capture.as_ref().unwrap().backend, "mock");
+        assert_eq!(source.capture.as_ref().unwrap().device, None);
+        assert!(source.validate().is_ok());
+        let spec = source.to_spec("encoder-test").unwrap();
+        assert!(spec.validate().is_ok());
+
+        // The mock backend generates NV12 only; anything else is rejected.
+        let entry: StreamEntry = toml::from_str(
+            r#"
+            [[sources]]
+            [sources.capture]
+            backend = "mock"
+            width = 1280
+            height = 720
+            fps = 30
+            pixel_format = "yuyv"
+            [sources.encoder]
+            backend = "v4l2-m2m"
+            codec = "h264"
+            bitrate = 2000000
+            profile = "42001f"
+            "#,
+        )
+        .unwrap();
+        let source = entry.sources.first().unwrap();
+        assert!(source.validate().is_ok()); // config-level: no device needed
+        assert!(source.to_spec("encoder-test").unwrap().validate().is_err());
+    }
+
     fn url_source(url: &str, multicast_interface: Option<&str>) -> SourceConfig {
         SourceConfig {
             url: Some(url.to_string()),
@@ -1264,15 +1316,19 @@ impl SourceConfig {
                         .capture
                         .as_ref()
                         .ok_or_else(|| anyhow::anyhow!("capture is required for native sources"))?;
-                    if capture.device.as_deref().unwrap_or("").trim().is_empty() {
-                        anyhow::bail!("capture.device cannot be empty");
-                    }
                     let backend = capture.backend.to_lowercase();
-                    if backend != "libcamera" && backend != "v4l2" {
+                    if backend != "libcamera" && backend != "v4l2" && backend != "mock" {
                         anyhow::bail!(
-                            "capture.backend must be 'libcamera' or 'v4l2', got '{}'",
+                            "capture.backend must be 'libcamera', 'v4l2', or 'mock', got '{}'",
                             backend
                         );
+                    }
+                    // The mock backend synthesizes frames and opens no
+                    // device, so it needs no device path (issue #519).
+                    if backend != "mock"
+                        && capture.device.as_deref().unwrap_or("").trim().is_empty()
+                    {
+                        anyhow::bail!("capture.device cannot be empty");
                     }
                     if capture.width == 0 || capture.height == 0 {
                         anyhow::bail!("capture width/height must be non-zero");
