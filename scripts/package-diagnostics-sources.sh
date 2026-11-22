@@ -155,7 +155,16 @@ collect_macos_sources() {
         [[ -d ${cache} || -s ${cache} ]] || { echo "Homebrew source cache is missing for ${formula}: ${cache}" >&2; return 1; }
         destination=${SOURCE_DIR}/homebrew/formula/${formula}
         mkdir -p "${destination}"
-        brew cat "${formula}" > "${destination}/${formula}.rb"
+        # `brew cat` cannot read formula sources in Homebrew's API mode (the
+        # homebrew/core tap is not on disk and can no longer be tapped);
+        # every keg keeps the exact formula it was installed from in its
+        # .brew/ directory, which is also version-faithful for old kegs.
+        keg_formula=${prefix}/.brew/${formula}.rb
+        [[ -f ${keg_formula} ]] || {
+            echo "Missing formula source in keg for ${formula}: ${keg_formula}" >&2
+            return 1
+        }
+        cp "${keg_formula}" "${destination}/${formula}.rb"
         brew info --json=v2 --formula "${formula}" > "${destination}/info.json"
         [[ -f ${prefix}/INSTALL_RECEIPT.json ]] || { echo "Missing Homebrew install receipt for ${formula}" >&2; return 1; }
         cp "${prefix}/INSTALL_RECEIPT.json" "${destination}/INSTALL_RECEIPT.json"
