@@ -7,9 +7,10 @@ you change behavior documented here, update this file.
 ## What Lives Here
 
 - The C++ native pipeline (`native-pipeline/`) behind the capture/encoder
-  features (`capture-libcamera`, `capture-v4l2`, `encoder-v4l2-m2m`,
-  `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar`); `native-source` is the
-  required base feature. Native capture/encoder features require Linux.
+  features (`capture-libcamera`, `capture-v4l2`, `capture-mock`,
+  `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar`);
+  `native-source` is the required base feature. Native capture/encoder
+  features require Linux.
 - A pure-Rust audio path: `encoder-opus` (opus-rs, no C++ pipeline
   involvement) paired with the `sine` 440 Hz test-tone capture backend (no
   sound card — the test/CI path) or `capture-alsa` (ALSA microphone, Linux;
@@ -23,6 +24,12 @@ you change behavior documented here, update this file.
   supported by rkmpp, v4l2-m2m and cedar — used by liveion's adaptive
   bitrate controller and tier API (see
   [liveion/AGENTS.md](../liveion/AGENTS.md)).
+- `capture-mock` (`mock_capture.cpp`) synthesizes NV12 frames (75% SMPTE
+  color bars, a bouncing block, a 32-bit binary frame counter strip plus a
+  frame-number burn-in) on a pacing thread — camera-free bring-up and
+  regression testing of the hardware encoder backends (live777#519). It
+  opens no device, emits CPU buffers only (`emitsDmabufFrames() == false`),
+  and pairs with any encoder backend.
 
 ## Cross-Compilation
 

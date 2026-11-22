@@ -142,6 +142,7 @@ just build                                     # web + Rust release
 | `target-whip` / `target-rtp` / `target-rtsp` | static WHIP-push / RTP-UDP (multicast) / RTSP-push output targets; see liveion/AGENTS.md |
 | `native-source` | required base for capture/encoder features |
 | `capture-libcamera`, `capture-v4l2` | video capture backends |
+| `capture-mock` | synthetic NV12 capture (no camera) for encoder testing |
 | `encoder-v4l2-m2m`, `encoder-rdk`, `encoder-rkmpp`, `encoder-cedar` | encoder backends (cedar = Allwinner VE); see livehal/AGENTS.md |
 | `encoder-opus` | pure-Rust Opus encoder (opus-rs in livehal) + `sine` test-tone capture |
 | `capture-alsa` | ALSA microphone capture (Linux); implies `encoder-opus` |
