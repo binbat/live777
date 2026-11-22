@@ -201,6 +201,7 @@ fn build_stub_pipeline() {
 fn build_native_pipeline() -> bool {
     let has_capture_libcamera = env::var("CARGO_FEATURE_CAPTURE_LIBCAMERA").is_ok();
     let has_capture_v4l2 = env::var("CARGO_FEATURE_CAPTURE_V4L2").is_ok();
+    let has_capture_mock = env::var("CARGO_FEATURE_CAPTURE_MOCK").is_ok();
     let has_encoder_v4l2_m2m = env::var("CARGO_FEATURE_ENCODER_V4L2_M2M").is_ok();
     let has_encoder_rdk = env::var("CARGO_FEATURE_ENCODER_RDK").is_ok();
     let has_encoder_rkmpp = env::var("CARGO_FEATURE_ENCODER_RKMPP").is_ok();
@@ -215,6 +216,7 @@ fn build_native_pipeline() -> bool {
     if target_os != "linux" {
         if has_capture_libcamera
             || has_capture_v4l2
+            || has_capture_mock
             || has_encoder_v4l2_m2m
             || has_encoder_rdk
             || has_encoder_rkmpp
@@ -275,7 +277,7 @@ fn build_native_pipeline() -> bool {
     // The SourcePipeline requires a capture backend — encoder-only builds
     // have no standalone pipeline.  Use a native-* preset or enable a
     // capture-* feature alongside the encoder.
-    if !has_capture_libcamera && !has_capture_v4l2 {
+    if !has_capture_libcamera && !has_capture_v4l2 && !has_capture_mock {
         if has_encoder_v4l2_m2m || has_encoder_rdk || has_encoder_rkmpp || has_encoder_cedar {
             println!(
                 "cargo:warning=encoder feature(s) enabled without any capture-* feature; \
@@ -283,7 +285,7 @@ fn build_native_pipeline() -> bool {
             );
             println!(
                 "cargo:warning=Use a native-* preset (e.g. native-rdk, native-rkmpp) or enable \
-                 capture-v4l2 / capture-libcamera alongside the encoder."
+                 capture-v4l2 / capture-libcamera / capture-mock alongside the encoder."
             );
         }
         return false;
@@ -291,7 +293,8 @@ fn build_native_pipeline() -> bool {
 
     // Native backend selection — inferred from enabled capture/encoder features.
     // libcamera is Pi-specific; rdk-x5 is aarch64-specific; rkmpp uses Rockchip
-    // MPP on aarch64; otherwise generic-v4l2.
+    // MPP on aarch64; otherwise generic-v4l2.  The mock capture is
+    // platform-neutral: it pairs with whichever encoder branch is selected.
     // capture-libcamera and encoder-rdk are mutually exclusive presets; if both
     // are enabled (e.g. `cargo --all-features`), prefer the libcamera backend and
     // ignore encoder-rdk instead of panicking.
@@ -321,7 +324,7 @@ fn build_native_pipeline() -> bool {
         "rkmpp".to_string()
     } else if has_encoder_cedar && cedar_available {
         "sunxi".to_string()
-    } else if has_capture_v4l2 || has_encoder_v4l2_m2m {
+    } else if has_capture_v4l2 || has_encoder_v4l2_m2m || has_capture_mock {
         "generic-v4l2".to_string()
     } else {
         return false;
@@ -361,6 +364,9 @@ fn build_native_pipeline() -> bool {
     }
     if has_capture_v4l2 && !rdk_available {
         println!("cargo:rerun-if-changed=native-pipeline/v4l2_capture.cpp");
+    }
+    if has_capture_mock {
+        println!("cargo:rerun-if-changed=native-pipeline/mock_capture.cpp");
     }
 
     // Track whether libcamera link flags were already emitted via pkg-config.
@@ -495,6 +501,10 @@ fn build_native_pipeline() -> bool {
                 if has_capture_v4l2 { "ON" } else { "OFF" },
             );
             cmake_config.define(
+                "ENABLE_CAPTURE_MOCK",
+                if has_capture_mock { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
                 "ENABLE_ENCODER_V4L2_M2M",
                 if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
             );
@@ -513,6 +523,10 @@ fn build_native_pipeline() -> bool {
             cmake_config.define(
                 "ENABLE_CAPTURE_V4L2",
                 if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_CAPTURE_MOCK",
+                if has_capture_mock { "ON" } else { "OFF" },
             );
             cmake_config.define(
                 "ENABLE_ENCODER_V4L2_M2M",
@@ -535,6 +549,10 @@ fn build_native_pipeline() -> bool {
                 if has_capture_v4l2 { "ON" } else { "OFF" },
             );
             cmake_config.define(
+                "ENABLE_CAPTURE_MOCK",
+                if has_capture_mock { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
                 "ENABLE_ENCODER_V4L2_M2M",
                 if has_encoder_v4l2_m2m { "ON" } else { "OFF" },
             );
@@ -551,6 +569,10 @@ fn build_native_pipeline() -> bool {
                 "ENABLE_CAPTURE_V4L2",
                 if has_capture_v4l2 { "ON" } else { "OFF" },
             );
+            cmake_config.define(
+                "ENABLE_CAPTURE_MOCK",
+                if has_capture_mock { "ON" } else { "OFF" },
+            );
             cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");
             cmake_config.define("ENABLE_ENCODER_RKMPP", "ON");
@@ -565,6 +587,10 @@ fn build_native_pipeline() -> bool {
             cmake_config.define(
                 "ENABLE_CAPTURE_V4L2",
                 if has_capture_v4l2 { "ON" } else { "OFF" },
+            );
+            cmake_config.define(
+                "ENABLE_CAPTURE_MOCK",
+                if has_capture_mock { "ON" } else { "OFF" },
             );
             cmake_config.define("ENABLE_ENCODER_V4L2_M2M", "OFF");
             cmake_config.define("ENABLE_ENCODER_RDK_X5", "OFF");

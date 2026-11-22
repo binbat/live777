@@ -129,6 +129,8 @@ native-source = ["source", "dep:livehal"]
 # Capture backends
 capture-libcamera = ["native-source", "livehal/capture-libcamera"]
 capture-v4l2 = ["native-source", "livehal/capture-v4l2"]
+# Synthetic NV12 capture (no camera) for hardware-encoder testing — issue #519
+capture-mock = ["native-source", "livehal/capture-mock"]
 
 # Encoder backends
 encoder-v4l2-m2m = ["native-source", "livehal/encoder-v4l2-m2m"]

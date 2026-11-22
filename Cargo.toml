@@ -209,6 +209,8 @@ native-source = ["liveion/native-source"]
 # Capture backends
 capture-libcamera = ["liveion/capture-libcamera", "native-source"]
 capture-v4l2 = ["liveion/capture-v4l2", "native-source"]
+# Synthetic NV12 capture (no camera) for hardware-encoder testing — issue #519
+capture-mock = ["liveion/capture-mock", "native-source"]
 
 # Encoder backends
 encoder-v4l2-m2m = ["liveion/encoder-v4l2-m2m", "native-source"]
