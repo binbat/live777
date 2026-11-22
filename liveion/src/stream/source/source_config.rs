@@ -47,7 +47,7 @@
 //! fps = 30
 //! pixel_format = "nv12"
 //! # pattern = "smpte75"   # background: smpte75 (default) / snow / black /
-//!                         # white / checkers / gradient
+//!                         # white / checkers / gradient / zone-plate
 //!
 //! [stream.encoder-test.sources.encoder]
 //! backend = "rkmpp"
@@ -927,8 +927,15 @@ pub fn pixel_format_from_str(s: &str) -> anyhow::Result<PixelFormat> {
 /// Mirrors the `kPatterns` table in `livehal/native-pipeline/mock_capture.cpp`
 /// (the C++ side validates again at `init()`); the names follow gst
 /// `videotestsrc` conventions. Keep the two lists in sync.
-pub const MOCK_CAPTURE_PATTERNS: &[&str] =
-    &["smpte75", "snow", "black", "white", "checkers", "gradient"];
+pub const MOCK_CAPTURE_PATTERNS: &[&str] = &[
+    "smpte75",
+    "snow",
+    "black",
+    "white",
+    "checkers",
+    "gradient",
+    "zone-plate",
+];
 
 /// Map a codec string to its `VideoCodec` numeric value.
 ///

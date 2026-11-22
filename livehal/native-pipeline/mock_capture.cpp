@@ -15,7 +15,10 @@
 //!   * "black" / "white" — solid frames: idle bitrate and keyframe floor,
 //!   * "checkers" — a checkerboard drifting one pixel per frame: sharpness
 //!     and sub-pixel motion,
-//!   * "gradient" — a horizontal luma ramp: banding/quantization.
+//!   * "gradient" — a horizontal luma ramp: banding/quantization,
+//!   * "zone-plate" — concentric rings of rising spatial frequency around
+//!     an orbiting centre: the classic encoder chart, shows the spatial
+//!     cut-off radius plus motion estimation behaviour.
 //! Every pattern carries the same verification overlays on top:
 //!   * a white block bouncing around the frame — makes the delivered
 //!     framerate and gaps visible,
@@ -27,8 +30,10 @@
 #include "include/capture_backend.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -93,10 +98,31 @@ constexpr uint8_t kDigitFont[10][7] = {
     {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, // 9
 };
 
+constexpr double kTwoPi = 6.283185307179586;
+
+// Zone-plate cosine LUT: one full period, limited-range luma (128 ± 100).
+// Generated once on first use — std::cos is not constexpr in C++17.
+constexpr uint32_t kZoneLutBits = 10;
+constexpr uint32_t kZoneLutSize = 1 << kZoneLutBits;
+constexpr uint32_t kZoneCycles = 24;  // rings from the centre to the corner reference
+
+const std::array<uint8_t, kZoneLutSize>& zone_lut() {
+    static const auto lut = [] {
+        std::array<uint8_t, kZoneLutSize> t{};
+        for (size_t i = 0; i < t.size(); ++i) {
+            t[i] = static_cast<uint8_t>(std::lround(
+                128.0 + 100.0 * std::cos(kTwoPi * static_cast<double>(i)
+                                         / static_cast<double>(t.size()))));
+        }
+        return t;
+    }();
+    return lut;
+}
+
 // The selectable background patterns.  These names are part of the
 // user-facing configuration surface; liveion's CaptureSpec validation
 // mirrors this table.
-enum class MockPattern { Smpte75, Snow, Black, White, Checkers, Gradient };
+enum class MockPattern { Smpte75, Snow, Black, White, Checkers, Gradient, ZonePlate };
 
 // Single table driving both config parsing and the init log line, so the
 // name list exists exactly once and the two can never disagree.
@@ -107,6 +133,7 @@ constexpr std::pair<MockPattern, const char*> kPatterns[] = {
     {MockPattern::White, "white"},
     {MockPattern::Checkers, "checkers"},
     {MockPattern::Gradient, "gradient"},
+    {MockPattern::ZonePlate, "zone-plate"},
 };
 
 const char* pattern_name(MockPattern pattern) {
@@ -297,6 +324,7 @@ struct MockCaptureImpl : public CaptureBackend {
             return;
         case MockPattern::Snow:
         case MockPattern::Checkers:
+        case MockPattern::ZonePlate:
             // Animated patterns render per frame straight into frame_buf.
             return;
         }
@@ -390,6 +418,49 @@ struct MockCaptureImpl : public CaptureBackend {
         }
     }
 
+    // Zone plate: concentric rings whose spatial frequency rises with the
+    // radius (luma = 128 + 100·cos(2π·k·d²)), centred on a point orbiting
+    // the frame middle with a 4 s period.  The classic encoder chart — the
+    // radius where the rings start to blur or alias marks the encoder's
+    // effective spatial cut-off, and the orbiting centre exercises motion
+    // estimation at the same time.  Chroma stays neutral.
+    //
+    // Integer-only inner loop: d² = (x-cx)² + (y-cy)² is accumulated
+    // incrementally per row and the LUT index uses a per-frame fixed-point
+    // reciprocal (multiply + shift), so there is no per-pixel division —
+    // fast enough for 120 fps on an A53-class core.
+    void render_zone_plate(uint64_t frame_number) {
+        const auto& lut = zone_lut();
+        const double t = kTwoPi * static_cast<double>(frame_number % (fps * 4))
+                         / (static_cast<double>(fps) * 4.0);
+        const int32_t cx = static_cast<int32_t>(
+            width / 2 + std::lround(width / 4.0 * std::cos(t)));
+        const int32_t cy = static_cast<int32_t>(
+            height / 2 + std::lround(height / 4.0 * std::sin(t)));
+        // Ring-frequency reference: kZoneCycles rings from the frame centre
+        // to a corner.  kscale folds the LUT size into a 32.32 fixed-point
+        // multiplier for p / p_ref.
+        const uint64_t p_ref = static_cast<uint64_t>(width / 2) * (width / 2)
+                               + static_cast<uint64_t>(height / 2) * (height / 2);
+        const uint64_t kscale = (static_cast<uint64_t>(kZoneCycles)
+                                 << (kZoneLutBits + 32))
+                                / p_ref;
+        for (uint32_t row = 0; row < height; ++row) {
+            const int32_t dy = static_cast<int32_t>(row) - cy;
+            const uint32_t dy2 = static_cast<uint32_t>(dy * dy);
+            uint8_t* y = y_plane() + static_cast<size_t>(row) * width;
+            int32_t dx = -cx;
+            int32_t dx2 = dx * dx;
+            for (uint32_t col = 0; col < width; ++col) {
+                const uint32_t d2 = static_cast<uint32_t>(dx2) + dy2;
+                y[col] = lut[((d2 * kscale) >> 32) & (kZoneLutSize - 1)];
+                dx2 += 2 * dx + 1;
+                ++dx;
+            }
+        }
+        std::memset(uv_plane(), 128, static_cast<size_t>(width) * height / 2);
+    }
+
     // White block bouncing off the frame edges; its motion makes the actual
     // delivered framerate (and any stall) visible by eye.
     void draw_block() {
@@ -464,6 +535,9 @@ struct MockCaptureImpl : public CaptureBackend {
             break;
         case MockPattern::Checkers:
             render_checkers(frame_number);
+            break;
+        case MockPattern::ZonePlate:
+            render_zone_plate(frame_number);
             break;
         default:
             std::memcpy(frame_buf.data(), base_buf.data(), frame_buf.size());

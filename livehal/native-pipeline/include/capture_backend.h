@@ -35,7 +35,8 @@ struct CaptureConfig {
     bool hflip = false;
     bool vflip = false;
     // Background pattern for the "mock" backend: "smpte75" (default),
-    // "snow", "black", "white", "checkers" or "gradient"; empty = default.
+    // "snow", "black", "white", "checkers", "gradient" or "zone-plate";
+    // empty = default.
     // Ignored by the real capture backends (validation rejects it there).
     std::string pattern;
 };

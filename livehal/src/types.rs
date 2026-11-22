@@ -14,8 +14,8 @@ pub struct NativeSourceParams {
     pub fps: u32,
     pub capture_pixel_format: u32,
     /// Test pattern for the synthetic `mock` capture backend ("smpte75",
-    /// "snow", "black", "white", "checkers", "gradient"); empty = backend
-    /// default.  Must be empty for real capture backends.
+    /// "snow", "black", "white", "checkers", "gradient", "zone-plate");
+    /// empty = backend default.  Must be empty for real capture backends.
     pub capture_pattern: String,
     pub encoder_backend: String,
     pub codec: u32,

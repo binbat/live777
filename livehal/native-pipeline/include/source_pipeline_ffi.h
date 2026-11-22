@@ -35,7 +35,7 @@ typedef struct {
     uint8_t hflip;           // mirror left-right (libcamera only; ISP-applied)
     uint8_t vflip;           // flip top-bottom; hflip+vflip = 180° rotation
     const char* pattern;     // "mock" only: "" (default) or smpte75/snow/
-                             // black/white/checkers/gradient
+                             // black/white/checkers/gradient/zone-plate
 } CaptureConfigFFI;
 
 typedef struct {
