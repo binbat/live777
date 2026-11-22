@@ -95,6 +95,7 @@ public:
 std::shared_ptr<CaptureBackend> create_libcamera_capture_backend(const CaptureConfig& cfg);
 std::shared_ptr<CaptureBackend> create_v4l2_capture_backend(const CaptureConfig& cfg);
 std::shared_ptr<CaptureBackend> create_rdk_v4l2_capture_backend(const CaptureConfig& cfg);
+std::shared_ptr<CaptureBackend> create_mock_capture_backend(const CaptureConfig& cfg);
 
 /// Dispatcher: selects the right backend based on cfg.backend.
 /// Defined exactly once in src/pipeline/backend_factory.cpp.
