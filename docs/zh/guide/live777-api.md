@@ -326,7 +326,9 @@ Response: [200]，`text/event-stream`。每条总线消息一个 SSE 事件：
 ```
 
 响应：[200] 返回创建的 target。错误：[404] 流不存在；[400] URL 或选项
-非法；[409] 该流已注册相同 URL 的 target。
+非法——或 cables-only（DC）target：它们归流的 cable hub 所有，只能
+通过配置管理（见 [cable 指南](./cable.md)）；[409] 该流已注册相同
+URL 的 target。
 
 ### 删除 Target
 

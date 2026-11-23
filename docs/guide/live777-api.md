@@ -337,7 +337,9 @@ Request: a target entry in the same shape as the config:
 ```
 
 Response: [200] the created target. Errors: [404] stream not found, [400]
-invalid URL or options, [409] a target with the same URL is already
+invalid URL or options — or a cables-only (DC) target: those are owned by
+the stream's cable hub and are config-only (see the
+[cable guide](./cable.md)); [409] a target with the same URL is already
 registered for the stream.
 
 ### Remove a Target

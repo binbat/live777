@@ -396,6 +396,24 @@ compensation run.
 
 ## Static Output Targets
 
+Targets of every scheme can also be managed at runtime (live777#473):
+`POST /api/targets/{stream}` (JWT scope `x`) adds one, `GET
+/api/targets`/`/api/targets/{stream}` (scope `r`) lists them with their
+`origin` (`config`/`runtime`, URLs credential-redacted), and `DELETE
+/api/targets/{stream}?url=` (scope `x`) removes a runtime target (404
+unknown; config-owned targets are listed but rejected with 409). The
+manager's `(stream, url)` registry (`register_target` /
+`remove_runtime_target` / `list_targets`) owns the lifecycle:
+`target::start_target` is the single spawn path shared by `target::init`
+(static config) and the API, each supervisor gets a per-target child of the
+manager's cancel token, and the registry entry drops when the supervisor
+exits. Runtime targets share all supervisor semantics and do not persist
+across restarts. DC (cables-only) targets are not managed here: their UDP
+bridges belong to the stream's cable hub — `init` skips them (their attach
+runs through `attach_static_endpoints`) and the runtime API rejects them
+with a 400 naming them config-only (a hub-level runtime attach/detach API
+is a separate future story).
+
 ### WHIP push targets (`src/target.rs`, `target-whip`)
 
 Static WHIP push targets (`[[stream.<name>.targets]]`, declarative

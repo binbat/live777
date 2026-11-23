@@ -146,6 +146,18 @@ pub(crate) fn start_target(
         .validate()
         .map_err(|e| StartTargetError::Invalid(anyhow::anyhow!("[{stream}] {e}")))?;
 
+    // DC (cables) targets are owned by the stream's cable hub, not by a
+    // media supervisor: static ones are filtered out by `init` (their UDP
+    // bridges attach via `attach_static_endpoints`), and the runtime API
+    // rejects them here with a clear 400 instead of an empty-scheme
+    // dispatch error. Runtime DC endpoints need a hub-level attach/detach
+    // API — a future dynamic-endpoint story, not this one.
+    if !target.cables.is_empty() {
+        return Err(StartTargetError::Invalid(anyhow::anyhow!(
+            "[{stream}] DC targets (cables) are config-only and cannot be managed through /api/targets"
+        )));
+    }
+
     // Config validation already rejected unknown schemes; stay defensive so
     // a programmatic caller cannot panic the dispatch.
     let scheme = target
@@ -240,7 +252,15 @@ pub(crate) fn virtual_target_session_id(display: &str) -> String {
 /// `Manager::provision_streams`: the supervisors snapshot stream state from
 /// the manager (the event bus does not replay).
 pub fn init(manager: Arc<Manager>) {
-    let targets = manager.static_targets();
+    // DC targets carry no media URL; their UDP bridges are owned by the
+    // stream's cable hub (`attach_static_endpoints`), not by a media
+    // supervisor — filter them out here instead of erroring on the empty
+    // scheme.
+    let targets: Vec<_> = manager
+        .static_targets()
+        .into_iter()
+        .filter(|(_, target)| target.cables.is_empty())
+        .collect();
     if targets.is_empty() {
         return;
     }

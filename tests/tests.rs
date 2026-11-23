@@ -1149,6 +1149,25 @@ async fn test_liveion_runtime_targets_api() {
         .unwrap();
     assert_eq!(http::StatusCode::BAD_REQUEST, res.status());
 
+    // A cables-only (DC) target passes TargetConfig::validate but is owned
+    // by the stream's cable hub, not the target registry: the runtime API
+    // rejects it with a clear 400.
+    let res = client
+        .post(&targets_url)
+        .json(&serde_json::json!({
+            "url": "",
+            "cables": [{"label": "control", "url": "udp://127.0.0.1:15004"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::BAD_REQUEST, res.status());
+    let body = res.text().await.unwrap();
+    assert!(
+        body.contains("config-only"),
+        "the cables-only rejection must name the reason: {body}"
+    );
+
     // Create: 200, echoing the redacted URL and the runtime origin.
     let res = client
         .post(&targets_url)
