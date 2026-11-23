@@ -214,6 +214,43 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Cable
+
+`POST` `/api/streams/:streamId/channels/:label/messages`
+
+向流的 datachannel cable 注入一条消息（见 [cable 指南](./cable.md)）。
+鉴权与级联 API 一致：JWT 需要 `x` 权限。
+
+Query:
+
+- `session`: Option, `sessionId`。省略：广播到解析所得总线上的全体
+  订阅者；指定：直接发到该会话上此 label 的已打开 channel。
+
+Request:
+
+```json
+{
+  "data": "<utf-8 string>",
+}
+```
+
+Response: [200]
+
+```json
+{
+  "receivers": 1,
+}
+```
+
+- `receivers`: Int，广播送达的总线接收者数量（没有监听者时为 0），
+  定向发送成功时为 1。
+
+错误：[404] 流不存在，或 `?session=` 指定的会话没有此 label 的已打开
+channel；[400] 请求体缺失或非法。
+
+投递为 binary datachannel 帧（总线携带 `Vec<u8>`）——text/binary 的
+区分会丢失，客户端应处理 `Blob`/`ArrayBuffer`。
+
 ## 媒体源
 
 码率端点是只读的*编码器*遥测（仅限原生采集/编码源，见

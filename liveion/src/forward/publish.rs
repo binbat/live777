@@ -7,6 +7,7 @@ use sdp::SessionDescription;
 use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+use webrtc::data_channel::DataChannel;
 use webrtc::peer_connection::PeerConnection;
 use webrtc::peer_connection::RTCPeerConnectionState;
 
@@ -36,6 +37,11 @@ pub(crate) struct PublishRTCPeerConnection {
     /// the server's stream-id parity cannot collide with the client's
     /// channels and the OPEN write is not dropped as non-Established).
     pub(crate) cables_spawned: std::sync::atomic::AtomicBool,
+    /// This session's open datachannels by label, registered when they are
+    /// bridged onto a cable bus. Backs the targeted HTTP injection lookup;
+    /// entries of channels closed mid-session are evicted on send failure.
+    pub(crate) channels:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<dyn DataChannel>>>>,
 }
 
 impl PublishRTCPeerConnection {
@@ -71,6 +77,7 @@ impl PublishRTCPeerConnection {
             connection_state_rx,
             dc_cancel: CancellationToken::new(),
             cables_spawned: std::sync::atomic::AtomicBool::new(false),
+            channels: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
 

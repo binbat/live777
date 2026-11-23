@@ -1,27 +1,48 @@
-use axum::Router;
-
-#[cfg(feature = "cascade")]
 use axum::Json;
-#[cfg(feature = "cascade")]
-use axum::extract::{Path, State};
-#[cfg(feature = "cascade")]
+use axum::Router;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, Query, State};
 use axum::routing::post;
 
 use crate::AppState;
-#[cfg(feature = "cascade")]
 use crate::error::AppError;
-#[cfg(feature = "cascade")]
 use crate::result::Result;
 
 pub fn route() -> Router<AppState> {
+    let router = Router::new().route(
+        &api::path::stream_channel_messages("{stream}", "{label}"),
+        post(cable_inject),
+    );
     #[cfg(feature = "cascade")]
     {
-        Router::new().route(&api::path::cascade("{stream}"), post(cascade))
+        router.route(&api::path::cascade("{stream}"), post(cascade))
     }
     #[cfg(not(feature = "cascade"))]
     {
-        Router::new()
+        router
     }
+}
+
+/// Inject a message into a stream's cable: broadcast to every subscriber
+/// without `?session=`, or directly onto one session's open channel with
+/// it. See `Manager::cable_inject`.
+async fn cable_inject(
+    State(state): State<AppState>,
+    Path((stream, label)): Path<(String, String)>,
+    Query(query): Query<api::request::ChannelMessageInjectQuery>,
+    body: std::result::Result<Json<api::request::ChannelMessageInject>, JsonRejection>,
+) -> Result<Json<api::response::ChannelMessageInjected>> {
+    let Json(body) = body.map_err(|_| AppError::bad_request("invalid body"))?;
+    let receivers = state
+        .stream_manager
+        .cable_inject(
+            &stream,
+            &label,
+            body.data.into_bytes(),
+            query.session.as_deref(),
+        )
+        .await?;
+    Ok(Json(api::response::ChannelMessageInjected { receivers }))
 }
 
 #[cfg(feature = "cascade")]

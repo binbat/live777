@@ -216,6 +216,45 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Cable
+
+`POST` `/api/streams/:streamId/channels/:label/messages`
+
+Inject a message into a stream's datachannel cable (see the
+[cable guide](./cable.md)). Auth mirrors the cascade API: JWTs need the
+`x` scope.
+
+Query:
+
+- `session`: Option, `sessionId`. Omit: broadcast to every subscriber on
+  the resolved bus; set: direct send onto that session's open channel with
+  this label.
+
+Request:
+
+```json
+{
+  "data": "<utf-8 string>",
+}
+```
+
+Response: [200]
+
+```json
+{
+  "receivers": 1,
+}
+```
+
+- `receivers`: Int, bus receivers the broadcast reached (0 when nothing is
+  listening), or 1 after a successful direct send.
+
+Errors: [404] stream does not exist, or `?session=` names no session with
+an open channel of this label; [400] body missing/invalid.
+
+Delivery is a binary datachannel frame (the bus carries `Vec<u8>`) — the
+text/binary distinction is lost; clients should handle `Blob`/`ArrayBuffer`.
+
 ## Source
 
 The bitrate endpoint is read-only *encoder* telemetry (native

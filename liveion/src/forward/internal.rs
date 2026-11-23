@@ -2331,12 +2331,17 @@ impl PeerForwardInternal {
         dc: Arc<dyn DataChannel>,
         from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel, _spawn_cables) = {
+        let (gate, cancel, channels, _spawn_cables) = {
             let publish = self.publish.read().await;
             match publish.as_ref() {
                 Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
                     let spawn = from_client && !p.cables_spawned.swap(true, Ordering::Relaxed);
-                    (Some(p.connection_state_rx()), p.dc_cancel_token(), spawn)
+                    (
+                        Some(p.connection_state_rx()),
+                        p.dc_cancel_token(),
+                        p.channels.clone(),
+                        spawn,
+                    )
                 }
                 _ => {
                     // A late `on_data_channel` from a publisher that was
@@ -2374,6 +2379,10 @@ impl PeerForwardInternal {
             let _ = dc.close().await;
             return Ok(());
         }
+        channels
+            .lock()
+            .expect("channels lock poisoned")
+            .insert(label.clone(), dc.clone());
         let bus = self.cables.route(&label);
         Self::data_channel_forward(
             &self.stream,
@@ -2912,12 +2921,17 @@ impl PeerForwardInternal {
         dc: Arc<dyn DataChannel>,
         from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel, _spawn_cables) = {
+        let (gate, cancel, channels, _spawn_cables) = {
             let subscribe_group = self.subscribe_group.read().await;
             match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
                 Some(s) => {
                     let spawn = from_client && !s.cables_spawned.swap(true, Ordering::Relaxed);
-                    (Some(s.connection_state_rx()), s.dc_cancel_token(), spawn)
+                    (
+                        Some(s.connection_state_rx()),
+                        s.dc_cancel_token(),
+                        s.channels.clone(),
+                        spawn,
+                    )
                 }
                 None => {
                     // A late `on_data_channel` from a session that was already
@@ -2952,6 +2966,10 @@ impl PeerForwardInternal {
             let _ = dc.close().await;
             return Ok(());
         }
+        channels
+            .lock()
+            .expect("channels lock poisoned")
+            .insert(label.clone(), dc.clone());
         let bus = self.cables.route(&label);
         Self::data_channel_forward(
             &self.stream,
@@ -2962,6 +2980,80 @@ impl PeerForwardInternal {
             cancel,
         );
         Ok(())
+    }
+
+    /// Look up the open datachannel with `label` on the given session:
+    /// the publish peer first, then the subscribers. Channels register when
+    /// they are bridged onto a cable bus; a channel that closed mid-session
+    /// leaves a stale entry, evicted on send failure (see
+    /// [`Self::evict_cable_channel`]).
+    pub(crate) async fn cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+    ) -> Option<Arc<dyn DataChannel>> {
+        {
+            let publish = self.publish.read().await;
+            if let Some(p) = publish.as_ref()
+                && p.id == session
+            {
+                return p
+                    .channels
+                    .lock()
+                    .expect("channels lock poisoned")
+                    .get(label)
+                    .cloned();
+            }
+        }
+        let subscribe_group = self.subscribe_group.read().await;
+        for subscribe in subscribe_group.iter() {
+            if subscribe.id == session {
+                return subscribe
+                    .channels
+                    .lock()
+                    .expect("channels lock poisoned")
+                    .get(label)
+                    .cloned();
+            }
+        }
+        None
+    }
+
+    /// Drop the stale registry entry for `dc` after a failed direct send —
+    /// but only if the registry still holds that very channel (a rebuilt
+    /// channel may have replaced it in the meantime).
+    pub(crate) async fn evict_cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+        dc: &Arc<dyn DataChannel>,
+    ) {
+        let channels = {
+            let publish = self.publish.read().await;
+            if let Some(p) = publish.as_ref()
+                && p.id == session
+            {
+                Some(p.channels.clone())
+            } else {
+                None
+            }
+        };
+        let channels = match channels {
+            Some(channels) => Some(channels),
+            None => {
+                let subscribe_group = self.subscribe_group.read().await;
+                subscribe_group
+                    .iter()
+                    .find(|s| s.id == session)
+                    .map(|s| s.channels.clone())
+            }
+        };
+        if let Some(channels) = channels {
+            let mut channels = channels.lock().expect("channels lock poisoned");
+            if channels.get(label).is_some_and(|c| Arc::ptr_eq(c, dc)) {
+                channels.remove(label);
+            }
+        }
     }
 
     /// Emit the content-free change ping consumed by snapshot-based

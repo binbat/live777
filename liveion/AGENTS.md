@@ -115,6 +115,20 @@ optional (one-way endpoints; an omitted target means reply-to-sender). The
 client side (whepfrom/whipinto channel bridges in `livetwo::datachannel`)
 mirrors this — see [livetwo/AGENTS.md](../livetwo/AGENTS.md).
 
+Every session additionally keeps a label → open-channel registry
+(`channels` on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`),
+populated in `publish_data_channel`/`subscribe_data_channel` when a channel
+is actually bridged (after the server-created dedup close). It backs the
+HTTP injection API `POST /api/streams/{stream}/channels/{label}/messages`
+(admin route, JWT scope `x`): without `?session=` the manager broadcasts
+onto `CableHub::route(label).to_subscribers` (declared cable or the
+anonymous default pair, so any label works) and reports the live receiver
+count minus the permanent drain task; with `?session=` it sends
+`send(BytesMut)` directly onto that session's registered channel
+(`PeerForwardInternal::cable_channel`), evicting the stale entry and
+returning 404 when the direct send fails. Injected frames are binary on the
+wire (the bus carries `Vec<u8>`).
+
 Both loops feed the DataChannel Prometheus metrics directly (no stats tick —
 messages are low-volume discrete events, the same pattern as the RTCP
 probe): `live777_datachannel_messages_total{direction="in|out"}` and

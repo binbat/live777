@@ -990,6 +990,53 @@ impl Manager {
         }
     }
 
+    /// Inject a message into a stream's cable. Without `session` the message
+    /// is broadcast onto the resolved bus's `to_subscribers` (the declared
+    /// cable for `label`, else the anonymous default pair); with `session`
+    /// it is sent directly onto that session's open datachannel with this
+    /// label. Returns the receiver count: the bus's live receivers minus
+    /// the permanent drain task for broadcast, 1 for a successful direct
+    /// send. A direct send that fails evicts the stale registry entry and
+    /// reports the session as gone.
+    pub async fn cable_inject(
+        &self,
+        stream: &str,
+        label: &str,
+        data: Vec<u8>,
+        session: Option<&str>,
+    ) -> Result<usize> {
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(stream).cloned();
+        drop(stream_map);
+        let Some(forward) = forward else {
+            return Err(AppError::stream_not_found("stream not exists"));
+        };
+        match session {
+            Some(session) => {
+                let channel = forward.cable_channel(session, label).await.ok_or_else(|| {
+                    AppError::session_not_found(format!(
+                        "session '{session}' has no open channel '{label}'"
+                    ))
+                })?;
+                if let Err(err) = channel.send(bytes::BytesMut::from(&data[..])).await {
+                    forward.evict_cable_channel(session, label, &channel).await;
+                    return Err(AppError::session_not_found(format!(
+                        "session '{session}' channel '{label}' is gone: {err}"
+                    )));
+                }
+                Ok(1)
+            }
+            None => {
+                let sender = forward.cables().route(label).to_subscribers.clone();
+                let receivers = sender.receiver_count().saturating_sub(1);
+                // The permanent drain receiver keeps this from failing; a
+                // hypothetical zero-receiver error just means nobody got it.
+                let _ = sender.send(data);
+                Ok(receivers)
+            }
+        }
+    }
+
     pub async fn select_layer(
         &self,
         stream: String,

@@ -29,6 +29,12 @@ pub async fn access_middleware(request: Request, next: Next) -> Response {
             (id, &Method::POST, path) if path == api::path::cascade(&id) => {
                 Access::from(claims.mode).x
             }
+            (id, &Method::POST, path)
+                if path.starts_with(&format!("{}/channels/", api::path::streams(&id)))
+                    && path.ends_with("/messages") =>
+            {
+                Access::from(claims.mode).x
+            }
             (id, _, _) if id == ANY_ID => true,
             (id, &Method::POST, path) if path == "/token" && id == ANY_ID => {
                 Access::from(claims.mode).r

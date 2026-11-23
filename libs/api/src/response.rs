@@ -146,6 +146,12 @@ pub struct CascadeInfo {
     pub session_url: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessageInjected {
+    pub receivers: usize,
+}
+
 /// PeerConnectionState indicates the state of the PeerConnection.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RTCPeerConnectionState {

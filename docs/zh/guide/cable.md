@@ -92,6 +92,33 @@ DC 端点以 `cables` 条目声明在流的 `sources` 和 `targets` 上，每个
 reply-to-sender。端点的监听端口随流的整个生命周期持有——provisioned 流的
 reset 不会重新绑端口。
 
+## HTTP 注入
+
+应用服务器可以通过 HTTP 直接向流的 cable 注入消息，无需任何 UDP 桥：
+
+```
+POST /api/streams/{stream}/channels/{label}/messages
+{ "data": "<utf-8 string>" }
+```
+
+- 不带查询串时消息**广播**到解析所得总线的 `to_subscribers` 一侧——
+  所有订阅者上该 label 的 channel 都会收到，效果与发布者发送相同。
+  `label` 无需声明 cable：未声明的 label 落到匿名 default 总线对上。
+  响应为 `200 { "receivers": <int> }`，取总线上当前的存活接收者数量
+  （没有监听者时为 0）。
+- 带 `?session=<sessionId>` 时消息绕过总线，**直接**发到该会话上
+  label 匹配的已打开 channel；响应为 `receivers: 1`。会话不存在、或
+  该会话没有此 label 的已打开 channel（含会话中途关闭的 channel），
+  返回 `404`。
+
+投递是 **binary** datachannel 帧——总线携带 `Vec<u8>`，即使请求体是
+JSON 字符串，text/binary 的区分也会丢失。浏览器客户端必须在
+`onmessage` 中处理 `Blob`/`ArrayBuffer`（如
+`await event.data.text()`），不能假定是 DOM string。
+
+鉴权与 cascade API 一致：JWT 需要 `x` 权限（静态 token 与无鉴权部署
+直接放行）。见 [Live777 HTTP API](./live777-api.md#cable)。
+
 ## 限制
 
 - 不支持 `negotiated: true`（带外协商）的 channel。
@@ -102,6 +129,10 @@ reset 不会重新绑端口。
   浏览器上完全生效。
 - 跨 SFU 没有端到端保证：可靠性参数按腿生效，总线溢出丢弃按接收方记
   日志。
+- HTTP 注入（以及总线上的任何消息）以 **binary** datachannel 帧投递：
+  总线携带 `Vec<u8>`，text/binary 的区分在 SFU 内部丢失。浏览器客户端
+  在 `onmessage` 里必须处理 `Blob`/`ArrayBuffer`（如
+  `await event.data.text()`），不能假定收到的是 DOM string。
 
 ## 客户端
 
