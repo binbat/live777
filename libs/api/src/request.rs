@@ -36,12 +36,12 @@ pub struct StreamSSE {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct ChannelMessageInject {
+pub struct CableMessageInject {
     pub data: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct ChannelMessageInjectQuery {
+pub struct CableMessageInjectQuery {
     #[serde(default)]
     pub session: Option<String>,
 }

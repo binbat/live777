@@ -1037,6 +1037,26 @@ impl Manager {
         }
     }
 
+    /// Subscribe to a stream's cable bus in the receive direction: the
+    /// resolved bus's `to_publisher` receiver (the declared cable for
+    /// `label`, else the anonymous default pair) — messages flowing from
+    /// peer channels (and DC-target UDP injects) towards the publisher
+    /// seat, the counterpart of [`Self::cable_inject`]'s broadcast side.
+    /// Senders are not tagged, so no per-session receive exists.
+    pub async fn cable_subscribe(
+        &self,
+        stream: &str,
+        label: &str,
+    ) -> Result<broadcast::Receiver<Vec<u8>>> {
+        let stream_map = self.stream_map.read().await;
+        let forward = stream_map.get(stream).cloned();
+        drop(stream_map);
+        let Some(forward) = forward else {
+            return Err(AppError::stream_not_found("stream not exists"));
+        };
+        Ok(forward.cables().route(label).to_publisher.subscribe())
+    }
+
     pub async fn select_layer(
         &self,
         stream: String,

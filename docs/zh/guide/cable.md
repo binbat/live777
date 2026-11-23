@@ -92,12 +92,12 @@ DC 端点以 `cables` 条目声明在流的 `sources` 和 `targets` 上，每个
 reply-to-sender。端点的监听端口随流的整个生命周期持有——provisioned 流的
 reset 不会重新绑端口。
 
-## HTTP 注入
+## HTTP 注入与接收
 
 应用服务器可以通过 HTTP 直接向流的 cable 注入消息，无需任何 UDP 桥：
 
 ```
-POST /api/streams/{stream}/channels/{label}/messages
+POST /api/streams/{stream}/cables/{label}/messages
 { "data": "<utf-8 string>" }
 ```
 
@@ -111,13 +111,27 @@ POST /api/streams/{stream}/channels/{label}/messages
   该会话没有此 label 的已打开 channel（含会话中途关闭的 channel），
   返回 `404`。
 
-投递是 **binary** datachannel 帧——总线携带 `Vec<u8>`，即使请求体是
-JSON 字符串，text/binary 的区分也会丢失。浏览器客户端必须在
+配套的接收方向以 SSE 推送对端发往发布者席位的消息：
+
+```
+GET /api/streams/{stream}/cables/{label}/messages
+```
+
+GET 订阅解析所得总线的 `to_publisher` 一侧——与 POST 注入的
+`to_subscribers` 严格对应：来自对端 channel（以及 DC target 的 UDP
+注入）、流向发布者的消息。每条总线消息产生一个 SSE 事件，JSON 编码：
+载荷为 `{ "data": "<base64>" }`（总线消息是不透明字节）；接收方落后
+总线丢弃 n 条时产生 `{ "lagged": n }`（流在丢弃后继续）。总线上的
+消息不标记发送者，因此接收方向没有 `?session=` 过滤。
+
+投递到对端 channel 是 **binary** datachannel 帧——总线携带 `Vec<u8>`，
+即使请求体是 JSON 字符串，text/binary 的区分也会丢失。浏览器客户端必须在
 `onmessage` 中处理 `Blob`/`ArrayBuffer`（如
 `await event.data.text()`），不能假定是 DOM string。
 
-鉴权与 cascade API 一致：JWT 需要 `x` 权限（静态 token 与无鉴权部署
-直接放行）。见 [Live777 HTTP API](./live777-api.md#cable)。
+鉴权与 cascade API 一致：POST 需要 JWT 的 `x` 权限，GET 需要 `r`
+权限（静态 token 与无鉴权部署直接放行）。见
+[Live777 HTTP API](./live777-api.md#cable)。
 
 ## 限制
 

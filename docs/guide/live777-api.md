@@ -218,11 +218,11 @@ Request:
 
 ## Cable
 
-`POST` `/api/streams/:streamId/channels/:label/messages`
+`POST` `/api/streams/:streamId/cables/:label/messages`
 
 Inject a message into a stream's datachannel cable (see the
-[cable guide](./cable.md)). Auth mirrors the cascade API: JWTs need the
-`x` scope.
+[cable guide](./cable.md)), onto the resolved bus's `to_subscribers` side.
+Auth mirrors the cascade API: JWTs need the `x` scope.
 
 Query:
 
@@ -254,6 +254,29 @@ an open channel of this label; [400] body missing/invalid.
 
 Delivery is a binary datachannel frame (the bus carries `Vec<u8>`) — the
 text/binary distinction is lost; clients should handle `Blob`/`ArrayBuffer`.
+
+`GET` `/api/streams/:streamId/cables/:label/messages`
+
+Receive the complementary direction as Server-Sent Events: the resolved
+bus's `to_publisher` side — messages from peer channels (and DC-target UDP
+injects) flowing towards the publisher seat. JWTs need the `r` scope.
+Senders are not tagged on the bus, so there is no `?session=` filter on
+receive.
+
+Response: [200], `text/event-stream`. One SSE event per bus message:
+
+```json
+{ "data": "<base64>" }
+```
+
+or, after the receiver fell behind the bus and dropped `n` messages (the
+stream continues):
+
+```json
+{ "lagged": 42 }
+```
+
+Errors: [404] stream does not exist.
 
 ## Source
 

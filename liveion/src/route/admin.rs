@@ -1,8 +1,16 @@
+use std::convert::Infallible;
+
 use axum::Json;
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
+use axum::response::Sse;
+use axum::response::sse::{Event, KeepAlive};
 use axum::routing::post;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -10,8 +18,8 @@ use crate::result::Result;
 
 pub fn route() -> Router<AppState> {
     let router = Router::new().route(
-        &api::path::stream_channel_messages("{stream}", "{label}"),
-        post(cable_inject),
+        &api::path::stream_cable_messages("{stream}", "{label}"),
+        post(cable_inject).get(cable_messages),
     );
     #[cfg(feature = "cascade")]
     {
@@ -29,9 +37,9 @@ pub fn route() -> Router<AppState> {
 async fn cable_inject(
     State(state): State<AppState>,
     Path((stream, label)): Path<(String, String)>,
-    Query(query): Query<api::request::ChannelMessageInjectQuery>,
-    body: std::result::Result<Json<api::request::ChannelMessageInject>, JsonRejection>,
-) -> Result<Json<api::response::ChannelMessageInjected>> {
+    Query(query): Query<api::request::CableMessageInjectQuery>,
+    body: std::result::Result<Json<api::request::CableMessageInject>, JsonRejection>,
+) -> Result<Json<api::response::CableMessageInjected>> {
     let Json(body) = body.map_err(|_| AppError::bad_request("invalid body"))?;
     let receivers = state
         .stream_manager
@@ -42,7 +50,36 @@ async fn cable_inject(
             query.session.as_deref(),
         )
         .await?;
-    Ok(Json(api::response::ChannelMessageInjected { receivers }))
+    Ok(Json(api::response::CableMessageInjected { receivers }))
+}
+
+/// Receive a stream's cable traffic as SSE: one event per message flowing
+/// towards the publisher seat, `{"data": "<base64>"}`, or `{"lagged": n}`
+/// after a receiver lag (the stream continues). See
+/// `Manager::cable_subscribe`.
+async fn cable_messages(
+    State(state): State<AppState>,
+    Path((stream, label)): Path<(String, String)>,
+) -> Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let recv = state
+        .stream_manager
+        .cable_subscribe(&stream, &label)
+        .await?;
+    // BroadcastStream ends on the bus closing (stream deleted).
+    let events = BroadcastStream::new(recv).filter_map(|msg| {
+        let event = match msg {
+            Ok(data) => api::response::CableMessage {
+                data: Some(BASE64.encode(data)),
+                lagged: None,
+            },
+            Err(BroadcastStreamRecvError::Lagged(n)) => api::response::CableMessage {
+                data: None,
+                lagged: Some(n),
+            },
+        };
+        Some(Ok(Event::default().json_data(event).unwrap()))
+    });
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(feature = "cascade")]

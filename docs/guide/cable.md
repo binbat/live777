@@ -106,13 +106,13 @@ export-only) endpoints are expressible; an omitted target means
 reply-to-sender. Endpoints own their listen ports for the stream's whole
 lifetime — a provisioned-stream reset does not rebind them.
 
-## HTTP injection
+## HTTP inject and receive
 
 Application servers can inject a message into a stream's cable over HTTP,
 without any UDP bridge:
 
 ```
-POST /api/streams/{stream}/channels/{label}/messages
+POST /api/streams/{stream}/cables/{label}/messages
 { "data": "<utf-8 string>" }
 ```
 
@@ -127,13 +127,29 @@ POST /api/streams/{stream}/channels/{label}/messages
   response reports `receivers: 1`. A session with no such channel (or a
   channel that died mid-session) is a `404`.
 
-Delivery is a **binary** datachannel frame — the bus carries `Vec<u8>`, so
-the text/binary distinction is lost even though the request body is a JSON
-string. Browser clients must handle `Blob`/`ArrayBuffer` in `onmessage`
-(e.g. `await event.data.text()`), not assume a DOM string.
+The complementary receive direction streams what peers send towards the
+publisher seat, as SSE:
 
-Auth mirrors the cascade API: a JWT needs the `x` scope (static-token and
-no-auth deployments pass as-is). See
+```
+GET /api/streams/{stream}/cables/{label}/messages
+```
+
+The GET subscribes the resolved bus's `to_publisher` side — the exact
+counterpart of POST's `to_subscribers` inject: messages from peer channels
+(and DC-target UDP injects) flowing towards the publisher. One SSE event
+per bus message, JSON-encoded: `{ "data": "<base64>" }` for a payload (bus
+messages are opaque bytes), `{ "lagged": n }` after the receiver fell
+behind and dropped `n` messages (the stream continues). Senders are not
+tagged on the bus, so there is no `?session=` filter on receive.
+
+Delivery to peer channels is a **binary** datachannel frame — the bus
+carries `Vec<u8>`, so the text/binary distinction is lost even though the
+request body is a JSON string. Browser clients must handle
+`Blob`/`ArrayBuffer` in `onmessage` (e.g. `await event.data.text()`), not
+assume a DOM string.
+
+Auth mirrors the cascade API: POST needs a JWT with the `x` scope, GET the
+`r` scope (static-token and no-auth deployments pass as-is). See
 [Live777 HTTP API](./live777-api.md#cable).
 
 ## Limitations

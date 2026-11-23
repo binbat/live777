@@ -1,11 +1,12 @@
-//! Integration tests for the HTTP cable message injection API
-//! (`POST /api/streams/{stream}/channels/{label}/messages`).
+//! Integration tests for the HTTP cable message inject/receive API
+//! (`/api/streams/{stream}/cables/{label}/messages`).
 //!
 //! Covered here: the error matrix (404 stream, 404 session, 400 body, 401
-//! auth), a broadcast inject with no listeners (`receivers: 0`), and two
-//! end-to-end deliveries — broadcast onto a cable whose DC target bridge
-//! exports to UDP, and a targeted direct send to a whepfrom subscriber's
-//! channel bridged to UDP.
+//! auth) for both methods, a broadcast inject with no listeners
+//! (`receivers: 0`), and three end-to-end paths — broadcast inject onto a
+//! cable whose DC target bridge exports to UDP, a targeted direct send to a
+//! whepfrom subscriber's channel bridged to UDP, and SSE receive of a
+//! DC target's inbound UDP inject (`to_publisher` direction).
 
 use std::net::SocketAddr;
 
@@ -60,14 +61,41 @@ async fn inject(
     client
         .post(format!(
             "http://{addr}{}{query}",
-            api::path::stream_channel_messages(stream_id, label)
+            api::path::stream_cable_messages(stream_id, label)
         ))
-        .json(&api::request::ChannelMessageInject {
+        .json(&api::request::CableMessageInject {
             data: data.to_string(),
         })
         .send()
         .await
         .unwrap()
+}
+
+/// Accumulate body chunks and pop complete `data:` events ("\n\n"
+/// terminated); keep-alive comment lines are ignored.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+async fn next_sse_data(resp: &mut reqwest::Response, buffer: &mut String) -> String {
+    loop {
+        if let Some((event, rest)) = buffer.split_once("\n\n") {
+            let event = event.to_string();
+            *buffer = rest.to_string();
+            let data: String = event
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(|line| line.trim_start())
+                .collect();
+            if !data.is_empty() {
+                return data;
+            }
+            continue;
+        }
+        let chunk = resp.chunk().await.unwrap().expect("SSE stream ended");
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+    }
 }
 
 #[tokio::test]
@@ -87,7 +115,7 @@ async fn test_cable_inject_broadcast_no_listeners() {
     let resp = inject(&client, &addr, "inject-empty", "control", "", "hello").await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body = resp
-        .json::<api::response::ChannelMessageInjected>()
+        .json::<api::response::CableMessageInjected>()
         .await
         .unwrap();
     // Only the bus's permanent drain receiver is attached.
@@ -138,7 +166,7 @@ async fn test_cable_inject_invalid_body() {
     create_stream(&client, &addr, "inject-bad-body").await;
     let url = format!(
         "http://{addr}{}",
-        api::path::stream_channel_messages("inject-bad-body", "control")
+        api::path::stream_cable_messages("inject-bad-body", "control")
     );
 
     let resp = client
@@ -178,6 +206,25 @@ fn dc_target_export(target: u16, label: &str) -> liveion::config::TargetConfig {
     }
 }
 
+/// A DC target endpoint (subscriber seat) keyed to a cable label, inject
+/// only (no `?host`/`?port` target): inbound UDP packets go onto the
+/// cable's `to_publisher` bus.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+fn dc_target_listen(listen: u16, label: &str) -> liveion::config::TargetConfig {
+    liveion::config::TargetConfig {
+        url: String::new(),
+        cables: vec![liveion::config::CableEndpoint {
+            label: label.to_string(),
+            url: format!("udp://127.0.0.1:{listen}"),
+        }],
+        ..Default::default()
+    }
+}
+
 /// Broadcast injection reaches the cable's DC target bridge: the injected
 /// bytes land on the bridge's UDP target verbatim.
 #[cfg(any(
@@ -211,7 +258,7 @@ async fn test_cable_inject_broadcast_reaches_dc_target() {
     let resp = inject(&client, &addr, stream_id, "control", "", msg).await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body = resp
-        .json::<api::response::ChannelMessageInjected>()
+        .json::<api::response::CableMessageInjected>()
         .await
         .unwrap();
     // The DC target bridge is the only live receiver besides the drain.
@@ -286,7 +333,7 @@ async fn test_cable_inject_targeted_delivery() {
     .await;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     let body = resp
-        .json::<api::response::ChannelMessageInjected>()
+        .json::<api::response::CableMessageInjected>()
         .await
         .unwrap();
     assert_eq!(body.receivers, 1);
@@ -303,4 +350,104 @@ async fn test_cable_inject_targeted_delivery() {
 
     ct.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle_whepfrom).await;
+}
+
+#[tokio::test]
+async fn test_cable_receive_stream_not_found() {
+    let addr = start_liveion(None).await;
+    let resp = reqwest::Client::new()
+        .get(format!(
+            "http://{addr}{}",
+            api::path::stream_cable_messages("ghost", "control")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_cable_receive_requires_auth() {
+    let addr = start_liveion(Some("cable-secret")).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://{addr}{}",
+            api::path::streams("receive-auth")
+        ))
+        .bearer_auth("cable-secret")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let resp = client
+        .get(format!(
+            "http://{addr}{}",
+            api::path::stream_cable_messages("receive-auth", "control")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+/// The receive direction: a DC target's inbound UDP inject lands on the
+/// cable's `to_publisher` bus and is delivered as an SSE event carrying the
+/// exact bytes, base64-encoded.
+#[cfg(any(
+    feature = "target-whip",
+    feature = "target-rtp",
+    feature = "target-rtsp"
+))]
+#[tokio::test]
+async fn test_cable_receive_sse_from_dc_target() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+    let stream_id = "receive-dc-target";
+    // Probe a free port for the bridge's listen socket, then release it.
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let listen = probe.local_addr().unwrap();
+    drop(probe);
+
+    let addr = start_liveion_with(None, |cfg| {
+        cfg.stream.streams.insert(
+            stream_id.to_string(),
+            liveion::config::StreamEntry {
+                cables: vec![liveion::config::CableConfig::new("control")],
+                targets: vec![dc_target_listen(listen.port(), "control")],
+                ..Default::default()
+            },
+        );
+    })
+    .await;
+
+    // Open the SSE stream first: the handler subscribes to the bus before
+    // the response headers arrive, so nothing sent afterwards is missed.
+    let client = reqwest::Client::new();
+    let mut resp = client
+        .get(format!(
+            "http://{addr}{}",
+            api::path::stream_cable_messages(stream_id, "control")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let msg = b"receive-inject\x00\x01\xff";
+    let udp_sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    udp_sender.send_to(msg, listen).await.unwrap();
+
+    let mut buffer = String::new();
+    let data = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        next_sse_data(&mut resp, &mut buffer),
+    )
+    .await
+    .expect("timeout waiting for SSE message from the cable bus");
+    let event: api::response::CableMessage =
+        serde_json::from_str(&data).expect("SSE event is not a cable message");
+    let data = event.data.expect("expected a data event, got lagged");
+    assert_eq!(BASE64.decode(data).unwrap(), msg);
 }

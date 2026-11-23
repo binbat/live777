@@ -119,15 +119,19 @@ Every session additionally keeps a label → open-channel registry
 (`channels` on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`),
 populated in `publish_data_channel`/`subscribe_data_channel` when a channel
 is actually bridged (after the server-created dedup close). It backs the
-HTTP injection API `POST /api/streams/{stream}/channels/{label}/messages`
-(admin route, JWT scope `x`): without `?session=` the manager broadcasts
-onto `CableHub::route(label).to_subscribers` (declared cable or the
-anonymous default pair, so any label works) and reports the live receiver
-count minus the permanent drain task; with `?session=` it sends
-`send(BytesMut)` directly onto that session's registered channel
+HTTP cable message API `/api/streams/{stream}/cables/{label}/messages`
+(admin route): POST (JWT scope `x`) injects — without `?session=` the
+manager broadcasts onto `CableHub::route(label).to_subscribers` (declared
+cable or the anonymous default pair, so any label works) and reports the
+live receiver count minus the permanent drain task, with `?session=` it
+sends `send(BytesMut)` directly onto that session's registered channel
 (`PeerForwardInternal::cable_channel`), evicting the stale entry and
-returning 404 when the direct send fails. Injected frames are binary on the
-wire (the bus carries `Vec<u8>`).
+returning 404 when the direct send fails; GET (JWT scope `r`) streams the
+complementary `to_publisher` direction as SSE
+(`Manager::cable_subscribe`), one `{"data": "<base64>"}` event per bus
+message and `{"lagged": n}` after a receiver lag (senders are not tagged,
+so no per-session receive). Injected frames are binary on the wire (the
+bus carries `Vec<u8>`).
 
 Both loops feed the DataChannel Prometheus metrics directly (no stats tick —
 messages are low-volume discrete events, the same pattern as the RTCP

@@ -216,10 +216,11 @@ Request:
 
 ## Cable
 
-`POST` `/api/streams/:streamId/channels/:label/messages`
+`POST` `/api/streams/:streamId/cables/:label/messages`
 
-向流的 datachannel cable 注入一条消息（见 [cable 指南](./cable.md)）。
-鉴权与级联 API 一致：JWT 需要 `x` 权限。
+向流的 datachannel cable 注入一条消息（见 [cable 指南](./cable.md)），
+写入解析所得总线的 `to_subscribers` 一侧。鉴权与级联 API 一致：JWT
+需要 `x` 权限。
 
 Query:
 
@@ -250,6 +251,27 @@ channel；[400] 请求体缺失或非法。
 
 投递为 binary datachannel 帧（总线携带 `Vec<u8>`）——text/binary 的
 区分会丢失，客户端应处理 `Blob`/`ArrayBuffer`。
+
+`GET` `/api/streams/:streamId/cables/:label/messages`
+
+以 Server-Sent Events 接收互补方向：解析所得总线的 `to_publisher`
+一侧——来自对端 channel（以及 DC target 的 UDP 注入）、流向发布者
+席位的消息。JWT 需要 `r` 权限。总线上的消息不标记发送者，因此接收
+方向没有 `?session=` 过滤。
+
+Response: [200]，`text/event-stream`。每条总线消息一个 SSE 事件：
+
+```json
+{ "data": "<base64>" }
+```
+
+接收方落后总线丢弃 n 条时（流在丢弃后继续）：
+
+```json
+{ "lagged": 42 }
+```
+
+错误：[404] 流不存在。
 
 ## 媒体源
 

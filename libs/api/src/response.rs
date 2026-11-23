@@ -148,8 +148,22 @@ pub struct CascadeInfo {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ChannelMessageInjected {
+pub struct CableMessageInjected {
     pub receivers: usize,
+}
+
+/// One SSE message of the cable receive endpoint
+/// (`GET /api/streams/{stream}/cables/{label}/messages`). Exactly one of
+/// `data` / `lagged` is set: bus messages are opaque bytes, so `data` is
+/// base64-encoded; `lagged` reports how many messages were dropped when the
+/// receiver fell behind the bus (the stream continues afterwards).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CableMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lagged: Option<u64>,
 }
 
 /// PeerConnectionState indicates the state of the PeerConnection.
