@@ -216,6 +216,79 @@ Request:
 - `targetUrl`: `Option<WHIP url>`. if has, use push mode
 - `sourceUrl` and `targetUrl` at the same time can only one
 
+## Cable
+
+`POST` `/api/streams/:streamId/cables/:label/messages`
+
+Inject a message into a stream's datachannel cable (see the
+[cable guide](./cable.md)), onto the resolved bus's `to_subscribers` side.
+JWTs need the `x` scope.
+
+Query:
+
+- `session`: Option, `sessionId`. Omit: broadcast to every subscriber on
+  the resolved bus; set: direct send onto that session's open channel with
+  this label.
+
+Request:
+
+```json
+{
+  "data": "<utf-8 string>",
+}
+```
+
+Response: [200]
+
+```json
+{
+  "receivers": 1,
+}
+```
+
+- `receivers`: Int, bus receivers the broadcast reached at send time (0
+  when nothing is listening), or 1 after a successful direct send.
+
+Errors: [404] stream does not exist, or `?session=` names no session with
+a channel of this label (not bridged yet, or closed for good); [409] the
+channel exists but is still connecting — retry, it opens within a
+round-trip; [400] body missing/invalid, or the payload exceeds the
+channel's negotiated max message size (browsers negotiate 256 KiB). A
+failed direct send never damages the channel: 409/400 leave it fully
+usable.
+
+Delivery is a binary datachannel frame (the bus carries `Vec<u8>`) — the
+text/binary distinction is lost; clients should handle `Blob`/`ArrayBuffer`.
+On broadcast, a message over a receiver's negotiated max message size is
+dropped for that receiver only (counted in `datachannel_dropped_total`);
+the channel and all other receivers are unaffected.
+
+`GET` `/api/streams/:streamId/cables/:label/messages`
+
+Receive the complementary direction as Server-Sent Events: the resolved
+bus's `to_publisher` side — messages from peer channels (and DC-target UDP
+injects) flowing towards the publisher seat. JWTs need the `x` scope (this
+exposes *every* peer's upstream messages — more than a WHEP subscriber's
+`r` scope may see). Senders are not tagged on the bus, so there is no
+`?session=` filter on receive.
+
+Response: [200], `text/event-stream`. One SSE event per bus message:
+
+```json
+{ "data": "<base64>" }
+```
+
+or, after the receiver fell behind the bus and dropped `n` messages (the
+stream continues):
+
+```json
+{ "lagged": 42 }
+```
+
+The event stream ends when the stream is deleted or the server shuts down.
+
+Errors: [404] stream does not exist.
+
 ## Source
 
 The bitrate endpoint is read-only *encoder* telemetry (native

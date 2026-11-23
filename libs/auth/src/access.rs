@@ -29,6 +29,21 @@ pub async fn access_middleware(request: Request, next: Next) -> Response {
             (id, &Method::POST, path) if path == api::path::cascade(&id) => {
                 Access::from(claims.mode).x
             }
+            // Cable messages: both directions need the `x` scope. POST
+            // injects into peers; the GET exposes every peer's messages
+            // towards the publisher — traffic a plain WHEP subscriber
+            // (scope `r`) could never see — so read access is an
+            // operator/API-server capability too, not a viewer one.
+            (id, method, path)
+                if path.starts_with(&format!("{}/cables/", api::path::streams(&id)))
+                    && path.ends_with("/messages") =>
+            {
+                match *method {
+                    Method::POST => Access::from(claims.mode).x,
+                    Method::GET => Access::from(claims.mode).x,
+                    _ => false,
+                }
+            }
             (id, _, _) if id == ANY_ID => true,
             (id, &Method::POST, path) if path == "/token" && id == ANY_ID => {
                 Access::from(claims.mode).r

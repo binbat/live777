@@ -190,6 +190,27 @@ impl PeerForward {
         self.internal.cables.clone()
     }
 
+    /// The open datachannel with `label` on the given session (publish peer
+    /// first, then subscribers); see [`PeerForwardInternal::cable_channel`].
+    pub(crate) async fn cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+    ) -> Option<Arc<dyn webrtc::data_channel::DataChannel>> {
+        self.internal.cable_channel(session, label).await
+    }
+
+    /// Evict a stale channel registry entry after a failed direct send; see
+    /// [`PeerForwardInternal::evict_cable_channel`].
+    pub(crate) async fn evict_cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+        dc: &Arc<dyn webrtc::data_channel::DataChannel>,
+    ) {
+        self.internal.evict_cable_channel(session, label, dc).await
+    }
+
     pub async fn add_ice_candidate(&self, session: String, ice_candidates: String) -> Result<()> {
         let ice_candidates = parse_ice_candidate(ice_candidates)?;
         if ice_candidates.is_empty() {

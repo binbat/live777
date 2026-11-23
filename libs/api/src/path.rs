@@ -27,6 +27,10 @@ pub fn streams(stream: &str) -> String {
     format!("/api/streams/{stream}")
 }
 
+pub fn stream_cable_messages(stream: &str, label: &str) -> String {
+    format!("/api/streams/{stream}/cables/{label}/messages")
+}
+
 pub fn cascade(stream: &str) -> String {
     format!("/api/cascade/{stream}")
 }

@@ -34,3 +34,14 @@ pub struct StreamSSE {
     #[serde(default)]
     pub streams: Vec<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CableMessageInject {
+    pub data: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CableMessageInjectQuery {
+    #[serde(default)]
+    pub session: Option<String>,
+}

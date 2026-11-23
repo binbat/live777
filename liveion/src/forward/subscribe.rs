@@ -9,6 +9,7 @@ use tokio::sync::{RwLock, broadcast, watch};
 use tokio::time::{Duration, Instant, sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use webrtc::data_channel::DataChannel;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{PeerConnection, RTCPeerConnectionState};
 use webrtc::rtp_transceiver::RtpSender;
@@ -94,6 +95,10 @@ pub(crate) struct SubscribeRTCPeerConnection {
     /// the server's stream-id parity cannot collide with the client's
     /// channels and the OPEN write is not dropped as non-Established).
     pub(crate) cables_spawned: std::sync::atomic::AtomicBool,
+    /// This session's open datachannels by label, registered when they are
+    /// bridged onto a cable bus. Backs the targeted HTTP injection lookup;
+    /// entries of channels closed mid-session are evicted on send failure.
+    pub(crate) channels: Arc<std::sync::Mutex<HashMap<String, Arc<dyn DataChannel>>>>,
 }
 
 impl SubscribeRTCPeerConnection {
@@ -151,6 +156,7 @@ impl SubscribeRTCPeerConnection {
             stats,
             dc_cancel: CancellationToken::new(),
             cables_spawned: std::sync::atomic::AtomicBool::new(false),
+            channels: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 

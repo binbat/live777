@@ -1607,12 +1607,39 @@ async fn dc_read_loop<P, Fut>(
     }
 }
 
+/// Whether a channel-send failure is specific to the one message (or
+/// transient) so the write loop drops it and keeps going instead of dying.
+/// The default is fatal: implementations flag the exceptions.
+trait SendFailure {
+    fn droppable(&self) -> bool {
+        false
+    }
+}
+
+impl SendFailure for webrtc::error::Error {
+    fn droppable(&self) -> bool {
+        matches!(
+            self,
+            webrtc::error::Error::ErrOutboundPacketTooLarge
+                | webrtc::error::Error::ErrDataChannelNotOpen
+        )
+    }
+}
+
+#[cfg(test)]
+impl SendFailure for String {}
+
 /// Write loop of one data channel: forward bus messages into the channel.
-/// Exits when the bus closes, the channel errors, the Connected gate fails,
+/// Exits when the bus closes, the channel dies, the Connected gate fails,
 /// or the owning session is cancelled (including while parked on `recv()` or
-/// waiting out the gate). Messages count into the `out` DataChannel metrics
-/// only after a successful channel write; messages dropped on bus lag count
-/// into `datachannel_dropped_total`.
+/// waiting out the gate). A message the channel refuses on per-message
+/// grounds — over the negotiated max message size, or arriving while the
+/// channel is still connecting — is dropped with a warn log and counted
+/// into `datachannel_dropped_total` rather than killing the loop: one
+/// oversized bus message must not mute the channel for every later message.
+/// Messages count into the `out` DataChannel metrics only after a
+/// successful channel write; messages dropped on bus lag count into
+/// `datachannel_dropped_total`.
 async fn dc_write_loop<S, Fut, E>(
     stream: String,
     mut receiver: broadcast::Receiver<Vec<u8>>,
@@ -1623,7 +1650,7 @@ async fn dc_write_loop<S, Fut, E>(
 ) where
     S: Fn(bytes::BytesMut) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<(), E>>,
-    E: std::fmt::Display,
+    E: std::fmt::Display + SendFailure,
 {
     let mut connected = connected_gate.is_none();
     loop {
@@ -1673,6 +1700,13 @@ async fn dc_write_loop<S, Fut, E>(
             connected = true;
         }
         if let Err(err) = send(bytes::BytesMut::from(&msg[..])).await {
+            if err.droppable() {
+                metrics::DATACHANNEL_DROPPED_TOTAL
+                    .with_label_values(&["out"])
+                    .inc();
+                warn!("[{}] dropping datachannel message: {}", stream, err);
+                continue;
+            }
             info!("write data channel err: {}", err);
             return;
         }
@@ -2331,12 +2365,17 @@ impl PeerForwardInternal {
         dc: Arc<dyn DataChannel>,
         from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel, _spawn_cables) = {
+        let (gate, cancel, channels, _spawn_cables) = {
             let publish = self.publish.read().await;
             match publish.as_ref() {
                 Some(p) if Arc::ptr_eq(&p.peer, &peer) => {
                     let spawn = from_client && !p.cables_spawned.swap(true, Ordering::Relaxed);
-                    (Some(p.connection_state_rx()), p.dc_cancel_token(), spawn)
+                    (
+                        Some(p.connection_state_rx()),
+                        p.dc_cancel_token(),
+                        p.channels.clone(),
+                        spawn,
+                    )
                 }
                 _ => {
                     // A late `on_data_channel` from a publisher that was
@@ -2374,6 +2413,10 @@ impl PeerForwardInternal {
             let _ = dc.close().await;
             return Ok(());
         }
+        channels
+            .lock()
+            .expect("channels lock poisoned")
+            .insert(label.clone(), dc.clone());
         let bus = self.cables.route(&label);
         Self::data_channel_forward(
             &self.stream,
@@ -2912,12 +2955,17 @@ impl PeerForwardInternal {
         dc: Arc<dyn DataChannel>,
         from_client: bool,
     ) -> Result<()> {
-        let (gate, cancel, _spawn_cables) = {
+        let (gate, cancel, channels, _spawn_cables) = {
             let subscribe_group = self.subscribe_group.read().await;
             match subscribe_group.iter().find(|s| Arc::ptr_eq(&s.peer, &peer)) {
                 Some(s) => {
                     let spawn = from_client && !s.cables_spawned.swap(true, Ordering::Relaxed);
-                    (Some(s.connection_state_rx()), s.dc_cancel_token(), spawn)
+                    (
+                        Some(s.connection_state_rx()),
+                        s.dc_cancel_token(),
+                        s.channels.clone(),
+                        spawn,
+                    )
                 }
                 None => {
                     // A late `on_data_channel` from a session that was already
@@ -2952,6 +3000,10 @@ impl PeerForwardInternal {
             let _ = dc.close().await;
             return Ok(());
         }
+        channels
+            .lock()
+            .expect("channels lock poisoned")
+            .insert(label.clone(), dc.clone());
         let bus = self.cables.route(&label);
         Self::data_channel_forward(
             &self.stream,
@@ -2962,6 +3014,80 @@ impl PeerForwardInternal {
             cancel,
         );
         Ok(())
+    }
+
+    /// Look up the open datachannel with `label` on the given session:
+    /// the publish peer first, then the subscribers. Channels register when
+    /// they are bridged onto a cable bus; a channel that closed mid-session
+    /// leaves a stale entry, evicted on send failure (see
+    /// [`Self::evict_cable_channel`]).
+    pub(crate) async fn cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+    ) -> Option<Arc<dyn DataChannel>> {
+        {
+            let publish = self.publish.read().await;
+            if let Some(p) = publish.as_ref()
+                && p.id == session
+            {
+                return p
+                    .channels
+                    .lock()
+                    .expect("channels lock poisoned")
+                    .get(label)
+                    .cloned();
+            }
+        }
+        let subscribe_group = self.subscribe_group.read().await;
+        for subscribe in subscribe_group.iter() {
+            if subscribe.id == session {
+                return subscribe
+                    .channels
+                    .lock()
+                    .expect("channels lock poisoned")
+                    .get(label)
+                    .cloned();
+            }
+        }
+        None
+    }
+
+    /// Drop the stale registry entry for `dc` after a failed direct send —
+    /// but only if the registry still holds that very channel (a rebuilt
+    /// channel may have replaced it in the meantime).
+    pub(crate) async fn evict_cable_channel(
+        &self,
+        session: &str,
+        label: &str,
+        dc: &Arc<dyn DataChannel>,
+    ) {
+        let channels = {
+            let publish = self.publish.read().await;
+            if let Some(p) = publish.as_ref()
+                && p.id == session
+            {
+                Some(p.channels.clone())
+            } else {
+                None
+            }
+        };
+        let channels = match channels {
+            Some(channels) => Some(channels),
+            None => {
+                let subscribe_group = self.subscribe_group.read().await;
+                subscribe_group
+                    .iter()
+                    .find(|s| s.id == session)
+                    .map(|s| s.channels.clone())
+            }
+        };
+        if let Some(channels) = channels {
+            let mut channels = channels.lock().expect("channels lock poisoned");
+            if channels.get(label).is_some_and(|c| Arc::ptr_eq(c, dc)) {
+                channels.remove(label);
+            }
+        }
     }
 
     /// Emit the content-free change ping consumed by snapshot-based
@@ -3304,6 +3430,47 @@ mod dc_tests {
             .await
             .expect("write loop stuck after send error")
             .unwrap();
+    }
+
+    /// A per-message send failure (oversized payload, or the channel still
+    /// connecting) drops only that message: the loop stays alive and later
+    /// messages are still delivered.
+    #[tokio::test]
+    async fn write_loop_drops_per_message_failures_and_survives() {
+        let (bus_tx, bus_rx) = broadcast::channel::<Vec<u8>>(4);
+        let (sent_tx, mut sent_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let send = move |data: bytes::BytesMut| {
+            let sent_tx = sent_tx.clone();
+            async move {
+                if data.len() > 64 {
+                    return Err(webrtc::error::Error::ErrOutboundPacketTooLarge);
+                }
+                if data.as_ref() == b"early" {
+                    return Err(webrtc::error::Error::ErrDataChannelNotOpen);
+                }
+                sent_tx
+                    .send(data.to_vec())
+                    .map_err(|_| webrtc::error::Error::ErrDataChannelClosed)
+            }
+        };
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(dc_write_loop(
+            "test".to_string(),
+            bus_rx,
+            send,
+            None,
+            Duration::from_millis(50),
+            cancel.clone(),
+        ));
+
+        bus_tx.send(vec![0u8; 300]).unwrap();
+        bus_tx.send(b"early".to_vec()).unwrap();
+        bus_tx.send(b"small".to_vec()).unwrap();
+        assert_eq!(sent_rx.recv().await.unwrap(), b"small");
+        assert!(!task.is_finished(), "write loop died on a droppable error");
+
+        cancel.cancel();
+        task.await.unwrap();
     }
 
     #[tokio::test]
