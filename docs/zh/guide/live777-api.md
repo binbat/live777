@@ -219,8 +219,7 @@ Request:
 `POST` `/api/streams/:streamId/cables/:label/messages`
 
 向流的 datachannel cable 注入一条消息（见 [cable 指南](./cable.md)），
-写入解析所得总线的 `to_subscribers` 一侧。鉴权与级联 API 一致：JWT
-需要 `x` 权限。
+写入解析所得总线的 `to_subscribers` 一侧。JWT 需要 `x` 权限。
 
 Query:
 
@@ -243,21 +242,27 @@ Response: [200]
 }
 ```
 
-- `receivers`: Int，广播送达的总线接收者数量（没有监听者时为 0），
-  定向发送成功时为 1。
+- `receivers`: Int，发送时刻广播送达的总线接收者数量（没有监听者时
+  为 0），定向发送成功时为 1。
 
-错误：[404] 流不存在，或 `?session=` 指定的会话没有此 label 的已打开
-channel；[400] 请求体缺失或非法。
+错误：[404] 流不存在，或 `?session=` 指定的会话没有此 label 的
+channel（尚未桥接，或已永久关闭）；[409] channel 存在但仍在连接
+中——可重试，一个往返内即可打开；[400] 请求体缺失或非法，或载荷
+超过该 channel 协商的最大消息尺寸（浏览器协商 256 KiB）。定向发送
+失败不会损伤 channel：409/400 之后它完全可用。
 
 投递为 binary datachannel 帧（总线携带 `Vec<u8>`）——text/binary 的
-区分会丢失，客户端应处理 `Blob`/`ArrayBuffer`。
+区分会丢失，客户端应处理 `Blob`/`ArrayBuffer`。广播时，超过某个接收
+方协商最大消息尺寸的消息只对该接收方丢弃（计入
+`datachannel_dropped_total`）；该 channel 与其他接收方不受影响。
 
 `GET` `/api/streams/:streamId/cables/:label/messages`
 
 以 Server-Sent Events 接收互补方向：解析所得总线的 `to_publisher`
 一侧——来自对端 channel（以及 DC target 的 UDP 注入）、流向发布者
-席位的消息。JWT 需要 `r` 权限。总线上的消息不标记发送者，因此接收
-方向没有 `?session=` 过滤。
+席位的消息。JWT 需要 `x` 权限（此端点暴露*所有*对端的上行消息——
+超出 WHEP 订阅者 `r` 权限可见的范围）。总线上的消息不标记发送者，
+因此接收方向没有 `?session=` 过滤。
 
 Response: [200]，`text/event-stream`。每条总线消息一个 SSE 事件：
 
@@ -270,6 +275,8 @@ Response: [200]，`text/event-stream`。每条总线消息一个 SSE 事件：
 ```json
 { "lagged": 42 }
 ```
+
+事件流在流被删除或服务器关闭时结束。
 
 错误：[404] 流不存在。
 

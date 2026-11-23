@@ -87,7 +87,11 @@ channel joins the cable matching its label (`CableHub::route`), else the
 default pair. Every channel gets a read and a write task
 (`dc_read_loop`/`dc_write_loop` in `forward/internal.rs`) bridging it to its
 cable's buses; a bus send failure (no active receivers) drops the message
-with a warn log instead of killing the loop. The webrtc driver never
+with a warn log instead of killing the loop, and on the write side a
+per-message channel refusal (payload over the negotiated max message size,
+or the channel still connecting — `SendFailure::droppable`) drops just
+that message into `datachannel_dropped_total{direction="out"}` while every
+other send error stays fatal to the loop. The webrtc driver never
 delivers `OnClose` for a server-side `PeerConnection::close` (it aborts
 first), so each session carries a `CancellationToken` (`dc_cancel` on
 `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`, cancelled from
@@ -118,30 +122,40 @@ mirrors this — see [livetwo/AGENTS.md](../livetwo/AGENTS.md).
 Every session additionally keeps a label → open-channel registry
 (`channels` on `PublishRTCPeerConnection`/`SubscribeRTCPeerConnection`),
 populated in `publish_data_channel`/`subscribe_data_channel` when a channel
-is actually bridged (after the server-created dedup close). It backs the
-HTTP cable message API `/api/streams/{stream}/cables/{label}/messages`
+is actually bridged (after the server-created dedup close; a same-label
+re-create overwrites, so targeted sends reach the newest channel). It backs
+the HTTP cable message API `/api/streams/{stream}/cables/{label}/messages`
 (admin route): POST (JWT scope `x`) injects — without `?session=` the
 manager broadcasts onto `CableHub::route(label).to_subscribers` (declared
 cable or the anonymous default pair, so any label works) and reports the
 live receiver count minus the permanent drain task, with `?session=` it
 sends `send(BytesMut)` directly onto that session's registered channel
-(`PeerForwardInternal::cable_channel`), evicting the stale entry and
-returning 404 when the direct send fails; GET (JWT scope `r`) streams the
-complementary `to_publisher` direction as SSE
-(`Manager::cable_subscribe`), one `{"data": "<base64>"}` event per bus
-message and `{"lagged": n}` after a receiver lag (senders are not tagged,
-so no per-session receive). Injected frames are binary on the wire (the
-bus carries `Vec<u8>`).
+(`PeerForwardInternal::cable_channel`). A failed direct send is classified
+(`Manager::cable_send_error`): only `ErrDataChannelClosed` evicts the stale
+entry and reports 404 — `ErrDataChannelNotOpen` (registry holds channels
+before their DCEP handshake completes) is a retryable 409 and
+`ErrOutboundPacketTooLarge` a 400, neither evicting; successful direct
+sends feed the `out` datachannel metrics themselves since they bypass the
+bus's write loop. GET (JWT scope `x` — it exposes every peer's upstream
+messages, more than a subscriber's `r` may see) streams the complementary
+`to_publisher` direction as SSE (`Manager::cable_subscribe`), one
+`{"data": "<base64>"}` event per bus message and `{"lagged": n}` after a
+receiver lag (senders are not tagged, so no per-session receive); the
+stream ends on bus close (stream deleted) and selects on the manager's
+`CancellationToken`, so permanent SSE clients cannot hold graceful shutdown
+open. Injected frames are binary on the wire (the bus carries `Vec<u8>`).
 
 Both loops feed the DataChannel Prometheus metrics directly (no stats tick —
 messages are low-volume discrete events, the same pattern as the RTCP
 probe): `live777_datachannel_messages_total{direction="in|out"}` and
 `live777_datachannel_bytes_total{direction}` count at receipt
 (`dc_read_loop`) resp. after a successful channel write (`dc_write_loop`, so
-bus fan-out is counted per attached peer), bus-lag drops land in
-`live777_datachannel_dropped_total{direction="out"}`, and the per-stream
-`live777_stream_datachannel_bytes_total{stream, direction}` series are
-removed at stream teardown (`emit_stream_deleted`) like the RTP ones.
+bus fan-out is counted per attached peer; targeted HTTP injects bypass the
+bus and count their own sends), bus-lag and per-message send-failure drops
+land in `live777_datachannel_dropped_total{direction="out"}`, and the
+per-stream `live777_stream_datachannel_bytes_total{stream, direction}`
+series are removed at stream teardown (`emit_stream_deleted`) like the RTP
+ones.
 
 ## Stream Manager (`src/stream/`)
 

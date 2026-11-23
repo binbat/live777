@@ -8,9 +8,7 @@ use axum::response::Sse;
 use axum::response::sse::{Event, KeepAlive};
 use axum::routing::post;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio::sync::broadcast;
 
 use crate::AppState;
 use crate::error::AppError;
@@ -40,7 +38,7 @@ async fn cable_inject(
     Query(query): Query<api::request::CableMessageInjectQuery>,
     body: std::result::Result<Json<api::request::CableMessageInject>, JsonRejection>,
 ) -> Result<Json<api::response::CableMessageInjected>> {
-    let Json(body) = body.map_err(|_| AppError::bad_request("invalid body"))?;
+    let Json(body) = body.map_err(|rej| AppError::bad_request(rej.body_text()))?;
     let receivers = state
         .stream_manager
         .cable_inject(
@@ -55,30 +53,39 @@ async fn cable_inject(
 
 /// Receive a stream's cable traffic as SSE: one event per message flowing
 /// towards the publisher seat, `{"data": "<base64>"}`, or `{"lagged": n}`
-/// after a receiver lag (the stream continues). See
-/// `Manager::cable_subscribe`.
+/// after a receiver lag (the stream continues). The stream ends when the
+/// bus closes (stream deleted) or the server shuts down — application
+/// servers hold this open permanently, so it must not hold graceful
+/// shutdown open. See `Manager::cable_subscribe`.
 async fn cable_messages(
     State(state): State<AppState>,
     Path((stream, label)): Path<(String, String)>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>> {
-    let recv = state
+    let mut recv = state
         .stream_manager
         .cable_subscribe(&stream, &label)
         .await?;
-    // BroadcastStream ends on the bus closing (stream deleted).
-    let events = BroadcastStream::new(recv).filter_map(|msg| {
-        let event = match msg {
-            Ok(data) => api::response::CableMessage {
-                data: Some(BASE64.encode(data)),
-                lagged: None,
-            },
-            Err(BroadcastStreamRecvError::Lagged(n)) => api::response::CableMessage {
-                data: None,
-                lagged: Some(n),
-            },
-        };
-        Some(Ok(Event::default().json_data(event).unwrap()))
-    });
+    let cancel = state.stream_manager.cancel_token();
+    let events = async_stream::stream! {
+        loop {
+            let msg = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                msg = recv.recv() => match msg {
+                    Ok(data) => api::response::CableMessage {
+                        data: Some(BASE64.encode(data)),
+                        lagged: None,
+                    },
+                    Err(broadcast::error::RecvError::Lagged(n)) => api::response::CableMessage {
+                        data: None,
+                        lagged: Some(n),
+                    },
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+            };
+            yield Ok(Event::default().json_data(msg).unwrap());
+        }
+    };
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
 }
 

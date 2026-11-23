@@ -2,11 +2,15 @@
 //! (`/api/streams/{stream}/cables/{label}/messages`).
 //!
 //! Covered here: the error matrix (404 stream, 404 session, 400 body, 401
-//! auth) for both methods, a broadcast inject with no listeners
-//! (`receivers: 0`), and three end-to-end paths — broadcast inject onto a
-//! cable whose DC target bridge exports to UDP, a targeted direct send to a
-//! whepfrom subscriber's channel bridged to UDP, and SSE receive of a
-//! DC target's inbound UDP inject (`to_publisher` direction).
+//! auth) for both methods, the JWT scope contract (both methods need `x`),
+//! a broadcast inject with no listeners (`receivers: 0`), three end-to-end
+//! paths — broadcast inject onto a cable whose DC target bridge exports to
+//! UDP, a targeted direct send to a whepfrom subscriber's channel bridged
+//! to UDP, and SSE receive of a DC target's inbound UDP inject
+//! (`to_publisher` direction) — and the robustness contracts: an oversized
+//! targeted inject is a 400 that keeps the channel targetable, an oversized
+//! broadcast does not kill the subscriber's write loop, and the SSE stream
+//! ends when the stream is deleted.
 
 use std::net::SocketAddr;
 
@@ -450,4 +454,264 @@ async fn test_cable_receive_sse_from_dc_target() {
         serde_json::from_str(&data).expect("SSE event is not a cable message");
     let data = event.data.expect("expected a data event, got lagged");
     assert_eq!(BASE64.decode(data).unwrap(), msg);
+}
+
+// ── robustness: oversized payloads, error classification, lifecycle ──────
+
+/// Start a whepfrom subscriber on `stream_id` with its `label` channel
+/// bridged to a fresh UDP socket (export only): the cancel token stops it,
+/// the socket receives everything the channel delivers.
+async fn start_udp_subscriber(
+    addr: &SocketAddr,
+    stream_id: &str,
+    label: &str,
+) -> (CancellationToken, tokio::task::JoinHandle<()>, UdpSocket) {
+    let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let target_port = receiver.local_addr().unwrap().port();
+    let ct = CancellationToken::new();
+    let handle = tokio::spawn({
+        let ct = ct.clone();
+        let whep_url = format!("http://{addr}{}", api::path::whep(stream_id));
+        let whep_channel_url = format!("udp://0.0.0.0:0?host=127.0.0.1&port={target_port}");
+        let label = label.to_string();
+        async move {
+            let _ = livetwo::whep::from(
+                ct,
+                "rtp://127.0.0.1".to_string(),
+                whep_url,
+                None,
+                None,
+                None,
+                Some(whep_channel_url),
+                label,
+                Vec::new(),
+            )
+            .await;
+        }
+    });
+    (ct, handle, receiver)
+}
+
+/// Poll a targeted inject until the session's channel is registered and
+/// open (404: not bridged yet; 409: still connecting) — the readiness
+/// probe for direct sends, instead of a fixed sleep.
+async fn wait_for_targetable(
+    client: &reqwest::Client,
+    addr: &SocketAddr,
+    stream_id: &str,
+    label: &str,
+    session_id: &str,
+) -> bool {
+    for _ in 0..200 {
+        let resp = inject(
+            client,
+            addr,
+            stream_id,
+            label,
+            &format!("?session={session_id}"),
+            "probe",
+        )
+        .await;
+        if resp.status().is_success() {
+            return true;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// A targeted inject over the channel's negotiated max message size is a
+/// client error (400) — and must not evict the channel's registry entry:
+/// the next normal-sized targeted inject still succeeds.
+#[tokio::test]
+async fn test_cable_inject_targeted_oversize_keeps_channel() {
+    let stream_id = "inject-oversize";
+    let addr = start_liveion(None).await;
+    let client = reqwest::Client::new();
+    create_stream(&client, &addr, stream_id).await;
+
+    let (ct, handle, _receiver) = start_udp_subscriber(&addr, stream_id, "control").await;
+    let session_id = wait_for_subscribe_session(&addr, stream_id)
+        .await
+        .expect("WHEP subscriber (whepfrom) failed to connect");
+    assert!(
+        wait_for_targetable(&client, &addr, stream_id, "control", &session_id).await,
+        "channel never became open for targeted sends"
+    );
+
+    // Over the negotiated maxMessageSize (whepfrom negotiates 256 KiB;
+    // browsers likewise) but well under the HTTP body limit.
+    let resp = inject(
+        &client,
+        &addr,
+        stream_id,
+        "control",
+        &format!("?session={session_id}"),
+        &"x".repeat(300 * 1024),
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // The channel survived: a normal targeted inject still succeeds.
+    let resp = inject(
+        &client,
+        &addr,
+        stream_id,
+        "control",
+        &format!("?session={session_id}"),
+        "after-oversize",
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    ct.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle).await;
+}
+
+/// An oversized broadcast is dropped per receiver — it must not kill the
+/// subscriber's write loop: the following message is still delivered.
+#[tokio::test]
+async fn test_cable_inject_broadcast_oversize_survives() {
+    let stream_id = "inject-broadcast-oversize";
+    let addr = start_liveion(None).await;
+    let client = reqwest::Client::new();
+    create_stream(&client, &addr, stream_id).await;
+
+    let (ct, handle, receiver) = start_udp_subscriber(&addr, stream_id, "control").await;
+    let session_id = wait_for_subscribe_session(&addr, stream_id)
+        .await
+        .expect("WHEP subscriber (whepfrom) failed to connect");
+    assert!(
+        wait_for_targetable(&client, &addr, stream_id, "control", &session_id).await,
+        "channel never became open for targeted sends"
+    );
+
+    let resp = inject(
+        &client,
+        &addr,
+        stream_id,
+        "control",
+        "",
+        &"x".repeat(300 * 1024),
+    )
+    .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let resp = inject(&client, &addr, stream_id, "control", "", "after").await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    // Probe/oversize traffic may arrive first; the loop must reach "after".
+    let mut buf = vec![0u8; 2048];
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (n, _) = receiver.recv_from(&mut buf).await.unwrap();
+            if &buf[..n] == b"after" {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("subscriber's channel died on the oversized broadcast");
+
+    ct.cancel();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), handle).await;
+}
+
+/// Deleting the stream closes the cable buses; an attached SSE receiver
+/// observes the end of the event stream instead of hanging on keep-alive.
+#[tokio::test]
+async fn test_cable_receive_sse_ends_when_stream_deleted() {
+    let stream_id = "receive-deleted";
+    let addr = start_liveion(None).await;
+    let client = reqwest::Client::new();
+    create_stream(&client, &addr, stream_id).await;
+
+    let mut resp = client
+        .get(format!(
+            "http://{addr}{}",
+            api::path::stream_cable_messages(stream_id, "control")
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let deleted = client
+        .delete(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success());
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while resp.chunk().await.unwrap().is_some() {}
+    })
+    .await
+    .expect("SSE stream did not end after the stream was deleted");
+}
+
+/// JWT scope contract: both methods need the `x` scope — the GET exposes
+/// every peer's messages towards the publisher, more than a viewer's `r`.
+#[tokio::test]
+async fn test_cable_messages_auth_scopes() {
+    let stream_id = "cable-scopes";
+    let secret = "cable-jwt-secret";
+    let addr = start_liveion_with(Some("static-token"), |cfg| {
+        cfg.auth.secret = secret.to_string();
+    })
+    .await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("http://{addr}{}", api::path::streams(stream_id)))
+        .bearer_auth("static-token")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let jwt = |mode: u8| {
+        auth::Keys::new(secret.as_bytes())
+            .token(auth::claims::Claims {
+                id: stream_id.to_string(),
+                exp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 3600,
+                mode,
+            })
+            .unwrap()
+    };
+    let url = format!(
+        "http://{addr}{}",
+        api::path::stream_cable_messages(stream_id, "control")
+    );
+
+    // Scope `r` only (a WHEP viewer): both methods forbidden.
+    let resp = client.get(&url).bearer_auth(jwt(4)).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let resp = client
+        .post(&url)
+        .bearer_auth(jwt(4))
+        .json(&api::request::CableMessageInject {
+            data: "x".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // Scope `x`: both methods allowed.
+    let resp = client.get(&url).bearer_auth(jwt(1)).send().await.unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let resp = client
+        .post(&url)
+        .bearer_auth(jwt(1))
+        .json(&api::request::CableMessageInject {
+            data: "x".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
 }

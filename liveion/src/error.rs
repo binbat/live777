@@ -14,6 +14,10 @@ pub enum AppError {
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     StreamSourceActive(String),
     SessionNotFound(String),
+    /// The request conflicts with the object's current state but may
+    /// succeed later (e.g. a datachannel that is still connecting); maps to
+    /// 409 so callers know a retry is meaningful.
+    Conflict(String),
     /// No media source is registered for the requested stream.
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
     SourceNotFound(String),
@@ -52,6 +56,13 @@ impl AppError {
         T: ToString,
     {
         AppError::SessionNotFound(t.to_string())
+    }
+
+    pub fn conflict<T>(t: T) -> Self
+    where
+        T: ToString,
+    {
+        AppError::Conflict(t.to_string())
     }
 
     #[cfg_attr(not(feature = "source"), allow(dead_code))]
@@ -110,6 +121,7 @@ impl IntoResponse for AppError {
             AppError::StreamProvisioned(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::StreamSourceActive(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::SessionNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
+            AppError::Conflict(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::SourceNotFound(err) => (StatusCode::NOT_FOUND, err).into_response(),
             AppError::SourceBitrateUnsupported(err) => (StatusCode::CONFLICT, err).into_response(),
             AppError::HookFailed(err) => (StatusCode::INTERNAL_SERVER_ERROR, err).into_response(),

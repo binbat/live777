@@ -2640,6 +2640,7 @@ dependencies = [
  "anyhow",
  "api",
  "async-trait",
+ "auth",
  "axum 0.8.9",
  "axum-extra",
  "base64 0.22.1",

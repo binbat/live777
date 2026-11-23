@@ -996,8 +996,10 @@ impl Manager {
     /// it is sent directly onto that session's open datachannel with this
     /// label. Returns the receiver count: the bus's live receivers minus
     /// the permanent drain task for broadcast, 1 for a successful direct
-    /// send. A direct send that fails evicts the stale registry entry and
-    /// reports the session as gone.
+    /// send. A direct send's failure is classified by
+    /// [`Self::cable_send_error`]: only a closed channel evicts the registry
+    /// entry and reports the session as gone — a still-connecting channel
+    /// (409, retryable) or an oversized payload (400) leaves it intact.
     pub async fn cable_inject(
         &self,
         stream: &str,
@@ -1018,13 +1020,30 @@ impl Manager {
                         "session '{session}' has no open channel '{label}'"
                     ))
                 })?;
-                if let Err(err) = channel.send(bytes::BytesMut::from(&data[..])).await {
-                    forward.evict_cable_channel(session, label, &channel).await;
-                    return Err(AppError::session_not_found(format!(
-                        "session '{session}' channel '{label}' is gone: {err}"
-                    )));
+                let len = data.len() as u64;
+                match channel.send(bytes::BytesMut::from(&data[..])).await {
+                    Ok(()) => {
+                        // The direct send bypasses the bus's write loop, so
+                        // it feeds the DataChannel metrics itself.
+                        metrics::DATACHANNEL_MESSAGES_TOTAL
+                            .with_label_values(&["out"])
+                            .inc();
+                        metrics::DATACHANNEL_BYTES_TOTAL
+                            .with_label_values(&["out"])
+                            .inc_by(len);
+                        metrics::STREAM_DATACHANNEL_BYTES_TOTAL
+                            .with_label_values(&[stream, "out"])
+                            .inc_by(len);
+                        Ok(1)
+                    }
+                    Err(err) => {
+                        let failure = Self::cable_send_error(session, label, &err);
+                        if matches!(failure, AppError::SessionNotFound(_)) {
+                            forward.evict_cable_channel(session, label, &channel).await;
+                        }
+                        Err(failure)
+                    }
                 }
-                Ok(1)
             }
             None => {
                 let sender = forward.cables().route(label).to_subscribers.clone();
@@ -1034,6 +1053,30 @@ impl Manager {
                 let _ = sender.send(data);
                 Ok(receivers)
             }
+        }
+    }
+
+    /// Classify a failed direct send onto a cable channel. Only a closed
+    /// channel is terminal — the registry entry is stale and the caller
+    /// reports the session as gone (404). A still-connecting channel (the
+    /// registry holds channels before their DCEP handshake completes) is a
+    /// retryable conflict (409), and a payload over the channel's negotiated
+    /// max message size is a client error (400): neither must evict the
+    /// entry, the channel itself is still healthy.
+    fn cable_send_error(session: &str, label: &str, err: &webrtc::error::Error) -> AppError {
+        match err {
+            webrtc::error::Error::ErrDataChannelClosed => AppError::session_not_found(format!(
+                "session '{session}' channel '{label}' is gone"
+            )),
+            webrtc::error::Error::ErrDataChannelNotOpen => AppError::conflict(format!(
+                "session '{session}' channel '{label}' is not open yet; retry"
+            )),
+            webrtc::error::Error::ErrOutboundPacketTooLarge => AppError::bad_request(format!(
+                "payload exceeds channel '{label}'s negotiated max message size"
+            )),
+            err => AppError::InternalServerError(anyhow::anyhow!(
+                "session '{session}' channel '{label}' send failed: {err}"
+            )),
         }
     }
 
@@ -1376,7 +1419,6 @@ impl Manager {
     }
 
     /// Shutdown token shared by the manager's background tasks.
-    #[cfg(feature = "target")]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -2966,5 +3008,29 @@ mod tests {
             cancel.cancel();
             let _ = std::fs::remove_file(&sdp_path);
         }
+    }
+
+    /// A failed direct send is classified by cause: only a closed channel
+    /// is terminal (404, registry eviction); a connecting channel is a
+    /// retryable 409 and an oversized payload a 400 — neither may evict.
+    #[test]
+    fn cable_send_error_classification() {
+        use webrtc::error::Error;
+        assert!(matches!(
+            Manager::cable_send_error("s", "l", &Error::ErrDataChannelClosed),
+            AppError::SessionNotFound(_)
+        ));
+        assert!(matches!(
+            Manager::cable_send_error("s", "l", &Error::ErrDataChannelNotOpen),
+            AppError::Conflict(_)
+        ));
+        assert!(matches!(
+            Manager::cable_send_error("s", "l", &Error::ErrOutboundPacketTooLarge),
+            AppError::BadRequest(_)
+        ));
+        assert!(matches!(
+            Manager::cable_send_error("s", "l", &Error::ErrClosedPipe),
+            AppError::InternalServerError(_)
+        ));
     }
 }
