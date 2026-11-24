@@ -122,6 +122,61 @@ async fn test_liveion_info() {
     assert!(!body.features.contains(&"cascade".to_string()));
 }
 
+/// Issue #523: `POST /api/record/{stream}` must accept a missing body —
+/// `StartRecordRequest` is all-optional, so a plain empty POST is the
+/// natural "record with defaults" call. Extraction contract: no
+/// Content-Type falls back to the default body, a JSON Content-Type still
+/// demands valid JSON, and any other Content-Type stays a 415. The stream
+/// does not exist here, so a request that passed extraction deterministically
+/// fails inside the handler with 500 — a 4xx means the extractor rejected it.
+#[cfg(feature = "recorder")]
+#[tokio::test]
+async fn test_record_start_accepts_missing_body() {
+    let cfg = liveion::config::Config::default();
+    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(liveion::serve(cfg, listener, shutdown_signal()));
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}{}", api::path::record("no-such-stream"));
+
+    // No body, no Content-Type: must not die at the extractor with 415.
+    let res = client.post(&url).send().await.unwrap();
+    assert_eq!(http::StatusCode::INTERNAL_SERVER_ERROR, res.status());
+
+    // An explicit empty JSON object takes the same path.
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::INTERNAL_SERVER_ERROR, res.status());
+
+    // A JSON Content-Type still requires a valid JSON body.
+    let res = client
+        .post(&url)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::BAD_REQUEST, res.status());
+
+    // A non-JSON Content-Type is still rejected.
+    let res = client
+        .post(&url)
+        .header(http::header::CONTENT_TYPE, "text/plain")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::UNSUPPORTED_MEDIA_TYPE, res.status());
+}
+
 #[tokio::test]
 async fn test_liveman_nodes_carry_node_build_info() {
     // A liveion node behind a poll-mode liveman: the nodes API must carry
