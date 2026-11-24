@@ -762,6 +762,9 @@ async fn do_record_sync(mut state: AppState) -> Result<()> {
                 let delete_url = format!("{}{}", server.url, api::path::recordings_delete());
                 let delete_req = DeleteRecordingsRequest {
                     records: ack_req.records,
+                    // Index-sync only: file retention stays with the node's
+                    // own policy, not the cluster sync pass.
+                    delete_files: false,
                 };
                 match state
                     .client

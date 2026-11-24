@@ -394,11 +394,54 @@ pub async fn delete_recordings(
     req: DeleteRecordingsRequest,
 ) -> anyhow::Result<DeleteRecordingsResponse> {
     let Some(index) = get_index().await else {
-        return Ok(DeleteRecordingsResponse { deleted: 0 });
+        return Ok(DeleteRecordingsResponse {
+            deleted: 0,
+            removed_dirs: 0,
+        });
     };
 
-    let deleted = index.delete_acked(req).await?;
-    Ok(DeleteRecordingsResponse { deleted })
+    let delete_files = req.delete_files;
+    let removed = index.delete_acked(req).await?;
+    let deleted = removed.len();
+
+    let mut removed_dirs = 0usize;
+    if delete_files && !removed.is_empty() {
+        let operator = STORAGE.read().await.as_ref().cloned();
+        if let Some(operator) = operator {
+            // Rotation can leave several index rows on one record dir;
+            // remove each directory once.
+            let mut dirs = std::collections::HashSet::new();
+            for entry in removed {
+                if dirs.insert(entry.record_dir.clone()) {
+                    match operator.remove_all(&entry.record_dir).await {
+                        Ok(()) => {
+                            removed_dirs += 1;
+                            tracing::info!(
+                                "[recorder] removed record dir {} from storage",
+                                entry.record_dir
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[recorder] failed to remove record dir {} from storage: {}",
+                                entry.record_dir,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(
+                "[recorder] delete_files requested but recorder storage is not available"
+            );
+        }
+    }
+
+    Ok(DeleteRecordingsResponse {
+        deleted,
+        removed_dirs,
+    })
 }
 
 pub async fn list_playback_streams() -> anyhow::Result<Vec<String>> {

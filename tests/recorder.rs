@@ -290,3 +290,87 @@ async fn test_record_object_streams_and_honors_range() {
         assert_eq!(res.bytes().await.unwrap().as_ref(), object);
     }
 }
+
+/// Issue #525: `DELETE /api/recordings` with `delete_files` removes the
+/// recording files from storage along with the (acked-only) index rows.
+#[tokio::test]
+async fn test_delete_recordings_with_delete_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap().to_string();
+    let index = dir.path().join("index.json").to_str().unwrap().to_string();
+
+    // Three sessions: two acked, one still active.
+    let sessions = [
+        ("1000000001", "Acked"),
+        ("1000000002", "Acked"),
+        ("1000000003", "Active"),
+    ];
+    let mut entries = Vec::new();
+    for (record, status) in sessions {
+        let record_dir = format!("s1/{record}");
+        std::fs::create_dir_all(dir.path().join(&record_dir)).unwrap();
+        std::fs::write(dir.path().join(&record_dir).join("manifest.mpd"), b"mpd").unwrap();
+        std::fs::write(dir.path().join(&record_dir).join("v_init.m4s"), b"init").unwrap();
+        entries.push(serde_json::json!({
+            "record": record,
+            "stream": "s1",
+            "record_dir": record_dir,
+            "mpd_path": format!("{record_dir}/manifest.mpd"),
+            "start_ts": 1000000001000000i64,
+            "status": status,
+            "updated_at": 1000000001000000i64,
+        }));
+    }
+    std::fs::write(
+        dir.path().join("index.json"),
+        serde_json::to_string(&entries).unwrap(),
+    )
+    .unwrap();
+
+    let addr = common::start_liveion_with(None, |cfg| {
+        cfg.recorder.storage = storage::StorageConfig::Fs { root };
+        cfg.recorder.index_path = Some(index);
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}{}", api::path::recordings_delete());
+    let delete = |record: &str, delete_files: bool| {
+        let client = client.clone();
+        let url = url.clone();
+        let record = record.to_string();
+        async move {
+            client
+                .delete(url)
+                .json(&serde_json::json!({
+                    "records": [{ "stream": "s1", "record": record }],
+                    "delete_files": delete_files,
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Metadata-only delete: the row goes, the files stay.
+    let res = delete("1000000001", false).await;
+    assert_eq!(http::StatusCode::OK, res.status());
+    let body: api::recorder::DeleteRecordingsResponse = res.json().await.unwrap();
+    assert_eq!(body.deleted, 1);
+    assert_eq!(body.removed_dirs, 0);
+    assert!(dir.path().join("s1/1000000001").exists());
+
+    // delete_files removes the whole record dir from storage.
+    let res = delete("1000000002", true).await;
+    let body: api::recorder::DeleteRecordingsResponse = res.json().await.unwrap();
+    assert_eq!(body.deleted, 1);
+    assert_eq!(body.removed_dirs, 1);
+    assert!(!dir.path().join("s1/1000000002").exists());
+
+    // An active (not acked) row is never touched, files included.
+    let res = delete("1000000003", true).await;
+    let body: api::recorder::DeleteRecordingsResponse = res.json().await.unwrap();
+    assert_eq!(body.deleted, 0);
+    assert_eq!(body.removed_dirs, 0);
+    assert!(dir.path().join("s1/1000000003").exists());
+}

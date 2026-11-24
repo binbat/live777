@@ -165,7 +165,7 @@ enable_virtual_host_style = false
 - ACK 会话：`PATCH` `/api/recordings`
   - 请求体：`{ "records": [{ "stream": "s", "record": "id" }] }`
 - 删除已 ACK 会话：`DELETE` `/api/recordings`
-  - 请求体：`{ "records": [{ "stream": "s", "record": "id" }] }`
+  - 请求体：`{ "records": [{ "stream": "s", "record": "id" }] }` —— 附加 `"delete_files": true` 可连同存储中的录制文件一起删除（每个被删行的整个录制目录）；响应在 `"deleted"` 之外会附带 `"removed_dirs"`。只有已 ACK 的行会被处理，进行中的录制文件始终不受影响。
 
 ## MPD 路径规则 {#mpd}
 

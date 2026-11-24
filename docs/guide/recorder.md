@@ -165,7 +165,7 @@ Requires `recorder` feature.
 - ACK sessions: `PATCH` `/api/recordings`
   - Body: `{ "records": [{ "stream": "s", "record": "id" }] }`
 - Delete ACKed sessions: `DELETE` `/api/recordings`
-  - Body: `{ "records": [{ "stream": "s", "record": "id" }] }`
+  - Body: `{ "records": [{ "stream": "s", "record": "id" }] }` — add `"delete_files": true` to also remove the recording files from storage (the whole record dir of every deleted row); the response then reports `"removed_dirs"` alongside `"deleted"`. Only ACKed rows are ever touched, so files of an active recording are always safe.
 
 ## MPD Path Conventions {#mpd}
 
