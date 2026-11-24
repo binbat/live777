@@ -178,11 +178,7 @@ impl RecordingTask {
                 codec
             );
             if !is_supported_video_codec(codec) {
-                tracing::warn!(
-                    "[recorder] stream {} video codec {} is not supported by recorder; recording will only succeed if audio is written",
-                    stream_name,
-                    codec
-                );
+                return Err(crate::recorder::UnsupportedVideoCodec(codec.clone()).into());
             }
         } else {
             tracing::info!("[recorder] stream {} is audio-only (Opus)", stream_name);
