@@ -8,7 +8,7 @@ liveion 的 Recorder 是一个可选功能，用于将实时流自动录制为 M
 | ---------------- | -------------------- | ------------ |
 | `Fragmented MP4` | `H264`, `H265`, `VP9`, `AV1` | `Opus`       |
 
-**Recorder 暂不支持 `VP8` 编码，因为 `VP8` 需要 `WebM` 容器。**
+**Recorder 暂不支持 `VP8` 编码，因为 `VP8` 需要 `WebM` 容器。**对视频编码不受支持的流启动录制会立即返回 `400 Bad Request`，而不是静默地录出无视频的会话。
 
 ## Liveman 集成 {#liveman}
 

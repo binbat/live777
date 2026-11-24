@@ -468,6 +468,8 @@ Response: [200]
 
 When the output path does not end in a 10-digit Unix timestamp (for example, a custom `base_dir` without that suffix), `record_id` falls back to the recording start timestamp in seconds, so it is never empty.
 
+- [400] the stream's video codec is not supported by the recorder (supported video: H264/H265/VP9/AV1) — the request fails fast instead of recording without video.
+
 ### Recording Status (by id)
 
 `GET` `/api/record/:streamId`

@@ -50,6 +50,21 @@ pub struct RecordingInfo {
     pub start_ts_micros: i64,
 }
 
+/// Record start failed because the stream carries a video track whose codec
+/// the recorder cannot write (supported: H264/H265/VP9/AV1). Surfaced as a
+/// client error (400) by the route layer — a silently video-less recording
+/// is worse than no recording (live777#524).
+#[derive(Debug)]
+pub struct UnsupportedVideoCodec(pub String);
+
+impl std::fmt::Display for UnsupportedVideoCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "video codec {} is not supported by the recorder", self.0)
+    }
+}
+
+impl std::error::Error for UnsupportedVideoCodec {}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct PlaybackIndexEntry {
     pub record: String,

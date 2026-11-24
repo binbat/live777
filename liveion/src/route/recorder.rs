@@ -33,8 +33,14 @@ async fn record_stream(
     body: Option<Json<api::recorder::StartRecordRequest>>,
 ) -> crate::result::Result<Response<String>> {
     let base_dir = body.and_then(|Json(req)| req.base_dir);
-    let recording =
-        crate::recorder::start(state.stream_manager.clone(), stream.clone(), base_dir).await?;
+    let recording = crate::recorder::start(state.stream_manager.clone(), stream.clone(), base_dir)
+        .await
+        .map_err(
+            |e| match e.downcast_ref::<crate::recorder::UnsupportedVideoCodec>() {
+                Some(codec_err) => AppError::BadRequest(codec_err.to_string()),
+                None => AppError::InternalServerError(e),
+            },
+        )?;
 
     let mpd_path = format!("{}/manifest.mpd", recording.record_dir);
     let record_id_str = if recording.record_id > 0 {
