@@ -216,8 +216,11 @@ impl RecordingsIndex {
         Ok(acked)
     }
 
-    pub async fn delete_acked(&self, req: DeleteRecordingsRequest) -> Result<usize> {
-        let mut removed = 0usize;
+    pub async fn delete_acked(
+        &self,
+        req: DeleteRecordingsRequest,
+    ) -> Result<Vec<RecordingIndexEntry>> {
+        let mut removed = Vec::new();
         {
             let mut map = self.entries.write().await;
             for RecordingKey { stream, record } in req.records {
@@ -225,13 +228,12 @@ impl RecordingsIndex {
                 if let Some(entry) = map.get(&key)
                     && matches!(entry.status, RecordingStatus::Acked)
                 {
-                    map.remove(&key);
-                    removed += 1;
+                    removed.push(map.remove(&key).expect("entry checked above"));
                 }
             }
         }
 
-        if removed > 0 {
+        if !removed.is_empty() {
             self.compact().await?;
         }
 

@@ -101,12 +101,21 @@ pub struct AckRecordingsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteRecordingsRequest {
     pub records: Vec<RecordingKey>,
+    /// Also delete the recording files from storage (the whole record dir
+    /// of every deleted index row). Off by default; rows of active
+    /// recordings are never acked, so their files are never touched.
+    #[serde(default)]
+    pub delete_files: bool,
 }
 
 /// Response for delete
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteRecordingsResponse {
     pub deleted: usize,
+    /// Number of record directories removed from storage (only with
+    /// `delete_files: true`).
+    #[serde(default)]
+    pub removed_dirs: usize,
 }
 
 /// Response containing recording sessions
