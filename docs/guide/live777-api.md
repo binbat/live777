@@ -466,7 +466,7 @@ Response: [200]
 }
 ```
 
-`record_id` is an empty string only when the recorder cannot infer a 10-digit Unix timestamp from the output path (for example, when a custom `base_dir` omits that suffix).
+When the output path does not end in a 10-digit Unix timestamp (for example, a custom `base_dir` without that suffix), `record_id` falls back to the recording start timestamp in seconds, so it is never empty.
 
 ### Recording Status (by id)
 

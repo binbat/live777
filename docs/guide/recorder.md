@@ -6,7 +6,7 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 | container        | video codecs         | audio codecs |
 | ---------------- | -------------------- | ------------ |
-| `Fragmented MP4` | `H264`, `H265`, `VP9`| `Opus`       |
+| `Fragmented MP4` | `H264`, `H265`, `VP9`, `AV1` | `Opus`       |
 
 **Recorder does not support the `VP8` codec because `VP8` requires a `WebM` container.**
 
@@ -14,7 +14,7 @@ The Recorder in liveion is an optional feature that automatically records live s
 
 Integrates with [Liveman](/guide/liveman) for centralized playback and proxy access:
 
-- Start recording returns the storage metadata (`record_id`, `record_dir`, and `mpd_path`). The `record_id` field is only populated when the recorder can infer a 10-digit Unix timestamp from the output path; otherwise it is returned as an empty string.
+- Start recording returns the storage metadata (`record_id`, `record_dir`, and `mpd_path`). `record_id` comes from the 10-digit Unix timestamp in the output path, falling back to the recording start timestamp when the path has none — it is never empty.
 - Liveman stores `record_id`/`record_dir` to keep the catalog in sync with storage
 - Clients can stream the manifest via `mpd_path`, and Liveman can proxy objects with `GET /api/record/object/{path}`
 
@@ -153,7 +153,7 @@ Requires `recorder` feature.
 
 - Start recording: `POST` `/api/record/:streamId`
   - Body (optional): `{ "base_dir": "optional/path/prefix" }` — the body may be omitted entirely (no `Content-Type` needed)
-  - Response: `{ "id": ":streamId", "record_id": "<unix-timestamp-or-empty>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
+  - Response: `{ "id": ":streamId", "record_id": "<unix-timestamp>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - Recording status: `GET` `/api/record/:streamId`
   - Response: `{ "recording": true }`
 - Stop recording: `DELETE` `/api/record/:streamId`
@@ -172,7 +172,7 @@ Requires `recorder` feature.
 - Default `record_dir` (when `base_dir` is not provided): `/:streamId/:record_id/` where `record_id` is a 10-digit Unix timestamp (seconds).
 - Default MPD location: `/{record_dir}/manifest.mpd`.
 - When the cumulative duration for a session reaches `max_recording_seconds`, the recorder closes the current fragments and starts a new timestamped directory (for example `/:streamId/1718200000/`). No calendar-style paths are produced automatically.
-- When `base_dir` is provided, `record_dir` matches that value exactly and the manifest lives at `/{base_dir}/manifest.mpd`. If the override does not end with a 10-digit Unix timestamp, the returned `record_id` is an empty string.
+- When `base_dir` is provided, `record_dir` matches that value exactly and the manifest lives at `/{base_dir}/manifest.mpd`. If the override does not end with a 10-digit Unix timestamp, the returned `record_id` falls back to the recording start timestamp (seconds).
 
 ## File Structure {#file-structure}
 
@@ -190,7 +190,7 @@ storage/
         └── ...
 ```
 
-- Timestamp-based folders (`stream/1762842203`) are the canonical layout produced by Live777, including automatic rotations triggered by `max_recording_seconds`. Provide a custom `base_dir` only if you intentionally need a different structure and accept the impact on `record_id` values.
+- Timestamp-based folders (`stream/1762842203`) are the canonical layout produced by Live777, including automatic rotations triggered by `max_recording_seconds`. Provide a custom `base_dir` only if you intentionally need a different structure — note that `record_id` then no longer mirrors the directory name (it falls back to the recording start timestamp).
 
 ## Async Upload (Presigned URLs) {#async-upload}
 
