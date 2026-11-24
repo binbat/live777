@@ -152,7 +152,7 @@ enable_virtual_host_style = false
 需要启用 `recorder` 特性。
 
 - 启动录制: `POST` `/api/record/:streamId`
-  - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }`
+  - 请求体（可选）: `{ "base_dir": "optional/path/prefix" }` —— 请求体可完全省略（无需 `Content-Type`）
   - 响应: `{ "id": ":streamId", "record_id": "<10位Unix时间戳或空字符串>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - 录制状态: `GET` `/api/record/:streamId`
   - 响应: `{ "recording": true }`

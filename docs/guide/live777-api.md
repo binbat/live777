@@ -447,7 +447,7 @@ the rung.
 
 Starts recording the specified stream. The stream must be active (have a publisher) for recording to begin.
 
-Request Body (optional):
+Request Body (optional): the body may be omitted entirely — a plain `POST` with no `Content-Type` records with defaults. When a `Content-Type: application/json` header is sent, the body must be valid JSON.
 
 ```json
 { "base_dir": "optional/path/prefix" }

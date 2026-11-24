@@ -152,7 +152,7 @@ enable_virtual_host_style = false
 Requires `recorder` feature.
 
 - Start recording: `POST` `/api/record/:streamId`
-  - Body (optional): `{ "base_dir": "optional/path/prefix" }`
+  - Body (optional): `{ "base_dir": "optional/path/prefix" }` — the body may be omitted entirely (no `Content-Type` needed)
   - Response: `{ "id": ":streamId", "record_id": "<unix-timestamp-or-empty>", "record_dir": "<path>", "mpd_path": "<path>/manifest.mpd" }`
 - Recording status: `GET` `/api/record/:streamId`
   - Response: `{ "recording": true }`

@@ -426,7 +426,7 @@ Response: [200]
 
 开始录制指定的流。流必须处于活跃状态（有发布者）才能开始录制。需要启用 `recorder` 特性。
 
-请求体（可选）：
+请求体（可选）：请求体可以完全省略 —— 不带 `Content-Type` 的普通 `POST` 即按默认配置录制。若携带 `Content-Type: application/json`，则请求体必须是合法 JSON。
 
 ```json
 {

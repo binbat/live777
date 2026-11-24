@@ -30,15 +30,11 @@ pub fn route() -> Router<AppState> {
 async fn record_stream(
     State(state): State<AppState>,
     Path(stream): Path<String>,
-    Json(body): Json<api::recorder::StartRecordRequest>,
+    body: Option<Json<api::recorder::StartRecordRequest>>,
 ) -> crate::result::Result<Response<String>> {
-    let base_dir = body.base_dir.clone();
-    let recording = crate::recorder::start(
-        state.stream_manager.clone(),
-        stream.clone(),
-        base_dir.clone(),
-    )
-    .await?;
+    let base_dir = body.and_then(|Json(req)| req.base_dir);
+    let recording =
+        crate::recorder::start(state.stream_manager.clone(), stream.clone(), base_dir).await?;
 
     let mpd_path = format!("{}/manifest.mpd", recording.record_dir);
     let record_id_str = if recording.record_id > 0 {
