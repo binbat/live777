@@ -194,3 +194,99 @@ async fn test_record_start_accepts_supported_video_codec() {
 
     peer.close().await.expect("close publish peer");
 }
+
+/// Issue #526: recording objects must be served streamed (not buffered whole
+/// in memory) and honor single Range requests with 206/416.
+#[tokio::test]
+async fn test_record_object_streams_and_honors_range() {
+    let (addr, dir) = start_recorder_liveion().await;
+
+    let object = b"0123456789abcdef";
+    let rel = "stream1/1/manifest.mpd";
+    let abs = dir.path().join(rel);
+    std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+    std::fs::write(&abs, object).unwrap();
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/record/object/{rel}");
+    let header_str = |res: &reqwest::Response, name: http::header::HeaderName| {
+        res.headers()
+            .get(name)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Full body, with range support advertised.
+    let res = client.get(&url).send().await.unwrap();
+    assert_eq!(http::StatusCode::OK, res.status());
+    assert_eq!(header_str(&res, http::header::ACCEPT_RANGES), "bytes");
+    assert_eq!(header_str(&res, http::header::CONTENT_LENGTH), "16");
+    assert_eq!(
+        header_str(&res, http::header::CONTENT_TYPE),
+        "application/dash+xml"
+    );
+    assert_eq!(res.bytes().await.unwrap().as_ref(), object);
+
+    // Explicit range -> 206.
+    let res = client
+        .get(&url)
+        .header("range", "bytes=4-7")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::PARTIAL_CONTENT, res.status());
+    assert_eq!(
+        header_str(&res, http::header::CONTENT_RANGE),
+        "bytes 4-7/16"
+    );
+    assert_eq!(header_str(&res, http::header::CONTENT_LENGTH), "4");
+    assert_eq!(res.bytes().await.unwrap().as_ref(), &object[4..8]);
+
+    // Suffix range.
+    let res = client
+        .get(&url)
+        .header("range", "bytes=-4")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::PARTIAL_CONTENT, res.status());
+    assert_eq!(res.bytes().await.unwrap().as_ref(), &object[12..16]);
+
+    // End beyond the object is clamped.
+    let res = client
+        .get(&url)
+        .header("range", "bytes=14-100")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::PARTIAL_CONTENT, res.status());
+    assert_eq!(
+        header_str(&res, http::header::CONTENT_RANGE),
+        "bytes 14-15/16"
+    );
+    assert_eq!(res.bytes().await.unwrap().as_ref(), &object[14..16]);
+
+    // Unsatisfiable -> 416.
+    let res = client
+        .get(&url)
+        .header("range", "bytes=100-200")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http::StatusCode::RANGE_NOT_SATISFIABLE, res.status());
+    assert_eq!(header_str(&res, http::header::CONTENT_RANGE), "bytes */16");
+
+    // Malformed and multi-range headers are ignored -> 200 full body.
+    for range in ["items=1-2", "bytes=9-5", "bytes=0-1,3-4"] {
+        let res = client
+            .get(&url)
+            .header("range", range)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(http::StatusCode::OK, res.status(), "range: {range}");
+        assert_eq!(res.bytes().await.unwrap().as_ref(), object);
+    }
+}

@@ -449,14 +449,18 @@ pub async fn list_playback_entries(stream: &str) -> anyhow::Result<Vec<PlaybackI
     Ok(entries)
 }
 
-pub async fn read_object(path: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    let storage = STORAGE.read().await;
-    let Some(operator) = storage.as_ref() else {
+/// Open a stored recording object for streaming reads, returning its total
+/// size and an opendal reader. `None` when the recorder storage is not
+/// configured.
+pub async fn open_object(path: &str) -> anyhow::Result<Option<(u64, opendal::Reader)>> {
+    let operator = STORAGE.read().await.as_ref().cloned();
+    let Some(operator) = operator else {
         return Ok(None);
     };
 
-    let bytes = operator.read(path).await?;
-    Ok(Some(bytes.to_vec()))
+    let meta = operator.stat(path).await?;
+    let reader = operator.reader(path).await?;
+    Ok(Some((meta.content_length(), reader)))
 }
 
 fn record_key(info: &RecordingInfo) -> String {
